@@ -270,6 +270,11 @@ pub struct App {
     pub repos: Vec<RepoIssues>,
     /// Collapsed repo names (survives reload).
     pub collapsed: std::collections::HashSet<String>,
+    /// Repo names seen in any previous load; used to apply `default_collapsed`
+    /// only to repos appearing for the first time.
+    pub seen_repos: std::collections::HashSet<String>,
+    /// Config: newly seen repos start collapsed.
+    pub default_collapsed: bool,
     /// Visible rows derived from repos + filters + sort + collapsed.
     pub rows: Vec<Row>,
     pub selected: usize,
@@ -290,11 +295,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(org: String, include_closed: bool) -> Self {
+    pub fn new(org: String, include_closed: bool, default_collapsed: bool) -> Self {
         Self {
             org,
             repos: Vec::new(),
             collapsed: Default::default(),
+            seen_repos: Default::default(),
+            default_collapsed,
             rows: Vec::new(),
             selected: 0,
             state_filter: StateFilter::Open,
@@ -316,6 +323,13 @@ impl App {
 
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
         self.repos = repos;
+        // First-seen repos take the configured default; repos the user has
+        // already interacted with keep their manual collapse state.
+        for repo in &self.repos {
+            if self.seen_repos.insert(repo.repo.clone()) && self.default_collapsed {
+                self.collapsed.insert(repo.repo.clone());
+            }
+        }
         self.loading = false;
         self.rebuild_rows();
     }
@@ -476,7 +490,7 @@ mod tests {
     }
 
     fn app_with(repos: Vec<RepoIssues>) -> App {
-        let mut app = App::new("org".into(), false);
+        let mut app = App::new("org".into(), false, false);
         app.set_data(repos);
         app
     }
@@ -515,6 +529,75 @@ mod tests {
         assert_eq!(app.rows.len(), 3); // alpha header + beta header + beta issue
         app.toggle_collapse();
         assert_eq!(app.rows.len(), 5);
+    }
+
+    #[test]
+    fn default_collapsed_starts_all_groups_folded() {
+        let mut app = App::new("org".into(), false, true);
+        app.set_data(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "beta".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(2, "b", IssueState::Open)],
+            },
+        ]);
+        assert_eq!(app.rows.len(), 2); // headers only
+        assert_eq!(app.visible_issue_count(), 0);
+    }
+
+    #[test]
+    fn default_collapsed_preserves_manual_expand_across_reload() {
+        let repos = || {
+            vec![RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            }]
+        };
+        let mut app = App::new("org".into(), false, true);
+        app.set_data(repos());
+        assert_eq!(app.visible_issue_count(), 0);
+
+        app.selected = 0;
+        app.toggle_collapse(); // user expands alpha
+        assert_eq!(app.visible_issue_count(), 1);
+
+        app.set_data(repos()); // reload must not re-collapse it
+        assert_eq!(app.visible_issue_count(), 1);
+    }
+
+    #[test]
+    fn default_collapsed_applies_to_new_repo_on_reload() {
+        let alpha = RepoIssues {
+            repo: "alpha".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(1, "a", IssueState::Open)],
+        };
+        let beta = RepoIssues {
+            repo: "beta".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(2, "b", IssueState::Open)],
+        };
+        let mut app = App::new("org".into(), false, true);
+        app.set_data(vec![alpha.clone()]);
+        app.selected = 0;
+        app.toggle_collapse(); // expand alpha
+
+        app.set_data(vec![alpha, beta]); // beta appears for the first time
+        assert!(!app.collapsed.contains("alpha"));
+        assert!(app.collapsed.contains("beta"));
+        assert_eq!(app.visible_issue_count(), 1);
+    }
+
+    #[test]
+    fn without_default_collapsed_groups_start_expanded() {
+        let app = two_repo_app(); // uses default_collapsed = false
+        assert_eq!(app.visible_issue_count(), 3);
     }
 
     #[test]

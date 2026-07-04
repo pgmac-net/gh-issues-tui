@@ -22,7 +22,7 @@ Three top-level modules wired together in `src/main.rs`:
 
 | Module | Purpose |
 |--------|---------|
-| `config` | TOML config (`~/.config/gh-issues-tui/config.toml`, `default_org` only). |
+| `config` | TOML config (`~/.config/gh-issues-tui/config.toml`: `default_org`, `default_collapsed`). |
 | `github` | Async GitHub GraphQL v4 client + token resolution. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |
 
@@ -43,7 +43,7 @@ Three top-level modules wired together in `src/main.rs`:
 - **Tokens never in config.** `Config` has no token field; resolution is env/CLI/`gh` only.
 - **Pagination over search.** Issue fetch must stay on `organization.repositories` → `issues` cursors. Do not switch to the GraphQL/REST search API — it silently caps at 1000 results org-wide.
 - **`rebuild_rows` after any change** to filters, sort, collapse state, or data. Selection is clamped there; stale indices panic otherwise.
-- **Collapse state keyed by repo name** (not index) so it survives reloads.
+- **Collapse state keyed by repo name** (not index) so it survives reloads. `default_collapsed` is applied in `set_data` only to repos not yet in `seen_repos`, so manual expand/collapse choices always win over the config default.
 - **Panic hook** in `main.rs` restores the terminal before printing panics. Anything that touches terminal state must stay safe to drop in this path.
 - **Closed issues are lazily fetched.** Startup fetches open-only unless `--all`; the first switch of the state filter away from `open` sets `include_closed` and refetches once.
 

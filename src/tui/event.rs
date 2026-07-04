@@ -21,9 +21,14 @@ pub enum AppEvent {
     MutationFailed(String),
 }
 
-pub async fn run(client: Client, org: String, include_closed: bool) -> Result<()> {
+pub async fn run(
+    client: Client,
+    org: String,
+    include_closed: bool,
+    default_collapsed: bool,
+) -> Result<()> {
     let terminal = ratatui::init();
-    let result = event_loop(terminal, client, org, include_closed).await;
+    let result = event_loop(terminal, client, org, include_closed, default_collapsed).await;
     ratatui::restore();
     result
 }
@@ -33,8 +38,9 @@ async fn event_loop(
     client: Client,
     org: String,
     include_closed: bool,
+    default_collapsed: bool,
 ) -> Result<()> {
-    let mut app = App::new(org, include_closed);
+    let mut app = App::new(org, include_closed, default_collapsed);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
 
