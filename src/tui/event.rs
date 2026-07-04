@@ -1,0 +1,472 @@
+use anyhow::Result;
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use futures::StreamExt;
+use ratatui::DefaultTerminal;
+use tokio::sync::mpsc;
+
+use crate::github::Client;
+use crate::github::types::{Comment, IssueState, RepoIssues};
+
+use super::app::{App, Focus, InputKind, Mode, StateFilter};
+use super::ui;
+
+/// Messages from background tasks back into the UI loop.
+pub enum AppEvent {
+    Data(Result<Vec<RepoIssues>, String>),
+    Comments {
+        issue_id: String,
+        result: Result<Vec<Comment>, String>,
+    },
+    MutationDone(String),
+    MutationFailed(String),
+}
+
+pub async fn run(client: Client, org: String, include_closed: bool) -> Result<()> {
+    let terminal = ratatui::init();
+    let result = event_loop(terminal, client, org, include_closed).await;
+    ratatui::restore();
+    result
+}
+
+async fn event_loop(
+    mut terminal: DefaultTerminal,
+    client: Client,
+    org: String,
+    include_closed: bool,
+) -> Result<()> {
+    let mut app = App::new(org, include_closed);
+    let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+    let mut keys = EventStream::new();
+
+    spawn_fetch(&client, &app, &tx);
+
+    loop {
+        terminal.draw(|f| ui::draw(f, &app))?;
+
+        tokio::select! {
+            Some(Ok(ev)) = keys.next() => {
+                if let Event::Key(key) = ev
+                    && key.kind == KeyEventKind::Press
+                {
+                    handle_key(&mut app, key, &client, &tx);
+                }
+            }
+            Some(msg) = rx.recv() => handle_app_event(&mut app, msg, &client, &tx),
+        }
+
+        if app.should_quit {
+            return Ok(());
+        }
+    }
+}
+
+fn spawn_fetch(client: &Client, app: &App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let client = client.clone();
+    let org = app.org.clone();
+    let include_closed = app.include_closed;
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client
+            .org_issues(&org, include_closed)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::Data(result));
+    });
+}
+
+fn spawn_comments(client: &Client, issue_id: String, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.comments(&issue_id).await.map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::Comments { issue_id, result });
+    });
+}
+
+fn handle_app_event(
+    app: &mut App,
+    msg: AppEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    match msg {
+        AppEvent::Data(Ok(repos)) => {
+            app.set_data(repos);
+            app.status = Some(format!(
+                "loaded {} issues across {} repos",
+                app.repos.iter().map(|r| r.issues.len()).sum::<usize>(),
+                app.repos.len()
+            ));
+        }
+        AppEvent::Data(Err(e)) => {
+            app.loading = false;
+            app.status = Some(format!("load failed: {e}"));
+        }
+        AppEvent::Comments { issue_id, result } => {
+            // Ignore stale responses for a previously selected issue.
+            if app.selected_issue().map(|i| i.id.clone()) == Some(issue_id) {
+                match result {
+                    Ok(c) => app.detail_comments = Some(c),
+                    Err(e) => app.status = Some(format!("comments failed: {e}")),
+                }
+            }
+        }
+        AppEvent::MutationDone(msg) => {
+            app.status = Some(msg);
+            app.loading = true;
+            spawn_fetch(client, app, tx);
+        }
+        AppEvent::MutationFailed(e) => app.status = Some(format!("failed: {e}")),
+    }
+}
+
+fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+    match app.mode {
+        Mode::Normal => handle_normal_key(app, key, client, tx),
+        Mode::Input(kind) => handle_input_key(app, key, kind, client, tx),
+        Mode::FilterMenu => handle_filter_menu_key(app, key),
+        Mode::ConfirmState => handle_confirm_key(app, key, client, tx),
+        Mode::Help => app.mode = Mode::Normal,
+    }
+}
+
+fn handle_normal_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    match key.code {
+        KeyCode::Char('q') => {
+            if app.focus == Focus::Detail {
+                app.focus = Focus::List;
+            } else {
+                app.should_quit = true;
+            }
+        }
+        KeyCode::Esc if app.focus == Focus::Detail => app.focus = Focus::List,
+        KeyCode::Char('?') => app.mode = Mode::Help,
+        KeyCode::Char('r') => {
+            app.loading = true;
+            app.status = Some("reloading…".into());
+            spawn_fetch(client, app, tx);
+        }
+
+        // navigation
+        KeyCode::Char('j') | KeyCode::Down => {
+            if app.focus == Focus::Detail {
+                app.detail_scroll = app.detail_scroll.saturating_add(1);
+            } else {
+                app.move_selection(1);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.focus == Focus::Detail {
+                app.detail_scroll = app.detail_scroll.saturating_sub(1);
+            } else {
+                app.move_selection(-1);
+            }
+        }
+        KeyCode::PageDown => app.move_selection(15),
+        KeyCode::PageUp => app.move_selection(-15),
+        KeyCode::Char('g') | KeyCode::Home => app.selected = 0,
+        KeyCode::Char('G') | KeyCode::End => {
+            app.selected = app.rows.len().saturating_sub(1);
+        }
+
+        // grouping
+        KeyCode::Char(' ') => app.toggle_collapse(),
+        KeyCode::Char('[') => app.set_all_collapsed(true),
+        KeyCode::Char(']') => app.set_all_collapsed(false),
+
+        // filters & sort
+        KeyCode::Char('/') => {
+            app.input.start(&app.filters.text.clone());
+            app.mode = Mode::Input(InputKind::Search);
+        }
+        KeyCode::Char('f') => {
+            app.state_filter = app.state_filter.next();
+            if app.state_filter != StateFilter::Open && !app.include_closed {
+                // Closed issues were never fetched; upgrade the dataset once.
+                app.include_closed = true;
+                app.loading = true;
+                app.status = Some("fetching closed issues…".into());
+                spawn_fetch(client, app, tx);
+            }
+            app.rebuild_rows();
+        }
+        KeyCode::Char('F') => {
+            app.filter_menu_idx = 0;
+            app.mode = Mode::FilterMenu;
+        }
+        KeyCode::Char('s') => {
+            app.sort_key = app.sort_key.next();
+            app.rebuild_rows();
+        }
+        KeyCode::Char('S') => {
+            app.sort_desc = !app.sort_desc;
+            app.rebuild_rows();
+        }
+
+        // open in browser
+        KeyCode::Char('o') => {
+            let url = app
+                .selected_issue()
+                .map(|i| i.url.clone())
+                .or_else(|| app.selected_repo().map(|r| r.repo_url.clone()));
+            if let Some(url) = url {
+                match open::that(&url) {
+                    Ok(()) => app.status = Some(format!("opened {url}")),
+                    Err(e) => app.status = Some(format!("open failed: {e}")),
+                }
+            }
+        }
+        KeyCode::Char('O') => {
+            if let Some(url) = app.selected_repo().map(|r| r.repo_url.clone()) {
+                match open::that(&url) {
+                    Ok(()) => app.status = Some(format!("opened {url}")),
+                    Err(e) => app.status = Some(format!("open failed: {e}")),
+                }
+            }
+        }
+
+        // detail
+        KeyCode::Enter => {
+            if app.selected_issue().is_some() {
+                app.focus = Focus::Detail;
+                app.detail_scroll = 0;
+                app.detail_comments = None;
+                if let Some(issue) = app.selected_issue() {
+                    spawn_comments(client, issue.id.clone(), tx);
+                }
+            } else {
+                app.toggle_collapse();
+            }
+        }
+
+        // mutations
+        KeyCode::Char('c') => {
+            if app.selected_issue().is_some() {
+                app.input.start("");
+                app.mode = Mode::Input(InputKind::Comment);
+            }
+        }
+        KeyCode::Char('x') => {
+            if app.selected_issue().is_some() {
+                app.mode = Mode::ConfirmState;
+            }
+        }
+        KeyCode::Char('a') => {
+            if let Some(issue) = app.selected_issue() {
+                let current = issue.assignees.join(", ");
+                app.input.start(&current);
+                app.mode = Mode::Input(InputKind::Assignees);
+            }
+        }
+        KeyCode::Char('l') => {
+            if let Some(issue) = app.selected_issue() {
+                let current = issue
+                    .labels
+                    .iter()
+                    .map(|l| l.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                app.input.start(&current);
+                app.mode = Mode::Input(InputKind::Labels);
+            }
+        }
+        KeyCode::Char('t') => {
+            if let Some(issue) = app.selected_issue() {
+                let title = issue.title.clone();
+                app.input.start(&title);
+                app.mode = Mode::Input(InputKind::Title);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_input_key(
+    app: &mut App,
+    key: KeyEvent,
+    kind: InputKind,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = if matches!(kind, InputKind::FilterField(_)) {
+                Mode::FilterMenu
+            } else {
+                Mode::Normal
+            };
+        }
+        KeyCode::Enter => {
+            let value = app.input.buffer.clone();
+            app.mode = Mode::Normal;
+            submit_input(app, kind, value, client, tx);
+        }
+        KeyCode::Backspace => app.input.backspace(),
+        KeyCode::Left => app.input.left(),
+        KeyCode::Right => app.input.right(),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.start("");
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.insert(c);
+        }
+        _ => {}
+    }
+}
+
+fn submit_input(
+    app: &mut App,
+    kind: InputKind,
+    value: String,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    match kind {
+        InputKind::Search | InputKind::FilterField(_) => {
+            app.apply_filter_input(kind, &value);
+            if matches!(kind, InputKind::FilterField(_)) {
+                app.mode = Mode::FilterMenu;
+            }
+        }
+        InputKind::Comment => {
+            if value.trim().is_empty() {
+                app.status = Some("empty comment discarded".into());
+                return;
+            }
+            with_issue(app, client, tx, "comment added", move |c, id| async move {
+                c.add_comment(&id, &value).await
+            });
+        }
+        InputKind::Assignees => {
+            let logins = split_csv(&value);
+            with_issue(
+                app,
+                client,
+                tx,
+                "assignees updated",
+                move |c, id| async move { c.set_assignees(&id, &logins).await },
+            );
+        }
+        InputKind::Labels => {
+            let names = split_csv(&value);
+            let (org, repo) = match app.selected_repo() {
+                Some(r) => (app.org.clone(), r.repo.clone()),
+                None => return,
+            };
+            with_issue(app, client, tx, "labels updated", move |c, id| async move {
+                c.set_labels(&id, &repo, &org, &names).await
+            });
+        }
+        InputKind::Title => {
+            if value.trim().is_empty() {
+                app.status = Some("empty title discarded".into());
+                return;
+            }
+            with_issue(app, client, tx, "title updated", move |c, id| async move {
+                c.update_title(&id, &value).await
+            });
+        }
+    }
+}
+
+fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
+    use super::app::FILTER_FIELDS;
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Normal,
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.filter_menu_idx = (app.filter_menu_idx + 1) % FILTER_FIELDS.len();
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.filter_menu_idx =
+                (app.filter_menu_idx + FILTER_FIELDS.len() - 1) % FILTER_FIELDS.len();
+        }
+        KeyCode::Char('c') => {
+            app.filters.clear();
+            app.rebuild_rows();
+        }
+        KeyCode::Enter => {
+            let current = app.current_filter_value(app.filter_menu_idx);
+            app.input.start(&current);
+            app.mode = Mode::Input(InputKind::FilterField(app.filter_menu_idx));
+        }
+        _ => {}
+    }
+}
+
+fn handle_confirm_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    app.mode = Mode::Normal;
+    if key.code != KeyCode::Char('y') {
+        app.status = Some("cancelled".into());
+        return;
+    }
+    let target = match app.selected_issue() {
+        Some(i) => match i.state {
+            IssueState::Open => IssueState::Closed,
+            IssueState::Closed => IssueState::Open,
+        },
+        None => return,
+    };
+    let msg = match target {
+        IssueState::Closed => "issue closed",
+        IssueState::Open => "issue reopened",
+    };
+    with_issue(app, client, tx, msg, move |c, id| async move {
+        c.set_state(&id, target).await
+    });
+}
+
+/// Spawn a mutation against the selected issue; reports done/failed via `tx`.
+fn with_issue<F, Fut>(
+    app: &mut App,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    done_msg: &'static str,
+    op: F,
+) where
+    F: FnOnce(Client, String) -> Fut + Send + 'static,
+    Fut: Future<Output = crate::github::error::Result<()>> + Send,
+{
+    let Some(issue) = app.selected_issue() else {
+        return;
+    };
+    let id = issue.id.clone();
+    let client = client.clone();
+    let tx = tx.clone();
+    app.status = Some("working…".into());
+    tokio::spawn(async move {
+        let msg = match op(client, id).await {
+            Ok(()) => AppEvent::MutationDone(done_msg.to_string()),
+            Err(e) => AppEvent::MutationFailed(e.to_string()),
+        };
+        let _ = tx.send(msg);
+    });
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_csv_trims_and_drops_empties() {
+        assert_eq!(split_csv(" a , b ,, c "), vec!["a", "b", "c"]);
+        assert!(split_csv("  ").is_empty());
+    }
+}
