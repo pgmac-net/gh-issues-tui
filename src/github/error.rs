@@ -10,6 +10,9 @@ pub enum GithubError {
 
     #[error("unexpected response shape: {0}")]
     Shape(String),
+
+    #[error("{0}")]
+    RateLimited(String),
 }
 
 pub type Result<T> = std::result::Result<T, GithubError>;

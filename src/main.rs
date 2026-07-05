@@ -48,5 +48,5 @@ async fn main() -> Result<()> {
     let client = github::Client::new(token)?;
 
     install_panic_hook();
-    tui::run(client, org, cli.all).await
+    tui::run(client, org, cli.all, cfg.default_collapsed).await
 }

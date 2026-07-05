@@ -1,3 +1,4 @@
+use chrono::{Datelike, NaiveDate};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -28,6 +29,8 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     match app.mode {
         Mode::FilterMenu => draw_filter_menu(f, app),
+        Mode::SelectField(idx) => draw_select_popup(f, app, idx),
+        Mode::Calendar(idx) => draw_calendar_popup(f, app, idx),
         Mode::Help => draw_help(f),
         _ => {}
     }
@@ -51,7 +54,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("  ({})", repo.issues.len()),
+                        format!("  ({})", app.repo_visible_count(*repo_idx)),
                         Style::default().fg(DIM),
                     ),
                 ]))
@@ -232,7 +235,26 @@ fn draw_info_bar(f: &mut Frame, app: &App, area: Rect) {
             if app.sort_desc { "↓" } else { "↑" }
         )),
     ];
-    if app.filters.is_active() {
+    // Rate limit indicator
+    if let Some(rl) = &app.rate_limit {
+        let color = if rl.remaining < 10 {
+            Color::Red
+        } else if rl.remaining < 100 {
+            Color::Yellow
+        } else {
+            DIM
+        };
+        spans.push(Span::styled(
+            format!("  API {}/{}", rl.remaining, rl.limit),
+            Style::default().fg(color),
+        ));
+    }
+    if let Some(err) = &app.rate_limit_error {
+        spans.push(Span::styled(
+            format!("  ⚠ {err}"),
+            Style::default().fg(Color::Red),
+        ));
+    } else if app.filters.is_active() {
         spans.push(Span::styled(
             "  [filters active — F to edit, F→c to clear]",
             Style::default().fg(Color::Yellow),
@@ -311,6 +333,104 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
             .title(" filters (Enter edit · c clear all · Esc close) "),
     );
     f.render_widget(list, area);
+}
+
+fn draw_select_popup(f: &mut Frame, app: &App, idx: usize) {
+    let field_name = FILTER_FIELDS[idx];
+    let h = app.select_options.len() as u16 + 2;
+    let area = centered(f.area(), 50, h);
+    f.render_widget(Clear, area);
+    let items: Vec<ListItem> = app
+        .select_options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == app.select_idx {
+                Style::default().bg(Color::Rgb(40, 40, 60))
+            } else {
+                Style::default()
+            };
+            let prefix = if opt == "\u{2014}" {
+                "\u{2014} clear \u{2014}"
+            } else {
+                opt
+            };
+            ListItem::new(Line::from(vec![Span::styled(format!(" {prefix}"), style)]))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" select {field_name} (Enter picks, Esc cancels) ")),
+    );
+    f.render_widget(list, area);
+}
+
+fn draw_calendar_popup(f: &mut Frame, app: &App, idx: usize) {
+    let field_name = FILTER_FIELDS[idx];
+    let cursor = app.calendar_cursor;
+
+    let first = NaiveDate::from_ymd_opt(cursor.year(), cursor.month(), 1).unwrap();
+    let next_first = if first.month() == 12 {
+        NaiveDate::from_ymd_opt(first.year() + 1, 1, 1).unwrap()
+    } else {
+        NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1).unwrap()
+    };
+    let last = next_first.pred_opt().unwrap_or(next_first);
+    let dow_offset = first.weekday().num_days_from_monday() as usize;
+    let days_in_month = last.day();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        format!("{} {}", cursor.format("%B"), cursor.year()),
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::raw(" Mo Tu We Th Fr Sa Su".to_string()));
+
+    let mut day = 1u32;
+    for _row in 0..6 {
+        if day > days_in_month {
+            break;
+        }
+        let mut week: Vec<Span> = Vec::new();
+        for col in 0..7 {
+            if day == 1 && col < dow_offset {
+                week.push(Span::raw("   ".to_string()));
+            } else if day <= days_in_month {
+                let style = if day == cursor.day() {
+                    Style::default()
+                        .bg(Color::Rgb(40, 40, 60))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                week.push(Span::styled(format!("{:>2} ", day), style));
+                day += 1;
+            }
+        }
+        if !week.is_empty() {
+            lines.push(Line::from(week));
+        }
+    }
+
+    lines.push(Line::raw("".to_string()));
+    lines.push(Line::from(vec![
+        Span::styled("\u{2190}\u{2192} day  ", Style::default().fg(DIM)),
+        Span::styled("\u{2191}\u{2193} week  ", Style::default().fg(DIM)),
+        Span::styled("PgUp/PgDn month  ", Style::default().fg(DIM)),
+        Span::styled("Enter select  Esc cancel", Style::default().fg(DIM)),
+    ]));
+
+    let height = lines.len() as u16 + 2;
+    let area = centered(f.area(), 32, height);
+    f.render_widget(Clear, area);
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {field_name} ")),
+    );
+    f.render_widget(para, area);
 }
 
 fn draw_help(f: &mut Frame) {

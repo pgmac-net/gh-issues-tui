@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Organisation used when `--org` is not given.
     pub default_org: Option<String>,
+
+    /// Start with all repo groups collapsed. They can still be expanded
+    /// normally (Space / `]`).
+    #[serde(default)]
+    pub default_collapsed: bool,
 }
 
 impl Config {
@@ -52,6 +57,16 @@ mod tests {
         std::fs::write(&path, "default_org = \"pgmac-net\"\n").unwrap();
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.default_org.as_deref(), Some("pgmac-net"));
+        assert!(!cfg.default_collapsed); // absent field defaults to false
+    }
+
+    #[test]
+    fn parses_default_collapsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_collapsed = true\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(cfg.default_collapsed);
     }
 
     #[test]

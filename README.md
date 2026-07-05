@@ -37,9 +37,10 @@ Optional TOML config at `~/.config/gh-issues-tui/config.toml`:
 
 ```toml
 default_org = "my-org"
+default_collapsed = true   # start with all repo groups collapsed (default: false)
 ```
 
-With `default_org` set, plain `gh-issues-tui` works without `--org`. Tokens are never stored in the config file.
+With `default_org` set, plain `gh-issues-tui` works without `--org`. With `default_collapsed = true` the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. Tokens are never stored in the config file.
 
 ## Keys
 
