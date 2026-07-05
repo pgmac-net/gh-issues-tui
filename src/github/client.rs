@@ -24,7 +24,7 @@ impl Client {
         auth.set_sensitive(true);
         headers.insert(reqwest::header::AUTHORIZATION, auth);
         let http = reqwest::Client::builder()
-            .user_agent(concat!("gh-issues-tui/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("gh-issues/", env!("CARGO_PKG_VERSION")))
             .default_headers(headers)
             .build()?;
         Ok(Self {

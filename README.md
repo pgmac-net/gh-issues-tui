@@ -1,4 +1,4 @@
-# gh-issues-tui
+# gh-issues
 
 Interactive TUI for browsing and managing GitHub issues across an entire organisation, written in Rust with [ratatui](https://ratatui.rs).
 
@@ -10,14 +10,14 @@ Download a binary from the [releases page](https://github.com/pgmac-net/gh-issue
 
 ```sh
 cargo build --release
-# binary at target/release/gh-issues-tui
+# binary at target/release/gh-issues
 ```
 
 ## Usage
 
 ```sh
-gh-issues-tui --org my-org          # open issues only (default)
-gh-issues-tui --org my-org --all    # include closed issues in the initial fetch
+gh-issues --org my-org          # open issues only (default)
+gh-issues --org my-org --all    # include closed issues in the initial fetch
 ```
 
 ### Authentication
@@ -33,14 +33,14 @@ On a machine with `gh` logged in, no configuration is needed. The token needs `r
 
 ### Configuration
 
-Optional TOML config at `~/.config/gh-issues-tui/config.toml`:
+Optional TOML config at `~/.config/gh-issues/config.toml`:
 
 ```toml
 default_org = "my-org"
 default_collapsed = true   # start with all repo groups collapsed (default: false)
 ```
 
-With `default_org` set, plain `gh-issues-tui` works without `--org`. With `default_collapsed = true` the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. Tokens are never stored in the config file.
+With `default_org` set, plain `gh-issues` works without `--org`. With `default_collapsed = true` the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. Tokens are never stored in the config file.
 
 ## Keys
 
