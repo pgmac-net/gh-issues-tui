@@ -22,7 +22,7 @@ Three top-level modules wired together in `src/main.rs`:
 
 | Module | Purpose |
 |--------|---------|
-| `config` | TOML config (`~/.config/gh-issues-tui/config.toml`: `default_org`, `default_collapsed`). |
+| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`). |
 | `github` | Async GitHub GraphQL v4 client + token resolution. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |
 

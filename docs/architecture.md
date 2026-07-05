@@ -1,15 +1,15 @@
-# gh-issues-tui — architecture and design notes
+# gh-issues — architecture and design notes
 
 Built for [pgmac-net/homelabia#128](https://github.com/pgmac-net/homelabia/issues/128).
 
 ## Overview
 
-`gh-issues-tui` is a single-binary Rust TUI (ratatui + crossterm + tokio) that browses and manages GitHub issues across a whole organisation. The module layout deliberately mirrors [docker-registry-walk](https://github.com/pgmac-net/docker-registry-walk), the org's existing Rust TUI.
+`gh-issues` is a single-binary Rust TUI (ratatui + crossterm + tokio) that browses and manages GitHub issues across a whole organisation. The module layout deliberately mirrors [docker-registry-walk](https://github.com/pgmac-net/docker-registry-walk), the org's existing Rust TUI.
 
 ```
 src/
 ├── main.rs          CLI (clap), panic hook, wiring
-├── config.rs        ~/.config/gh-issues-tui/config.toml (default_org)
+├── config.rs        ~/.config/gh-issues/config.toml (default_org)
 ├── github/
 │   ├── auth.rs      token chain: --token → GITHUB_TOKEN → GH_TOKEN → gh auth token
 │   ├── client.rs    GraphQL v4 client: org-wide fetch + mutations

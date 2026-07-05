@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// TOML config at `~/.config/gh-issues-tui/config.toml`.
+/// TOML config at `~/.config/gh-issues/config.toml`.
 ///
 /// Tokens are never stored here — they come from the environment or `gh`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ impl Config {
     pub fn path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("gh-issues-tui")
+            .join("gh-issues")
             .join("config.toml")
     }
 
