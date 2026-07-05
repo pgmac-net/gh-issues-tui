@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{Datelike, NaiveDate, TimeDelta};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
@@ -131,6 +132,8 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
         Mode::Normal => handle_normal_key(app, key, client, tx),
         Mode::Input(kind) => handle_input_key(app, key, kind, client, tx),
         Mode::FilterMenu => handle_filter_menu_key(app, key),
+        Mode::SelectField(idx) => handle_select_field_key(app, key, idx),
+        Mode::Calendar(idx) => handle_calendar_key(app, key, idx),
         Mode::ConfirmState => handle_confirm_key(app, key, client, tx),
         Mode::Help => app.mode = Mode::Normal,
     }
@@ -181,6 +184,8 @@ fn handle_normal_key(
         }
 
         // grouping
+        KeyCode::Right => app.set_current_collapsed(false),
+        KeyCode::Left => app.set_current_collapsed(true),
         KeyCode::Char(' ') => app.toggle_collapse(),
         KeyCode::Char('[') => app.set_all_collapsed(true),
         KeyCode::Char(']') => app.set_all_collapsed(false),
@@ -396,9 +401,137 @@ fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
             app.rebuild_rows();
         }
         KeyCode::Enter => {
-            let current = app.current_filter_value(app.filter_menu_idx);
-            app.input.start(&current);
-            app.mode = Mode::Input(InputKind::FilterField(app.filter_menu_idx));
+            let idx = app.filter_menu_idx;
+            if App::is_select_field(idx) {
+                app.select_options = app.compute_select_options(idx);
+                let current = app.current_filter_value(idx);
+                app.select_idx = app
+                    .select_options
+                    .iter()
+                    .position(|v| v == &current)
+                    .unwrap_or(0);
+                app.mode = Mode::SelectField(idx);
+            } else if App::is_calendar_field(idx) {
+                app.calendar_init(idx);
+                app.mode = Mode::Calendar(idx);
+            } else {
+                let current = app.current_filter_value(idx);
+                app.input.start(&current);
+                app.mode = Mode::Input(InputKind::FilterField(idx));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_select_field_key(app: &mut App, key: KeyEvent, idx: usize) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::FilterMenu,
+        KeyCode::Char('j') | KeyCode::Down => {
+            if !app.select_options.is_empty() {
+                app.select_idx =
+                    (app.select_idx + 1) % app.select_options.len();
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if !app.select_options.is_empty() {
+                app.select_idx = (app.select_idx + app.select_options.len() - 1)
+                    % app.select_options.len();
+            }
+        }
+        KeyCode::Home | KeyCode::Char('g') => app.select_idx = 0,
+        KeyCode::End | KeyCode::Char('G') => {
+            app.select_idx = app.select_options.len().saturating_sub(1);
+        }
+        KeyCode::Enter => {
+            if app.select_options.is_empty() {
+                app.mode = Mode::FilterMenu;
+                return;
+            }
+            let raw = app.select_options[app.select_idx].clone();
+            let value = if raw == "\u{2014}" {
+                String::new()
+            } else {
+                raw
+            };
+            app.apply_filter_input(InputKind::FilterField(idx), &value);
+            app.mode = Mode::FilterMenu;
+        }
+        _ => {}
+    }
+}
+
+fn handle_calendar_key(app: &mut App, key: KeyEvent, idx: usize) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::FilterMenu,
+        KeyCode::Left => {
+            app.calendar_cursor = app.calendar_cursor.pred_opt().unwrap_or(app.calendar_cursor);
+        }
+        KeyCode::Right => {
+            app.calendar_cursor = app.calendar_cursor.succ_opt().unwrap_or(app.calendar_cursor);
+        }
+        KeyCode::Up => {
+            app.calendar_cursor -= TimeDelta::days(7);
+        }
+        KeyCode::Down => {
+            app.calendar_cursor += TimeDelta::days(7);
+        }
+        KeyCode::PageUp => {
+            let first =
+                NaiveDate::from_ymd_opt(
+                    app.calendar_cursor.year(),
+                    app.calendar_cursor.month(),
+                    1,
+                )
+                .unwrap();
+            app.calendar_cursor = first
+                .pred_opt()
+                .and_then(|d| d.with_day(1))
+                .unwrap_or(first);
+        }
+        KeyCode::PageDown => {
+            let first =
+                NaiveDate::from_ymd_opt(
+                    app.calendar_cursor.year(),
+                    app.calendar_cursor.month(),
+                    1,
+                )
+                .unwrap();
+            let next_first = if first.month() == 12 {
+                NaiveDate::from_ymd_opt(first.year() + 1, 1, 1).unwrap()
+            } else {
+                NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1).unwrap()
+            };
+            app.calendar_cursor = next_first;
+        }
+        KeyCode::Home => {
+            app.calendar_cursor =
+                NaiveDate::from_ymd_opt(
+                    app.calendar_cursor.year(),
+                    app.calendar_cursor.month(),
+                    1,
+                )
+                .unwrap_or(app.calendar_cursor);
+        }
+        KeyCode::End => {
+            let first =
+                NaiveDate::from_ymd_opt(
+                    app.calendar_cursor.year(),
+                    app.calendar_cursor.month(),
+                    1,
+                )
+                .unwrap();
+            let next_first = if first.month() == 12 {
+                NaiveDate::from_ymd_opt(first.year() + 1, 1, 1).unwrap()
+            } else {
+                NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1).unwrap()
+            };
+            app.calendar_cursor = next_first.pred_opt().unwrap_or(next_first);
+        }
+        KeyCode::Enter => {
+            let value = app.calendar_cursor.format("%Y-%m-%d").to_string();
+            app.apply_filter_input(InputKind::FilterField(idx), &value);
+            app.mode = Mode::FilterMenu;
         }
         _ => {}
     }

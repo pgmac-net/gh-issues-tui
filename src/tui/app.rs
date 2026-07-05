@@ -56,6 +56,10 @@ pub struct Filters {
     pub repo: String,
     pub assignee: String,
     pub author: String,
+    /// Matches a `priority:<value>` label (bare value or full label name).
+    pub priority: String,
+    /// Matches a `status:<value>` label (bare value or full label name).
+    pub status: String,
     pub created_after: Option<NaiveDate>,
     pub created_before: Option<NaiveDate>,
     pub updated_after: Option<NaiveDate>,
@@ -94,6 +98,12 @@ impl Filters {
         if !self.author.is_empty() && !issue.author.eq_ignore_ascii_case(&self.author) {
             return false;
         }
+        if !label_filter_matches(issue, "priority", &self.priority) {
+            return false;
+        }
+        if !label_filter_matches(issue, "status", &self.status) {
+            return false;
+        }
         on_or_after(Some(issue.created_at), self.created_after)
             && on_or_before(Some(issue.created_at), self.created_before)
             && on_or_after(Some(issue.updated_at), self.updated_after)
@@ -111,6 +121,8 @@ impl Filters {
             || !self.repo.is_empty()
             || !self.assignee.is_empty()
             || !self.author.is_empty()
+            || !self.priority.is_empty()
+            || !self.status.is_empty()
             || self.created_after.is_some()
             || self.created_before.is_some()
             || self.updated_after.is_some()
@@ -122,6 +134,17 @@ impl Filters {
     pub fn clear(&mut self) {
         *self = Filters::default();
     }
+}
+
+fn label_filter_matches(issue: &Issue, prefix: &str, filter: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    let expected = format!("{prefix}:{filter}");
+    issue
+        .labels
+        .iter()
+        .any(|l| l.name.eq_ignore_ascii_case(filter) || l.name.eq_ignore_ascii_case(&expected))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +208,8 @@ pub const FILTER_FIELDS: &[&str] = &[
     "repo",
     "assignee",
     "author",
+    "priority",
+    "status",
     "created after (YYYY-MM-DD)",
     "created before",
     "updated after",
@@ -200,6 +225,10 @@ pub enum Mode {
     Input(InputKind),
     /// Filter editor list.
     FilterMenu,
+    /// Picking from a list of values for a filter field.
+    SelectField(usize),
+    /// Calendar date picker.
+    Calendar(usize),
     /// y/n confirmation for close/reopen.
     ConfirmState,
     Help,
@@ -286,6 +315,12 @@ pub struct App {
     pub mode: Mode,
     pub input: InputState,
     pub filter_menu_idx: usize,
+    /// Available options for the current select-field popup.
+    pub select_options: Vec<String>,
+    /// Currently highlighted index in select_options.
+    pub select_idx: usize,
+    /// Cursor position for the calendar date picker.
+    pub calendar_cursor: NaiveDate,
     pub loading: bool,
     pub include_closed: bool,
     pub status: Option<String>,
@@ -312,6 +347,9 @@ impl App {
             mode: Mode::Normal,
             input: InputState::default(),
             filter_menu_idx: 0,
+            select_options: Vec::new(),
+            select_idx: 0,
+            calendar_cursor: Utc::now().date_naive(),
             loading: true,
             include_closed,
             status: None,
@@ -394,6 +432,17 @@ impl App {
         }
     }
 
+    pub fn set_current_collapsed(&mut self, collapsed: bool) {
+        if let Some(repo) = self.selected_repo().map(|r| r.repo.clone()) {
+            if collapsed {
+                self.collapsed.insert(repo);
+            } else {
+                self.collapsed.remove(&repo);
+            }
+            self.rebuild_rows();
+        }
+    }
+
     pub fn set_all_collapsed(&mut self, collapsed: bool) {
         if collapsed {
             self.collapsed = self.repos.iter().map(|r| r.repo.clone()).collect();
@@ -432,11 +481,13 @@ impl App {
                     1 => self.filters.repo = v,
                     2 => self.filters.assignee = v,
                     3 => self.filters.author = v,
-                    4 => self.filters.created_after = parse_date(&v),
-                    5 => self.filters.created_before = parse_date(&v),
-                    6 => self.filters.updated_after = parse_date(&v),
-                    7 => self.filters.updated_before = parse_date(&v),
-                    8 => self.filters.closed_after = parse_date(&v),
+                    4 => self.filters.priority = v,
+                    5 => self.filters.status = v,
+                    6 => self.filters.created_after = parse_date(&v),
+                    7 => self.filters.created_before = parse_date(&v),
+                    8 => self.filters.updated_after = parse_date(&v),
+                    9 => self.filters.updated_before = parse_date(&v),
+                    10 => self.filters.closed_after = parse_date(&v),
                     _ => self.filters.closed_before = parse_date(&v),
                 }
             }
@@ -452,13 +503,92 @@ impl App {
             1 => self.filters.repo.clone(),
             2 => self.filters.assignee.clone(),
             3 => self.filters.author.clone(),
-            4 => d(self.filters.created_after),
-            5 => d(self.filters.created_before),
-            6 => d(self.filters.updated_after),
-            7 => d(self.filters.updated_before),
-            8 => d(self.filters.closed_after),
+            4 => self.filters.priority.clone(),
+            5 => self.filters.status.clone(),
+            6 => d(self.filters.created_after),
+            7 => d(self.filters.created_before),
+            8 => d(self.filters.updated_after),
+            9 => d(self.filters.updated_before),
+            10 => d(self.filters.closed_after),
             _ => d(self.filters.closed_before),
         }
+    }
+
+    /// Build the list of options shown when the user presses Enter on a
+    /// select-style filter field (repo, assignee, author, priority, status).
+    /// The first entry is always `"—"` which means "no filter".
+    pub fn compute_select_options(&self, idx: usize) -> Vec<String> {
+        let mut opts: Vec<String> = match idx {
+            1 => self.repos.iter().map(|r| r.repo.clone()).collect(),
+            2 => {
+                let mut v: Vec<String> = self
+                    .repos
+                    .iter()
+                    .flat_map(|r| r.issues.iter())
+                    .flat_map(|i| i.assignees.iter().cloned())
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            }
+            3 => {
+                let mut v: Vec<String> = self
+                    .repos
+                    .iter()
+                    .flat_map(|r| r.issues.iter())
+                    .map(|i| i.author.clone())
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            }
+            4 => {
+                let mut v: Vec<String> = self
+                    .repos
+                    .iter()
+                    .flat_map(|r| r.issues.iter())
+                    .flat_map(|i| i.labels.iter())
+                    .filter(|l| l.name.to_lowercase().starts_with("priority:"))
+                    .map(|l| l.name["priority:".len()..].to_string())
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            }
+            5 => {
+                let mut v: Vec<String> = self
+                    .repos
+                    .iter()
+                    .flat_map(|r| r.issues.iter())
+                    .flat_map(|i| i.labels.iter())
+                    .filter(|l| l.name.to_lowercase().starts_with("status:"))
+                    .map(|l| l.name["status:".len()..].to_string())
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            }
+            _ => vec![],
+        };
+        opts.insert(0, "\u{2014}".to_string());
+        opts
+    }
+
+    /// Returns `true` when the field at `idx` should show a selectable list
+    /// instead of a free-text input.
+    pub fn is_select_field(idx: usize) -> bool {
+        matches!(idx, 1..=5)
+    }
+
+    /// Prepares the calendar cursor from the current filter value or today.
+    pub fn calendar_init(&mut self, idx: usize) {
+        let current = self.current_filter_value(idx);
+        self.calendar_cursor = parse_date(&current).unwrap_or_else(|| Utc::now().date_naive());
+    }
+
+    /// Returns `true` when the field at `idx` uses the calendar date picker.
+    pub fn is_calendar_field(idx: usize) -> bool {
+        matches!(idx, 6..=11)
     }
 }
 
@@ -757,6 +887,160 @@ mod tests {
         assert_eq!(input.buffer, "hélo");
         input.insert('x'); // cursor sits before the final 'o'
         assert_eq!(input.buffer, "hélxo");
+    }
+
+    #[test]
+    fn label_filter_matches_bare_value() {
+        let mut issue = issue(1, "a", IssueState::Open);
+        issue.labels = vec![
+            crate::github::types::Label {
+                name: "priority:high".into(),
+                color: "".into(),
+            },
+        ];
+        assert!(super::label_filter_matches(&issue, "priority", "high"));
+        assert!(super::label_filter_matches(&issue, "priority", "priority:high"));
+        assert!(!super::label_filter_matches(&issue, "priority", "low"));
+        assert!(super::label_filter_matches(&issue, "priority", ""));
+    }
+
+    #[test]
+    fn label_filter_matches_status() {
+        let mut issue = issue(2, "b", IssueState::Open);
+        issue.labels = vec![
+            crate::github::types::Label {
+                name: "status:needs-review".into(),
+                color: "".into(),
+            },
+        ];
+        assert!(super::label_filter_matches(&issue, "status", "needs-review"));
+        assert!(super::label_filter_matches(&issue, "status", "status:needs-review"));
+        assert!(!super::label_filter_matches(&issue, "status", "blocked"));
+    }
+
+    #[test]
+    fn label_filter_matches_is_case_insensitive() {
+        let mut issue = issue(3, "c", IssueState::Open);
+        issue.labels = vec![
+            crate::github::types::Label {
+                name: "Priority:High".into(),
+                color: "".into(),
+            },
+        ];
+        assert!(super::label_filter_matches(&issue, "priority", "high"));
+        assert!(super::label_filter_matches(&issue, "priority", "HIGH"));
+    }
+
+    #[test]
+    fn compute_repo_options() {
+        let app = two_repo_app();
+        let opts = app.compute_select_options(1);
+        assert_eq!(opts.len(), 3);
+        assert_eq!(opts[0], "\u{2014}");
+        assert!(opts.contains(&"alpha".to_string()));
+        assert!(opts.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn compute_assignee_options() {
+        let mut a = issue(1, "a", IssueState::Open);
+        a.assignees = vec!["bob".into(), "alice".into()];
+        let mut b = issue(2, "b", IssueState::Open);
+        b.assignees = vec!["bob".into()];
+        let app = app_with(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![a, b],
+        }]);
+        let opts = app.compute_select_options(2);
+        assert_eq!(opts[0], "\u{2014}");
+        assert!(opts.contains(&"alice".to_string()));
+        assert!(opts.contains(&"bob".to_string()));
+        assert_eq!(opts.len(), 3);
+    }
+
+    #[test]
+    fn compute_author_options() {
+        let mut a = issue(1, "a", IssueState::Open);
+        a.author = "pgmac".into();
+        let mut b = issue(2, "b", IssueState::Open);
+        b.author = "someone".into();
+        let app = app_with(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![a, b],
+        }]);
+        let opts = app.compute_select_options(3);
+        assert_eq!(opts[0], "\u{2014}");
+        assert!(opts.contains(&"pgmac".to_string()));
+        assert!(opts.contains(&"someone".to_string()));
+        assert_eq!(opts.len(), 3);
+    }
+
+    #[test]
+    fn compute_priority_options() {
+        let mut a = issue(1, "a", IssueState::Open);
+        a.labels = vec![
+            crate::github::types::Label {
+                name: "priority:high".into(),
+                color: "".into(),
+            },
+        ];
+        let mut b = issue(2, "b", IssueState::Open);
+        b.labels = vec![
+            crate::github::types::Label {
+                name: "priority:low".into(),
+                color: "".into(),
+            },
+        ];
+        let app = app_with(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![a, b],
+        }]);
+        let opts = app.compute_select_options(4);
+        assert_eq!(opts[0], "\u{2014}");
+        assert!(opts.contains(&"high".to_string()));
+        assert!(opts.contains(&"low".to_string()));
+        assert_eq!(opts.len(), 3);
+    }
+
+    #[test]
+    fn compute_status_options() {
+        let mut a = issue(1, "a", IssueState::Open);
+        a.labels = vec![
+            crate::github::types::Label {
+                name: "status:needs-review".into(),
+                color: "".into(),
+            },
+        ];
+        let app = app_with(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![a],
+        }]);
+        let opts = app.compute_select_options(5);
+        assert_eq!(opts[0], "\u{2014}");
+        assert!(opts.contains(&"needs-review".to_string()));
+        assert_eq!(opts.len(), 2);
+    }
+
+    #[test]
+    fn compute_select_options_empty_when_no_label_match() {
+        let app = two_repo_app();
+        let opts = app.compute_select_options(4);
+        assert_eq!(opts, vec!["\u{2014}".to_string()]);
+    }
+
+    #[test]
+    fn is_select_field_returns_correct_bool() {
+        assert!(!App::is_select_field(0));  // text
+        assert!(App::is_select_field(1));   // repo
+        assert!(App::is_select_field(2));   // assignee
+        assert!(App::is_select_field(3));   // author
+        assert!(App::is_select_field(4));   // priority
+        assert!(App::is_select_field(5));   // status
+        assert!(!App::is_select_field(6));  // created after
     }
 
     #[test]
