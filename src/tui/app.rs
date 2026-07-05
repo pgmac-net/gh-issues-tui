@@ -1,5 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
+use crate::github::RateLimitData;
 use crate::github::types::{Comment, Issue, IssueState, RepoIssues};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +325,10 @@ pub struct App {
     pub loading: bool,
     pub include_closed: bool,
     pub status: Option<String>,
+    /// Most recently observed API rate limit state.
+    pub rate_limit: Option<RateLimitData>,
+    /// Persistent rate-limit error (shown until cleared by a successful fetch).
+    pub rate_limit_error: Option<String>,
     pub detail_comments: Option<Vec<Comment>>,
     pub detail_scroll: u16,
     pub should_quit: bool,
@@ -353,6 +358,8 @@ impl App {
             loading: true,
             include_closed,
             status: None,
+            rate_limit: None,
+            rate_limit_error: None,
             detail_comments: None,
             detail_scroll: 0,
             should_quit: false,
@@ -459,6 +466,19 @@ impl App {
         let len = self.rows.len() as isize;
         let next = (self.selected as isize + delta).clamp(0, len - 1);
         self.selected = next as usize;
+    }
+
+    /// Count of issues in a given repo that pass the current filters (excluding repo filter).
+    pub fn repo_visible_count(&self, repo_idx: usize) -> usize {
+        self.repos
+            .get(repo_idx)
+            .map(|repo| {
+                repo.issues
+                    .iter()
+                    .filter(|i| self.filters.matches(i, self.state_filter))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     /// Count of issues currently visible (excludes headers).
@@ -892,14 +912,16 @@ mod tests {
     #[test]
     fn label_filter_matches_bare_value() {
         let mut issue = issue(1, "a", IssueState::Open);
-        issue.labels = vec![
-            crate::github::types::Label {
-                name: "priority:high".into(),
-                color: "".into(),
-            },
-        ];
+        issue.labels = vec![crate::github::types::Label {
+            name: "priority:high".into(),
+            color: "".into(),
+        }];
         assert!(super::label_filter_matches(&issue, "priority", "high"));
-        assert!(super::label_filter_matches(&issue, "priority", "priority:high"));
+        assert!(super::label_filter_matches(
+            &issue,
+            "priority",
+            "priority:high"
+        ));
         assert!(!super::label_filter_matches(&issue, "priority", "low"));
         assert!(super::label_filter_matches(&issue, "priority", ""));
     }
@@ -907,26 +929,30 @@ mod tests {
     #[test]
     fn label_filter_matches_status() {
         let mut issue = issue(2, "b", IssueState::Open);
-        issue.labels = vec![
-            crate::github::types::Label {
-                name: "status:needs-review".into(),
-                color: "".into(),
-            },
-        ];
-        assert!(super::label_filter_matches(&issue, "status", "needs-review"));
-        assert!(super::label_filter_matches(&issue, "status", "status:needs-review"));
+        issue.labels = vec![crate::github::types::Label {
+            name: "status:needs-review".into(),
+            color: "".into(),
+        }];
+        assert!(super::label_filter_matches(
+            &issue,
+            "status",
+            "needs-review"
+        ));
+        assert!(super::label_filter_matches(
+            &issue,
+            "status",
+            "status:needs-review"
+        ));
         assert!(!super::label_filter_matches(&issue, "status", "blocked"));
     }
 
     #[test]
     fn label_filter_matches_is_case_insensitive() {
         let mut issue = issue(3, "c", IssueState::Open);
-        issue.labels = vec![
-            crate::github::types::Label {
-                name: "Priority:High".into(),
-                color: "".into(),
-            },
-        ];
+        issue.labels = vec![crate::github::types::Label {
+            name: "Priority:High".into(),
+            color: "".into(),
+        }];
         assert!(super::label_filter_matches(&issue, "priority", "high"));
         assert!(super::label_filter_matches(&issue, "priority", "HIGH"));
     }
@@ -980,19 +1006,15 @@ mod tests {
     #[test]
     fn compute_priority_options() {
         let mut a = issue(1, "a", IssueState::Open);
-        a.labels = vec![
-            crate::github::types::Label {
-                name: "priority:high".into(),
-                color: "".into(),
-            },
-        ];
+        a.labels = vec![crate::github::types::Label {
+            name: "priority:high".into(),
+            color: "".into(),
+        }];
         let mut b = issue(2, "b", IssueState::Open);
-        b.labels = vec![
-            crate::github::types::Label {
-                name: "priority:low".into(),
-                color: "".into(),
-            },
-        ];
+        b.labels = vec![crate::github::types::Label {
+            name: "priority:low".into(),
+            color: "".into(),
+        }];
         let app = app_with(vec![RepoIssues {
             repo: "r".into(),
             repo_url: "u".into(),
@@ -1008,12 +1030,10 @@ mod tests {
     #[test]
     fn compute_status_options() {
         let mut a = issue(1, "a", IssueState::Open);
-        a.labels = vec![
-            crate::github::types::Label {
-                name: "status:needs-review".into(),
-                color: "".into(),
-            },
-        ];
+        a.labels = vec![crate::github::types::Label {
+            name: "status:needs-review".into(),
+            color: "".into(),
+        }];
         let app = app_with(vec![RepoIssues {
             repo: "r".into(),
             repo_url: "u".into(),
@@ -1034,13 +1054,13 @@ mod tests {
 
     #[test]
     fn is_select_field_returns_correct_bool() {
-        assert!(!App::is_select_field(0));  // text
-        assert!(App::is_select_field(1));   // repo
-        assert!(App::is_select_field(2));   // assignee
-        assert!(App::is_select_field(3));   // author
-        assert!(App::is_select_field(4));   // priority
-        assert!(App::is_select_field(5));   // status
-        assert!(!App::is_select_field(6));  // created after
+        assert!(!App::is_select_field(0)); // text
+        assert!(App::is_select_field(1)); // repo
+        assert!(App::is_select_field(2)); // assignee
+        assert!(App::is_select_field(3)); // author
+        assert!(App::is_select_field(4)); // priority
+        assert!(App::is_select_field(5)); // status
+        assert!(!App::is_select_field(6)); // created after
     }
 
     #[test]

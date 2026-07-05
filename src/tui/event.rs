@@ -96,8 +96,12 @@ fn handle_app_event(
     client: &Client,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
+    // Pull rate limit state from client after any API interaction.
+    app.rate_limit = client.rate_limit();
+
     match msg {
         AppEvent::Data(Ok(repos)) => {
+            app.rate_limit_error = None;
             app.set_data(repos);
             app.status = Some(format!(
                 "loaded {} issues across {} repos",
@@ -107,7 +111,12 @@ fn handle_app_event(
         }
         AppEvent::Data(Err(e)) => {
             app.loading = false;
-            app.status = Some(format!("load failed: {e}"));
+            if e.starts_with("API rate limit exceeded") {
+                app.rate_limit_error = Some(e.clone());
+                app.status = Some(format!("load failed — {e}"));
+            } else {
+                app.status = Some(format!("load failed: {e}"));
+            }
         }
         AppEvent::Comments { issue_id, result } => {
             // Ignore stale responses for a previously selected issue.
@@ -120,10 +129,21 @@ fn handle_app_event(
         }
         AppEvent::MutationDone(msg) => {
             app.status = Some(msg);
-            app.loading = true;
-            spawn_fetch(client, app, tx);
+            // Only refetch if we have rate limit budget left.
+            let should_fetch = app.rate_limit.is_none_or(|rl| rl.remaining > 0);
+            if should_fetch {
+                app.loading = true;
+                spawn_fetch(client, app, tx);
+            } else {
+                app.rate_limit_error = Some("rate limited — refetch skipped until reset".into());
+            }
         }
-        AppEvent::MutationFailed(e) => app.status = Some(format!("failed: {e}")),
+        AppEvent::MutationFailed(e) => {
+            if e.starts_with("API rate limit exceeded") {
+                app.rate_limit_error = Some(e.clone());
+            }
+            app.status = Some(format!("failed: {e}"));
+        }
     }
 }
 
@@ -429,14 +449,13 @@ fn handle_select_field_key(app: &mut App, key: KeyEvent, idx: usize) {
         KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::FilterMenu,
         KeyCode::Char('j') | KeyCode::Down => {
             if !app.select_options.is_empty() {
-                app.select_idx =
-                    (app.select_idx + 1) % app.select_options.len();
+                app.select_idx = (app.select_idx + 1) % app.select_options.len();
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if !app.select_options.is_empty() {
-                app.select_idx = (app.select_idx + app.select_options.len() - 1)
-                    % app.select_options.len();
+                app.select_idx =
+                    (app.select_idx + app.select_options.len() - 1) % app.select_options.len();
             }
         }
         KeyCode::Home | KeyCode::Char('g') => app.select_idx = 0,
@@ -465,10 +484,16 @@ fn handle_calendar_key(app: &mut App, key: KeyEvent, idx: usize) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::FilterMenu,
         KeyCode::Left => {
-            app.calendar_cursor = app.calendar_cursor.pred_opt().unwrap_or(app.calendar_cursor);
+            app.calendar_cursor = app
+                .calendar_cursor
+                .pred_opt()
+                .unwrap_or(app.calendar_cursor);
         }
         KeyCode::Right => {
-            app.calendar_cursor = app.calendar_cursor.succ_opt().unwrap_or(app.calendar_cursor);
+            app.calendar_cursor = app
+                .calendar_cursor
+                .succ_opt()
+                .unwrap_or(app.calendar_cursor);
         }
         KeyCode::Up => {
             app.calendar_cursor -= TimeDelta::days(7);
@@ -478,12 +503,8 @@ fn handle_calendar_key(app: &mut App, key: KeyEvent, idx: usize) {
         }
         KeyCode::PageUp => {
             let first =
-                NaiveDate::from_ymd_opt(
-                    app.calendar_cursor.year(),
-                    app.calendar_cursor.month(),
-                    1,
-                )
-                .unwrap();
+                NaiveDate::from_ymd_opt(app.calendar_cursor.year(), app.calendar_cursor.month(), 1)
+                    .unwrap();
             app.calendar_cursor = first
                 .pred_opt()
                 .and_then(|d| d.with_day(1))
@@ -491,12 +512,8 @@ fn handle_calendar_key(app: &mut App, key: KeyEvent, idx: usize) {
         }
         KeyCode::PageDown => {
             let first =
-                NaiveDate::from_ymd_opt(
-                    app.calendar_cursor.year(),
-                    app.calendar_cursor.month(),
-                    1,
-                )
-                .unwrap();
+                NaiveDate::from_ymd_opt(app.calendar_cursor.year(), app.calendar_cursor.month(), 1)
+                    .unwrap();
             let next_first = if first.month() == 12 {
                 NaiveDate::from_ymd_opt(first.year() + 1, 1, 1).unwrap()
             } else {
@@ -506,21 +523,13 @@ fn handle_calendar_key(app: &mut App, key: KeyEvent, idx: usize) {
         }
         KeyCode::Home => {
             app.calendar_cursor =
-                NaiveDate::from_ymd_opt(
-                    app.calendar_cursor.year(),
-                    app.calendar_cursor.month(),
-                    1,
-                )
-                .unwrap_or(app.calendar_cursor);
+                NaiveDate::from_ymd_opt(app.calendar_cursor.year(), app.calendar_cursor.month(), 1)
+                    .unwrap_or(app.calendar_cursor);
         }
         KeyCode::End => {
             let first =
-                NaiveDate::from_ymd_opt(
-                    app.calendar_cursor.year(),
-                    app.calendar_cursor.month(),
-                    1,
-                )
-                .unwrap();
+                NaiveDate::from_ymd_opt(app.calendar_cursor.year(), app.calendar_cursor.month(), 1)
+                    .unwrap();
             let next_first = if first.month() == 12 {
                 NaiveDate::from_ymd_opt(first.year() + 1, 1, 1).unwrap()
             } else {

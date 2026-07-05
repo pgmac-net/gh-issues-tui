@@ -54,7 +54,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("  ({})", repo.issues.len()),
+                        format!("  ({})", app.repo_visible_count(*repo_idx)),
                         Style::default().fg(DIM),
                     ),
                 ]))
@@ -235,7 +235,26 @@ fn draw_info_bar(f: &mut Frame, app: &App, area: Rect) {
             if app.sort_desc { "↓" } else { "↑" }
         )),
     ];
-    if app.filters.is_active() {
+    // Rate limit indicator
+    if let Some(rl) = &app.rate_limit {
+        let color = if rl.remaining < 10 {
+            Color::Red
+        } else if rl.remaining < 100 {
+            Color::Yellow
+        } else {
+            DIM
+        };
+        spans.push(Span::styled(
+            format!("  API {}/{}", rl.remaining, rl.limit),
+            Style::default().fg(color),
+        ));
+    }
+    if let Some(err) = &app.rate_limit_error {
+        spans.push(Span::styled(
+            format!("  ⚠ {err}"),
+            Style::default().fg(Color::Red),
+        ));
+    } else if app.filters.is_active() {
         spans.push(Span::styled(
             "  [filters active — F to edit, F→c to clear]",
             Style::default().fg(Color::Yellow),
@@ -331,11 +350,12 @@ fn draw_select_popup(f: &mut Frame, app: &App, idx: usize) {
             } else {
                 Style::default()
             };
-            let prefix = if opt == "\u{2014}" { "\u{2014} clear \u{2014}" } else { opt };
-            ListItem::new(Line::from(vec![Span::styled(
-                format!(" {prefix}"),
-                style,
-            )]))
+            let prefix = if opt == "\u{2014}" {
+                "\u{2014} clear \u{2014}"
+            } else {
+                opt
+            };
+            ListItem::new(Line::from(vec![Span::styled(format!(" {prefix}"), style)]))
         })
         .collect();
     let list = List::new(items).block(

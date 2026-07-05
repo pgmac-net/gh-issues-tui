@@ -61,3 +61,29 @@ pub struct RepoLabel {
     pub id: String,
     pub name: String,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitData {
+    pub remaining: u64,
+    pub limit: u64,
+    pub reset: i64,
+}
+
+impl RateLimitData {
+    pub fn reset_time(&self) -> String {
+        match chrono::DateTime::from_timestamp(self.reset, 0) {
+            Some(dt) => {
+                let now = chrono::Utc::now().timestamp();
+                let diff = self.reset - now;
+                if diff > 60 {
+                    format!("{} (in {}m)", dt.format("%H:%M UTC"), diff / 60)
+                } else if diff > 0 {
+                    format!("{} (in {}s)", dt.format("%H:%M UTC"), diff)
+                } else {
+                    dt.format("%H:%M UTC").to_string()
+                }
+            }
+            None => format!("epoch {}", self.reset),
+        }
+    }
+}

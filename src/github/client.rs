@@ -1,8 +1,10 @@
+use std::sync::{Arc, Mutex};
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::error::{GithubError, Result};
-use super::types::{Comment, Issue, IssueState, Label, RepoIssues, RepoLabel};
+use super::types::{Comment, Issue, IssueState, Label, RateLimitData, RepoIssues, RepoLabel};
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 const REPOS_PAGE: u32 = 50;
@@ -12,6 +14,7 @@ const ISSUES_PAGE: u32 = 100;
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
+    rate_limit: Arc<Mutex<Option<RateLimitData>>>,
 }
 
 impl Client {
@@ -24,26 +27,73 @@ impl Client {
             .user_agent(concat!("gh-issues-tui/", env!("CARGO_PKG_VERSION")))
             .default_headers(headers)
             .build()?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            rate_limit: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Returns the most recently observed rate limit state.
+    pub fn rate_limit(&self) -> Option<RateLimitData> {
+        *self.rate_limit.lock().unwrap()
+    }
+
+    fn update_rate_limit(&self, headers: &reqwest::header::HeaderMap) {
+        let remaining = headers
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok());
+        let limit = headers
+            .get("x-ratelimit-limit")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok());
+        let reset = headers
+            .get("x-ratelimit-reset")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok());
+        if let (Some(remaining), Some(limit), Some(reset)) = (remaining, limit, reset) {
+            *self.rate_limit.lock().unwrap() = Some(RateLimitData {
+                remaining,
+                limit,
+                reset,
+            });
+        }
     }
 
     async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
-        let resp: Value = self
+        let resp = self
             .http
             .post(GRAPHQL_URL)
             .json(&json!({ "query": query, "variables": variables }))
             .send()
-            .await?
-            .error_for_status()?
-            .json()
             .await?;
-        if let Some(errors) = resp
+
+        self.update_rate_limit(resp.headers());
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::FORBIDDEN {
+            let rl = self.rate_limit.lock().unwrap();
+            if let Some(ref data) = *rl
+                && data.remaining == 0
+            {
+                let msg = format!(
+                    "API rate limit exceeded — {}/{} used, resets {}",
+                    data.remaining,
+                    data.limit,
+                    data.reset_time()
+                );
+                return Err(GithubError::RateLimited(msg));
+            }
+        }
+
+        let body: Value = resp.error_for_status()?.json().await?;
+        if let Some(errors) = body
             .get("errors")
             .filter(|e| !e.as_array().is_none_or(|a| a.is_empty()))
         {
             return Err(GithubError::GraphQl(errors.to_string()));
         }
-        resp.get("data")
+        body.get("data")
             .cloned()
             .ok_or_else(|| GithubError::Shape("missing data".into()))
     }
