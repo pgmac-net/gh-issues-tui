@@ -1,5 +1,10 @@
 use thiserror::Error;
 
+/// Stable prefix for rate-limit error messages. The TUI event handler
+/// classifies stringified task errors by this prefix — keep them in sync
+/// via this constant, never a literal.
+pub const RATE_LIMIT_MSG_PREFIX: &str = "API rate limit exceeded";
+
 #[derive(Debug, Error)]
 pub enum GithubError {
     #[error("HTTP error: {0}")]
