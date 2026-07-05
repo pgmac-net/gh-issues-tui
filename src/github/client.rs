@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::error::{GithubError, Result};
+use super::error::{GithubError, RATE_LIMIT_MSG_PREFIX, Result};
 use super::types::{Comment, Issue, IssueState, Label, RateLimitData, RepoIssues, RepoLabel};
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
@@ -60,6 +60,15 @@ impl Client {
         }
     }
 
+    fn rate_limit_message(&self, data: &RateLimitData) -> String {
+        format!(
+            "{RATE_LIMIT_MSG_PREFIX} — {}/{} used, resets {}",
+            data.remaining,
+            data.limit,
+            data.reset_time()
+        )
+    }
+
     async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
         let resp = self
             .http
@@ -71,18 +80,14 @@ impl Client {
         self.update_rate_limit(resp.headers());
 
         let status = resp.status();
-        if status == reqwest::StatusCode::FORBIDDEN {
+        if status == reqwest::StatusCode::FORBIDDEN
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
             let rl = self.rate_limit.lock().unwrap();
             if let Some(ref data) = *rl
                 && data.remaining == 0
             {
-                let msg = format!(
-                    "API rate limit exceeded — {}/{} used, resets {}",
-                    data.remaining,
-                    data.limit,
-                    data.reset_time()
-                );
-                return Err(GithubError::RateLimited(msg));
+                return Err(GithubError::RateLimited(self.rate_limit_message(data)));
             }
         }
 
@@ -91,6 +96,16 @@ impl Client {
             .get("errors")
             .filter(|e| !e.as_array().is_none_or(|a| a.is_empty()))
         {
+            // The GraphQL API reports the primary rate limit as an HTTP 200
+            // with a RATE_LIMITED error entry, not as a 403.
+            if errors_contain_rate_limited(errors) {
+                let rl = self.rate_limit.lock().unwrap();
+                let msg = match *rl {
+                    Some(ref data) => self.rate_limit_message(data),
+                    None => format!("{RATE_LIMIT_MSG_PREFIX} (GraphQL)"),
+                };
+                return Err(GithubError::RateLimited(msg));
+            }
             return Err(GithubError::GraphQl(errors.to_string()));
         }
         body.get("data")
@@ -290,6 +305,14 @@ impl Client {
             .await?;
         parse_at(&data, &["repository", "labels", "nodes"])
     }
+}
+
+/// True when a GraphQL `errors` array contains a RATE_LIMITED entry.
+fn errors_contain_rate_limited(errors: &Value) -> bool {
+    errors.as_array().is_some_and(|arr| {
+        arr.iter()
+            .any(|e| e.get("type").and_then(Value::as_str) == Some("RATE_LIMITED"))
+    })
 }
 
 fn parse_at<T: for<'de> Deserialize<'de>>(data: &Value, path: &[&str]) -> Result<T> {
@@ -519,6 +542,20 @@ mod tests {
         let conn: IssuesConn = serde_json::from_value(raw).unwrap();
         assert!(conn.page_info.has_next_page);
         assert_eq!(conn.page_info.end_cursor.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn rate_limited_graphql_error_detected() {
+        let errors = serde_json::json!([
+            {"type": "RATE_LIMITED", "message": "API rate limit exceeded for user"}
+        ]);
+        assert!(errors_contain_rate_limited(&errors));
+
+        let other = serde_json::json!([{"type": "NOT_FOUND", "message": "nope"}]);
+        assert!(!errors_contain_rate_limited(&other));
+
+        let untyped = serde_json::json!([{"message": "boom"}]);
+        assert!(!errors_contain_rate_limited(&untyped));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
 use crate::github::Client;
+use crate::github::error::RATE_LIMIT_MSG_PREFIX;
 use crate::github::types::{Comment, IssueState, RepoIssues};
 
 use super::app::{App, Focus, InputKind, Mode, StateFilter};
@@ -111,7 +112,7 @@ fn handle_app_event(
         }
         AppEvent::Data(Err(e)) => {
             app.loading = false;
-            if e.starts_with("API rate limit exceeded") {
+            if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
                 app.rate_limit_error = Some(e.clone());
                 app.status = Some(format!("load failed — {e}"));
             } else {
@@ -139,7 +140,7 @@ fn handle_app_event(
             }
         }
         AppEvent::MutationFailed(e) => {
-            if e.starts_with("API rate limit exceeded") {
+            if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
                 app.rate_limit_error = Some(e.clone());
             }
             app.status = Some(format!("failed: {e}"));
@@ -203,9 +204,15 @@ fn handle_normal_key(
             app.selected = app.rows.len().saturating_sub(1);
         }
 
-        // grouping
-        KeyCode::Right => app.set_current_collapsed(false),
-        KeyCode::Left => app.set_current_collapsed(true),
+        // grouping (list focus only — in detail view ← backs out, → is a no-op)
+        KeyCode::Right if app.focus == Focus::List => app.set_current_collapsed(false),
+        KeyCode::Left => {
+            if app.focus == Focus::Detail {
+                app.focus = Focus::List;
+            } else {
+                app.set_current_collapsed(true);
+            }
+        }
         KeyCode::Char(' ') => app.toggle_collapse(),
         KeyCode::Char('[') => app.set_all_collapsed(true),
         KeyCode::Char(']') => app.set_all_collapsed(false),

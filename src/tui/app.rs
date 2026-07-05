@@ -442,11 +442,22 @@ impl App {
     pub fn set_current_collapsed(&mut self, collapsed: bool) {
         if let Some(repo) = self.selected_repo().map(|r| r.repo.clone()) {
             if collapsed {
-                self.collapsed.insert(repo);
+                self.collapsed.insert(repo.clone());
             } else {
                 self.collapsed.remove(&repo);
             }
             self.rebuild_rows();
+            if collapsed {
+                // Collapsing from a child row would leave the selection index
+                // pointing at an unrelated row — land on the group's header.
+                let header = self.rows.iter().position(|r| {
+                    matches!(r, Row::RepoHeader { repo_idx }
+                        if self.repos.get(*repo_idx).is_some_and(|ri| ri.repo == repo))
+                });
+                if let Some(idx) = header {
+                    self.selected = idx;
+                }
+            }
         }
     }
 
@@ -562,36 +573,33 @@ impl App {
                 v.dedup();
                 v
             }
-            4 => {
-                let mut v: Vec<String> = self
-                    .repos
-                    .iter()
-                    .flat_map(|r| r.issues.iter())
-                    .flat_map(|i| i.labels.iter())
-                    .filter(|l| l.name.to_lowercase().starts_with("priority:"))
-                    .map(|l| l.name["priority:".len()..].to_string())
-                    .collect();
-                v.sort();
-                v.dedup();
-                v
-            }
-            5 => {
-                let mut v: Vec<String> = self
-                    .repos
-                    .iter()
-                    .flat_map(|r| r.issues.iter())
-                    .flat_map(|i| i.labels.iter())
-                    .filter(|l| l.name.to_lowercase().starts_with("status:"))
-                    .map(|l| l.name["status:".len()..].to_string())
-                    .collect();
-                v.sort();
-                v.dedup();
-                v
-            }
+            4 => self.label_values("priority"),
+            5 => self.label_values("status"),
             _ => vec![],
         };
         opts.insert(0, "\u{2014}".to_string());
         opts
+    }
+
+    /// Distinct sorted values of `<prefix>:<value>` labels across all issues.
+    /// Splits on `:` rather than byte-slicing so mixed-case or non-ASCII
+    /// label names can never panic on a char boundary.
+    fn label_values(&self, prefix: &str) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .repos
+            .iter()
+            .flat_map(|r| r.issues.iter())
+            .flat_map(|i| i.labels.iter())
+            .filter_map(|l| {
+                l.name
+                    .split_once(':')
+                    .filter(|(p, _)| p.eq_ignore_ascii_case(prefix))
+                    .map(|(_, value)| value.to_string())
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
     /// Returns `true` when the field at `idx` should show a selectable list
@@ -1050,6 +1058,44 @@ mod tests {
         let app = two_repo_app();
         let opts = app.compute_select_options(4);
         assert_eq!(opts, vec!["\u{2014}".to_string()]);
+    }
+
+    #[test]
+    fn collapse_from_child_row_selects_group_header() {
+        let mut app = two_repo_app();
+        app.selected = 2; // second issue inside alpha
+        app.set_current_collapsed(true);
+        assert_eq!(app.selected, 0); // alpha header
+        assert!(matches!(
+            app.rows[app.selected],
+            Row::RepoHeader { repo_idx: 0 }
+        ));
+    }
+
+    #[test]
+    fn expand_via_set_current_collapsed_keeps_selection() {
+        let mut app = two_repo_app();
+        app.selected = 0;
+        app.set_current_collapsed(true);
+        app.set_current_collapsed(false);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.visible_issue_count(), 3);
+    }
+
+    #[test]
+    fn label_values_handles_mixed_case_prefix() {
+        let mut a = issue(1, "a", IssueState::Open);
+        a.labels = vec![crate::github::types::Label {
+            name: "Priority:High".into(),
+            color: "".into(),
+        }];
+        let app = app_with(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![a],
+        }]);
+        let opts = app.compute_select_options(4);
+        assert_eq!(opts, vec!["\u{2014}".to_string(), "High".to_string()]);
     }
 
     #[test]

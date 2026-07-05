@@ -49,13 +49,14 @@ With `default_org` set, plain `gh-issues-tui` works without `--org`. With `defau
 | `j`/`k`, `↑`/`↓` | move selection (scroll in detail view) |
 | `PgUp`/`PgDn`, `g`/`G` | page / jump to top / bottom |
 | `Space` | collapse/expand the selected repo group |
+| `←` / `→` | collapse / expand the selected repo group (`←` in detail view backs out) |
 | `[` / `]` | collapse all / expand all groups |
 | `Enter` | open issue detail (loads the comment thread) |
 | `Esc` / `q` | back out of detail view |
 | `o` / `O` | open issue / repo in the browser |
 | `/` | free-text search (title, body, `#number`) |
 | `f` | cycle state filter: open → closed → all |
-| `F` | filter editor (repo, assignee, author, created/updated/closed date bounds) |
+| `F` | filter editor (repo, assignee, author, priority, status, created/updated/closed date bounds) |
 | `s` / `S` | cycle sort key / toggle direction |
 | `c` | add a comment |
 | `x` | close or reopen the issue (asks y/n) |
@@ -73,6 +74,9 @@ Sort keys: updated, created, closed, state, assignee, author.
 - Issues are fetched per-repository over the GraphQL API with cursor pagination, so organisations with more than 1000 issues are not truncated (the search API cap does not apply).
 - Only open issues are fetched at startup unless `--all` is given; switching the state filter to closed/all triggers a one-time refetch that includes closed issues.
 - Assignee and label edits replace the full set with what you type; comment/close/reopen/edit operations refresh the data on completion.
+- In the filter editor, repo/assignee/author/priority/status open a picker built from the loaded data (first entry clears the filter) and date fields open a calendar; text remains free-input.
+- Priority and status filters match `priority:<value>` / `status:<value>` labels (bare value or full label name, case-insensitive).
+- The info bar shows the API rate-limit budget (`API remaining/limit`); after a mutation the refetch is skipped if the budget is exhausted, and rate-limit errors stay visible until a fetch succeeds.
 
 ## Development
 
