@@ -11,6 +11,9 @@ use super::app::{App, FILTER_FIELDS, Focus, InputKind, Mode, Row};
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
+/// Background of the selected row in the list and popup pickers. Bright
+/// enough to survive dark terminal themes — Rgb(40, 40, 60) was invisible.
+const SELECTED_BG: Color = Color::Rgb(45, 90, 160);
 
 pub fn draw(f: &mut Frame, app: &App) {
     let [main, info, bottom] = Layout::vertical([
@@ -74,7 +77,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 60)))
+        .highlight_style(Style::default().bg(SELECTED_BG))
         .highlight_symbol("> ");
 
     let mut state = ListState::default();
@@ -318,7 +321,7 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
         .map(|(i, name)| {
             let value = app.current_filter_value(i);
             let style = if i == app.filter_menu_idx {
-                Style::default().bg(Color::Rgb(40, 40, 60))
+                Style::default().bg(SELECTED_BG)
             } else {
                 Style::default()
             };
@@ -347,7 +350,7 @@ fn draw_select_popup(f: &mut Frame, app: &App, idx: usize) {
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == app.select_idx {
-                Style::default().bg(Color::Rgb(40, 40, 60))
+                Style::default().bg(SELECTED_BG)
             } else {
                 Style::default()
             };
@@ -401,7 +404,7 @@ fn draw_calendar_popup(f: &mut Frame, app: &App, idx: usize) {
             } else if day <= days_in_month {
                 let style = if day == cursor.day() {
                     Style::default()
-                        .bg(Color::Rgb(40, 40, 60))
+                        .bg(SELECTED_BG)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
