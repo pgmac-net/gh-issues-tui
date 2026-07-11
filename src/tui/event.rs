@@ -26,11 +26,20 @@ pub enum AppEvent {
 pub async fn run(
     client: Client,
     org: String,
+    initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
 ) -> Result<()> {
     let terminal = ratatui::init();
-    let result = event_loop(terminal, client, org, include_closed, default_collapsed).await;
+    let result = event_loop(
+        terminal,
+        client,
+        org,
+        initial_repo,
+        include_closed,
+        default_collapsed,
+    )
+    .await;
     ratatui::restore();
     result
 }
@@ -39,10 +48,11 @@ async fn event_loop(
     mut terminal: DefaultTerminal,
     client: Client,
     org: String,
+    initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
 ) -> Result<()> {
-    let mut app = App::new(org, include_closed, default_collapsed);
+    let mut app = App::new(org, initial_repo, include_closed, default_collapsed);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
 
@@ -246,6 +256,13 @@ fn handle_normal_key(
             app.rebuild_rows();
         }
 
+        // switch org/owner
+        KeyCode::Char('w') => {
+            let current = app.org.clone();
+            app.input.start(&current);
+            app.mode = Mode::Input(InputKind::Org);
+        }
+
         // open in browser
         KeyCode::Char('o') => {
             let url = app
@@ -408,6 +425,16 @@ fn submit_input(
             with_issue(app, client, tx, "title updated", move |c, id| async move {
                 c.update_title(&id, &value).await
             });
+        }
+        InputKind::Org => {
+            let org = value.trim().to_string();
+            if org.is_empty() || org.eq_ignore_ascii_case(&app.org) {
+                app.status = Some("org unchanged".into());
+                return;
+            }
+            app.status = Some(format!("switching to {org}…"));
+            app.switch_org(org);
+            spawn_fetch(client, app, tx);
         }
     }
 }

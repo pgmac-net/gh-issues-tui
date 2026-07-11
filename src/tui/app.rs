@@ -113,8 +113,18 @@ impl Filters {
             && on_or_before(issue.closed_at, self.closed_before)
     }
 
-    pub fn repo_matches(&self, repo: &str) -> bool {
-        self.repo.is_empty() || repo.to_lowercase().contains(&self.repo.to_lowercase())
+    /// `exact` is set when the filter text exactly names a fetched repo —
+    /// then only that repo matches, so "api" can't drag in "api-gateway".
+    /// Otherwise the filter is a case-insensitive substring.
+    pub fn repo_matches(&self, repo: &str, exact: bool) -> bool {
+        if self.repo.is_empty() {
+            return true;
+        }
+        if exact {
+            repo.eq_ignore_ascii_case(&self.repo)
+        } else {
+            repo.to_lowercase().contains(&self.repo.to_lowercase())
+        }
     }
 
     pub fn is_active(&self) -> bool {
@@ -243,6 +253,8 @@ pub enum InputKind {
     Assignees,
     Labels,
     Title,
+    /// Switch the org/owner being browsed.
+    Org,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,7 +347,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(org: String, include_closed: bool, default_collapsed: bool) -> Self {
+    pub fn new(
+        org: String,
+        initial_repo: Option<String>,
+        include_closed: bool,
+        default_collapsed: bool,
+    ) -> Self {
         Self {
             org,
             repos: Vec::new(),
@@ -345,7 +362,10 @@ impl App {
             rows: Vec::new(),
             selected: 0,
             state_filter: StateFilter::Open,
-            filters: Filters::default(),
+            filters: Filters {
+                repo: initial_repo.unwrap_or_default(),
+                ..Filters::default()
+            },
             sort_key: SortKey::Updated,
             sort_desc: true,
             focus: Focus::List,
@@ -379,14 +399,37 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Switch to browsing a different org/owner: drop all fetched data and
+    /// per-org view state (filters, collapse, seen repos) for a fresh view.
+    /// Keeps `include_closed` so the state-filter dataset stays consistent.
+    pub fn switch_org(&mut self, org: String) {
+        self.org = org;
+        self.repos.clear();
+        self.rows.clear();
+        self.collapsed.clear();
+        self.seen_repos.clear();
+        self.filters.clear();
+        self.state_filter = StateFilter::Open;
+        self.selected = 0;
+        self.focus = Focus::List;
+        self.detail_comments = None;
+        self.detail_scroll = 0;
+        self.loading = true;
+    }
+
     /// Recompute the visible rows. Keeps the selection in range.
     pub fn rebuild_rows(&mut self) {
         for repo in &mut self.repos {
             sort_issues(&mut repo.issues, self.sort_key, self.sort_desc);
         }
         self.rows.clear();
+        let repo_exact = !self.filters.repo.is_empty()
+            && self
+                .repos
+                .iter()
+                .any(|r| r.repo.eq_ignore_ascii_case(&self.filters.repo));
         for (ri, repo) in self.repos.iter().enumerate() {
-            if !self.filters.repo_matches(&repo.repo) {
+            if !self.filters.repo_matches(&repo.repo, repo_exact) {
                 continue;
             }
             let visible: Vec<usize> = repo
@@ -648,7 +691,7 @@ mod tests {
     }
 
     fn app_with(repos: Vec<RepoIssues>) -> App {
-        let mut app = App::new("org".into(), false, false);
+        let mut app = App::new("org".into(), None, false, false);
         app.set_data(repos);
         app
     }
@@ -691,7 +734,7 @@ mod tests {
 
     #[test]
     fn default_collapsed_starts_all_groups_folded() {
-        let mut app = App::new("org".into(), false, true);
+        let mut app = App::new("org".into(), None, false, true);
         app.set_data(vec![
             RepoIssues {
                 repo: "alpha".into(),
@@ -717,7 +760,7 @@ mod tests {
                 issues: vec![issue(1, "a", IssueState::Open)],
             }]
         };
-        let mut app = App::new("org".into(), false, true);
+        let mut app = App::new("org".into(), None, false, true);
         app.set_data(repos());
         assert_eq!(app.visible_issue_count(), 0);
 
@@ -741,7 +784,7 @@ mod tests {
             repo_url: "u".into(),
             issues: vec![issue(2, "b", IssueState::Open)],
         };
-        let mut app = App::new("org".into(), false, true);
+        let mut app = App::new("org".into(), None, false, true);
         app.set_data(vec![alpha.clone()]);
         app.selected = 0;
         app.toggle_collapse(); // expand alpha
@@ -778,6 +821,81 @@ mod tests {
         app.rebuild_rows();
         assert_eq!(app.visible_issue_count(), 1);
         assert_eq!(app.rows.len(), 2); // beta header + issue 3
+    }
+
+    #[test]
+    fn repo_filter_is_exact_when_text_names_a_repo() {
+        let mut app = app_with(vec![
+            RepoIssues {
+                repo: "api".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "api-gateway".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(2, "b", IssueState::Open)],
+            },
+        ]);
+        app.filters.repo = "api".into();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 1);
+        assert!(matches!(app.rows[0], Row::RepoHeader { repo_idx: 0 }));
+
+        // Case-insensitive exact match still wins over substring.
+        app.filters.repo = "API".into();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 1);
+
+        // No exact match → substring behavior matches both.
+        app.filters.repo = "ap".into();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 2);
+    }
+
+    #[test]
+    fn initial_repo_filter_applies_on_first_load() {
+        let mut app = App::new("org".into(), Some("beta".into()), false, false);
+        app.set_data(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "beta".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(2, "b", IssueState::Open)],
+            },
+        ]);
+        assert!(app.filters.is_active());
+        assert_eq!(app.visible_issue_count(), 1);
+        assert!(matches!(app.rows[0], Row::RepoHeader { repo_idx: 1 }));
+
+        app.filters.clear();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 2);
+    }
+
+    #[test]
+    fn switch_org_resets_view_state() {
+        let mut app = two_repo_app();
+        app.filters.repo = "alpha".into();
+        app.collapsed.insert("beta".into());
+        app.state_filter = StateFilter::All;
+        app.selected = 2;
+        app.rebuild_rows();
+
+        app.switch_org("other".into());
+        assert_eq!(app.org, "other");
+        assert!(app.repos.is_empty());
+        assert!(app.rows.is_empty());
+        assert!(app.collapsed.is_empty());
+        assert!(app.seen_repos.is_empty());
+        assert!(!app.filters.is_active());
+        assert_eq!(app.state_filter, StateFilter::Open);
+        assert_eq!(app.selected, 0);
+        assert!(app.loading);
     }
 
     #[test]

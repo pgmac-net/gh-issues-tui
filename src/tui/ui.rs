@@ -274,6 +274,7 @@ fn draw_bottom_line(f: &mut Frame, app: &App, area: Rect) {
                 InputKind::Assignees => "assignees (comma-separated logins)",
                 InputKind::Labels => "labels (comma-separated)",
                 InputKind::Title => "title",
+                InputKind::Org => "org/owner (Enter switches)",
             };
             let line = Line::from(vec![
                 Span::styled(format!(" {prompt}: "), Style::default().fg(ACCENT)),
@@ -445,6 +446,7 @@ fn draw_help(f: &mut Frame) {
         ("f", "cycle state filter (open/closed/all)"),
         ("F", "filter editor (pickers + calendar)"),
         ("s / S", "cycle sort key / toggle direction"),
+        ("w", "switch org/owner"),
         ("c", "add comment"),
         ("x", "close / reopen issue"),
         ("a", "edit assignees"),

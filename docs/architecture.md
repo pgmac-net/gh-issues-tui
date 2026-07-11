@@ -23,7 +23,7 @@ src/
 
 ## Data fetch strategy
 
-Org-wide issue listing uses the GraphQL `organization(login:).repositories` connection with cursor pagination, fetching each repo's `issues` connection inline (first page) and following per-repo issue cursors where a repo has more than 100 issues.
+Org-wide issue listing uses the GraphQL `repositoryOwner(login:).repositories` connection (organisations and user accounts) with cursor pagination, fetching each repo's `issues` connection inline (first page) and following per-repo issue cursors where a repo has more than 100 issues.
 
 The GitHub search API (`org:X is:issue`) was rejected because it silently caps at 1000 results. Repository iteration has no such cap.
 

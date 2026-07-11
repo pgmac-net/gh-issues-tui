@@ -23,13 +23,16 @@ Three top-level modules wired together in `src/main.rs`:
 | Module | Purpose |
 |--------|---------|
 | `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`). |
+| `cwd_repo` | Detects the cwd's `origin` GitHub remote (`(owner, repo)`), best-effort via `git remote get-url origin`. |
 | `github` | Async GitHub GraphQL v4 client + token resolution. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |
+
+Startup org resolution in `main.rs`: `--org` flag → cwd git remote (owner, plus the repo name as the initial repo filter) → `default_org`. The detected repo filter is applied with `--org` only when the remote owner matches the flag.
 
 ### github/
 
 - `auth.rs` — `resolve_token`: `--token` flag → `GITHUB_TOKEN` → `GH_TOKEN` → `gh auth token`. Injectable closures make the chain unit-testable.
-- `client.rs` — `Client` (cheaply cloneable, one `reqwest::Client`). `org_issues` walks `organization.repositories` with cursor pagination and follows nested per-repo issue pagination — deliberately NOT the search API, which caps at 1000 results. Mutations: `add_comment`, `set_state`, `update_title`, `set_assignees` (resolves logins → node ids), `set_labels` (resolves names → label ids via `repo_labels`).
+- `client.rs` — `Client` (cheaply cloneable, one `reqwest::Client`). `org_issues` walks `repositoryOwner.repositories` (works for both organisations and user accounts) with cursor pagination and follows nested per-repo issue pagination — deliberately NOT the search API, which caps at 1000 results. Mutations: `add_comment`, `set_state`, `update_title`, `set_assignees` (resolves logins → node ids), `set_labels` (resolves names → label ids via `repo_labels`).
 - `types.rs` — domain types (`Issue`, `RepoIssues`, `Comment`, `IssueState`). GraphQL response DTOs live privately in `client.rs`.
 
 ### tui/
@@ -41,7 +44,9 @@ Three top-level modules wired together in `src/main.rs`:
 ## Key design invariants
 
 - **Tokens never in config.** `Config` has no token field; resolution is env/CLI/`gh` only.
-- **Pagination over search.** Issue fetch must stay on `organization.repositories` → `issues` cursors. Do not switch to the GraphQL/REST search API — it silently caps at 1000 results org-wide.
+- **Pagination over search.** Issue fetch must stay on `repositoryOwner.repositories` → `issues` cursors. Do not switch to the GraphQL/REST search API — it silently caps at 1000 results org-wide.
+- **Repo filter is exact-when-exact.** When the filter text exactly equals a loaded repo name (case-insensitive) only that repo matches; otherwise substring. Computed per `rebuild_rows` pass.
+- **Org switch resets view state.** `App::switch_org` clears data, filters, collapse and seen-repo sets (keeps `include_closed`); callers must spawn a refetch.
 - **`rebuild_rows` after any change** to filters, sort, collapse state, or data. Selection is clamped there; stale indices panic otherwise.
 - **Collapse state keyed by repo name** (not index) so it survives reloads. `default_collapsed` is applied in `set_data` only to repos not yet in `seen_repos`, so manual expand/collapse choices always win over the config default.
 - **Panic hook** in `main.rs` restores the terminal before printing panics. Anything that touches terminal state must stay safe to drop in this path.

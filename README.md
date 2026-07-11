@@ -18,7 +18,20 @@ cargo build --release
 ```sh
 gh-issues --org my-org          # open issues only (default)
 gh-issues --org my-org --all    # include closed issues in the initial fetch
+gh-issues                       # inside a repo clone: that repo's owner, filtered to the repo
 ```
+
+`--org` accepts an organisation or a user account.
+
+### Starting inside a repository clone
+
+When run from a directory inside a git repository whose `origin` remote points at github.com, `gh-issues` browses that remote's owner with the repo filter pre-set to the repository — so you see just that repo's issues immediately. Clear the filter (`F` → `c`, or empty the repo field) to see the whole organisation again.
+
+Resolution order for what to browse:
+
+1. `--org` flag (the detected repo filter is applied only when the remote's owner matches)
+2. the cwd's `origin` remote owner + repo filter
+3. `default_org` from the config file
 
 ### Authentication
 
@@ -58,6 +71,7 @@ With `default_org` set, plain `gh-issues` works without `--org`. With `default_c
 | `f` | cycle state filter: open → closed → all |
 | `F` | filter editor (repo, assignee, author, priority, status, created/updated/closed date bounds) |
 | `s` / `S` | cycle sort key / toggle direction |
+| `w` | switch org/owner (free-text; resets filters and view state) |
 | `c` | add a comment |
 | `x` | close or reopen the issue (asks y/n) |
 | `a` | edit assignees (comma-separated logins) |
@@ -76,6 +90,7 @@ Sort keys: updated, created, closed, state, assignee, author.
 - Assignee and label edits replace the full set with what you type; comment/close/reopen/edit operations refresh the data on completion.
 - In the filter editor, repo/assignee/author/priority/status open a picker built from the loaded data (first entry clears the filter) and date fields open a calendar; text remains free-input.
 - Priority and status filters match `priority:<value>` / `status:<value>` labels (bare value or full label name, case-insensitive).
+- The repo filter is exact when its text exactly names a loaded repo (case-insensitive), so `api` won't also match `api-gateway`; otherwise it matches as a substring.
 - The info bar shows the API rate-limit budget (`API remaining/limit`); after a mutation the refetch is skipped if the budget is exhausted, and rate-limit errors stay visible until a fetch succeeds.
 
 ## Development
