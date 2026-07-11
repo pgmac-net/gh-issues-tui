@@ -419,6 +419,17 @@ impl App {
                 .any(|r| r.repo.eq_ignore_ascii_case(&self.filters.repo))
     }
 
+    /// Expand the lone visible repo group, if any. Called after every
+    /// filter change so filtering down to one repo reveals its issues;
+    /// a manual collapse afterwards sticks until the filters change again.
+    pub fn expand_single_visible(&mut self) {
+        if let Some(repo) = self.single_visible_repo()
+            && self.collapsed.remove(&repo)
+        {
+            self.rebuild_rows();
+        }
+    }
+
     /// Name of the only repo group visible under the current filters, or
     /// `None` when zero or several groups are visible.
     fn single_visible_repo(&self) -> Option<String> {
@@ -612,6 +623,7 @@ impl App {
             _ => {}
         }
         self.rebuild_rows();
+        self.expand_single_visible();
     }
 
     pub fn current_filter_value(&self, idx: usize) -> String {
@@ -909,6 +921,49 @@ mod tests {
     fn without_default_collapsed_groups_start_expanded() {
         let app = two_repo_app(); // uses default_collapsed = false
         assert_eq!(app.visible_issue_count(), 3);
+    }
+
+    #[test]
+    fn filtering_to_single_repo_expands_it() {
+        let mut app = two_repo_app();
+        app.set_all_collapsed(true);
+        assert_eq!(app.visible_issue_count(), 0);
+
+        // Repo filter leaving one visible group expands it.
+        app.apply_filter_input(InputKind::FilterField(1), "beta");
+        assert_eq!(app.visible_issue_count(), 1);
+        assert!(!app.collapsed.contains("beta"));
+
+        // Text search narrowing to one group expands too.
+        app.set_all_collapsed(true);
+        app.apply_filter_input(InputKind::FilterField(1), "");
+        app.apply_filter_input(InputKind::Search, "docs");
+        assert_eq!(app.visible_issue_count(), 1); // beta's "docs fix"
+    }
+
+    #[test]
+    fn filtering_to_multiple_repos_keeps_them_folded() {
+        let mut app = two_repo_app();
+        app.set_all_collapsed(true);
+        // "a" substring-matches both alpha and beta — no auto-expand.
+        app.apply_filter_input(InputKind::FilterField(1), "a");
+        assert_eq!(app.visible_issue_count(), 0);
+        assert_eq!(app.rows.len(), 2); // two folded headers
+    }
+
+    #[test]
+    fn manual_collapse_sticks_until_filters_change_again() {
+        let mut app = two_repo_app();
+        app.set_all_collapsed(true);
+        app.apply_filter_input(InputKind::FilterField(1), "beta");
+        assert_eq!(app.visible_issue_count(), 1); // auto-expanded
+
+        app.selected = 0;
+        app.toggle_collapse(); // user folds it — must stay folded
+        assert_eq!(app.visible_issue_count(), 0);
+
+        app.apply_filter_input(InputKind::Search, "docs"); // filters change
+        assert_eq!(app.visible_issue_count(), 1); // re-expanded
     }
 
     #[test]

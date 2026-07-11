@@ -242,6 +242,7 @@ fn handle_normal_key(
                 spawn_fetch(client, app, tx);
             }
             app.rebuild_rows();
+            app.expand_single_visible();
         }
         KeyCode::Char('F') => {
             app.filter_menu_idx = 0;
@@ -453,6 +454,7 @@ fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') => {
             app.filters.clear();
             app.rebuild_rows();
+            app.expand_single_visible();
         }
         KeyCode::Enter => {
             let idx = app.filter_menu_idx;
