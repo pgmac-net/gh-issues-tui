@@ -389,14 +389,48 @@ impl App {
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
         self.repos = repos;
         // First-seen repos take the configured default; repos the user has
-        // already interacted with keep their manual collapse state.
+        // already interacted with keep their manual collapse state. When the
+        // current filters leave exactly one repo group visible, that group
+        // defaults to expanded so its issues are immediately readable.
+        let auto_expand = if self.default_collapsed {
+            self.single_visible_repo()
+        } else {
+            None
+        };
         for repo in &self.repos {
-            if self.seen_repos.insert(repo.repo.clone()) && self.default_collapsed {
+            if self.seen_repos.insert(repo.repo.clone())
+                && self.default_collapsed
+                && auto_expand.as_deref() != Some(repo.repo.as_str())
+            {
                 self.collapsed.insert(repo.repo.clone());
             }
         }
         self.loading = false;
         self.rebuild_rows();
+    }
+
+    /// True when the repo filter text exactly names a fetched repo — then
+    /// `Filters::repo_matches` matches only that repo instead of substrings.
+    fn repo_filter_exact(&self) -> bool {
+        !self.filters.repo.is_empty()
+            && self
+                .repos
+                .iter()
+                .any(|r| r.repo.eq_ignore_ascii_case(&self.filters.repo))
+    }
+
+    /// Name of the only repo group visible under the current filters, or
+    /// `None` when zero or several groups are visible.
+    fn single_visible_repo(&self) -> Option<String> {
+        let exact = self.repo_filter_exact();
+        let mut visible = self.repos.iter().filter(|r| {
+            self.filters.repo_matches(&r.repo, exact)
+                && r.issues
+                    .iter()
+                    .any(|i| self.filters.matches(i, self.state_filter))
+        });
+        let first = visible.next()?;
+        visible.next().is_none().then(|| first.repo.clone())
     }
 
     /// Switch to browsing a different org/owner: drop all fetched data and
@@ -423,11 +457,7 @@ impl App {
             sort_issues(&mut repo.issues, self.sort_key, self.sort_desc);
         }
         self.rows.clear();
-        let repo_exact = !self.filters.repo.is_empty()
-            && self
-                .repos
-                .iter()
-                .any(|r| r.repo.eq_ignore_ascii_case(&self.filters.repo));
+        let repo_exact = self.repo_filter_exact();
         for (ri, repo) in self.repos.iter().enumerate() {
             if !self.filters.repo_matches(&repo.repo, repo_exact) {
                 continue;
@@ -754,11 +784,18 @@ mod tests {
     #[test]
     fn default_collapsed_preserves_manual_expand_across_reload() {
         let repos = || {
-            vec![RepoIssues {
-                repo: "alpha".into(),
-                repo_url: "u".into(),
-                issues: vec![issue(1, "a", IssueState::Open)],
-            }]
+            vec![
+                RepoIssues {
+                    repo: "alpha".into(),
+                    repo_url: "u".into(),
+                    issues: vec![issue(1, "a", IssueState::Open)],
+                },
+                RepoIssues {
+                    repo: "beta".into(),
+                    repo_url: "u".into(),
+                    issues: vec![issue(2, "b", IssueState::Open)],
+                },
+            ]
         };
         let mut app = App::new("org".into(), None, false, true);
         app.set_data(repos());
@@ -786,13 +823,72 @@ mod tests {
         };
         let mut app = App::new("org".into(), None, false, true);
         app.set_data(vec![alpha.clone()]);
-        app.selected = 0;
-        app.toggle_collapse(); // expand alpha
+        assert!(!app.collapsed.contains("alpha")); // single group auto-expands
 
         app.set_data(vec![alpha, beta]); // beta appears for the first time
         assert!(!app.collapsed.contains("alpha"));
         assert!(app.collapsed.contains("beta"));
         assert_eq!(app.visible_issue_count(), 1);
+    }
+
+    #[test]
+    fn default_collapsed_single_repo_starts_expanded() {
+        let mut app = App::new("org".into(), None, false, true);
+        app.set_data(vec![RepoIssues {
+            repo: "solo".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(1, "a", IssueState::Open)],
+        }]);
+        assert!(!app.collapsed.contains("solo"));
+        assert_eq!(app.visible_issue_count(), 1);
+    }
+
+    #[test]
+    fn default_collapsed_expands_only_repo_matching_initial_filter() {
+        let mut app = App::new("org".into(), Some("beta".into()), false, true);
+        app.set_data(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "beta".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(2, "b", IssueState::Open)],
+            },
+        ]);
+        // beta is the single visible group → expanded; alpha still defaults
+        // collapsed and shows once the filter is cleared.
+        assert!(!app.collapsed.contains("beta"));
+        assert!(app.collapsed.contains("alpha"));
+        assert_eq!(app.visible_issue_count(), 1);
+
+        app.filters.clear();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 1); // beta open, alpha folded
+        assert_eq!(app.rows.len(), 3); // two headers + beta's issue
+    }
+
+    #[test]
+    fn manual_collapse_of_single_repo_survives_reload() {
+        let repos = || {
+            vec![RepoIssues {
+                repo: "solo".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            }]
+        };
+        let mut app = App::new("org".into(), None, false, true);
+        app.set_data(repos());
+        assert_eq!(app.visible_issue_count(), 1); // auto-expanded
+
+        app.selected = 0;
+        app.toggle_collapse(); // user folds it
+        assert_eq!(app.visible_issue_count(), 0);
+
+        app.set_data(repos()); // reload must not force it back open
+        assert_eq!(app.visible_issue_count(), 0);
     }
 
     #[test]
