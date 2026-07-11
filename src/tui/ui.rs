@@ -72,7 +72,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let title = if app.loading {
         format!(" {} — loading… ", app.org)
     } else {
-        format!(" {} — {} issues ", app.org, app.visible_issue_count())
+        format!(" {} — {} issues ", app.org, app.filtered_issue_count())
     };
 
     let list = List::new(items)

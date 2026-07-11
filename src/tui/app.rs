@@ -565,11 +565,25 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Count of issues currently visible (excludes headers).
+    /// Count of issues currently visible (excludes headers). Test helper —
+    /// production code shows `filtered_issue_count` instead.
+    #[cfg(test)]
     pub fn visible_issue_count(&self) -> usize {
         self.rows
             .iter()
             .filter(|r| matches!(r, Row::Issue { .. }))
+            .count()
+    }
+
+    /// Count of issues passing the current filters, including those hidden
+    /// inside collapsed repo groups. Shown in the list title.
+    pub fn filtered_issue_count(&self) -> usize {
+        let exact = self.repo_filter_exact();
+        self.repos
+            .iter()
+            .filter(|r| self.filters.repo_matches(&r.repo, exact))
+            .flat_map(|r| r.issues.iter())
+            .filter(|i| self.filters.matches(i, self.state_filter))
             .count()
     }
 
@@ -895,6 +909,23 @@ mod tests {
     fn without_default_collapsed_groups_start_expanded() {
         let app = two_repo_app(); // uses default_collapsed = false
         assert_eq!(app.visible_issue_count(), 3);
+    }
+
+    #[test]
+    fn filtered_issue_count_includes_collapsed_groups() {
+        let mut app = two_repo_app(); // 3 issues across alpha + beta
+        app.set_all_collapsed(true);
+        assert_eq!(app.visible_issue_count(), 0);
+        assert_eq!(app.filtered_issue_count(), 3);
+
+        app.filters.repo = "beta".into();
+        app.rebuild_rows();
+        assert_eq!(app.filtered_issue_count(), 1);
+
+        app.filters.clear();
+        app.filters.text = "bug".into();
+        app.rebuild_rows();
+        assert_eq!(app.filtered_issue_count(), 1);
     }
 
     #[test]
