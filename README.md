@@ -93,7 +93,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `j`/`k`, `↑`/`↓` | move selection (scroll in detail view) |
 | `PgUp`/`PgDn`, `g`/`G` | page / jump to top / bottom |
 | `Space` | collapse/expand the selected repo group |
-| `←` / `→` | collapse / expand the selected repo group (`←` in detail view backs out) |
+| `←` / `→` | on a repo header: collapse / expand the group. On an issue: `→` moves into the detail pane (opening it if closed), `←` backs out to the list |
 | `[` / `]` | collapse all / expand all groups |
 | `Enter` | open the issue in a right-hand detail pane (loads the comment thread) |
 | `Tab` / `Shift+Tab` | switch focus between the list and detail panes |

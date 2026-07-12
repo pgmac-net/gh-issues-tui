@@ -465,7 +465,8 @@ fn draw_help(f: &mut Frame, t: &Theme) {
     const HELP: &[(&str, &str)] = &[
         ("j/k ↑/↓", "move"),
         ("Space", "collapse/expand repo group"),
-        ("← / →", "collapse / expand repo group"),
+        ("←", "collapse repo group / back to list"),
+        ("→", "expand repo group / into detail pane"),
         ("[ / ]", "collapse all / expand all"),
         ("Enter", "open issue in detail pane"),
         ("Tab", "switch pane (Shift+Tab reverse)"),
