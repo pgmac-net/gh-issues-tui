@@ -21,6 +21,11 @@ struct Cli {
     /// Include closed issues in the initial fetch.
     #[arg(long)]
     all: bool,
+
+    /// Auto-refresh interval in seconds (0 disables). Overrides
+    /// `refresh_interval` in the config file.
+    #[arg(long, value_name = "SECS")]
+    refresh: Option<u64>,
 }
 
 fn install_panic_hook() {
@@ -72,6 +77,7 @@ async fn main() -> Result<()> {
         initial_repo,
         cli.all,
         cfg.default_collapsed,
+        cli.refresh.unwrap_or(cfg.refresh_interval),
         theme,
     )
     .await

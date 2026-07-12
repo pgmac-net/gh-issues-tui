@@ -19,6 +19,7 @@ cargo build --release
 gh-issues --org my-org          # open issues only (default)
 gh-issues --org my-org --all    # include closed issues in the initial fetch
 gh-issues                       # inside a repo clone: that repo's owner, filtered to the repo
+gh-issues --refresh 60          # auto-refresh every 60 seconds (0 disables)
 ```
 
 `--org` accepts an organisation or a user account.
@@ -51,9 +52,14 @@ Optional TOML config at `~/.config/gh-issues/config.toml`:
 ```toml
 default_org = "my-org"
 default_collapsed = false   # start with repo groups expanded (default: true)
+refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
 ```
 
 With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
+
+### Auto-refresh
+
+The issue list refetches from GitHub every `refresh_interval` seconds (default 5 minutes) so new and updated issues appear without pressing `r`. The `--refresh <SECS>` flag overrides the config value; `0` disables it. A background refresh keeps your selection on the same issue and skips a beat while a fetch is already running, the API is rate-limited, or you are mid-edit (typing in an input, a menu, or a confirmation).
 
 ### Colour profiles
 
