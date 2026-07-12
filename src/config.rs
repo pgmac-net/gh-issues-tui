@@ -20,6 +20,11 @@ pub struct Config {
     #[serde(default = "default_collapsed_default")]
     pub default_collapsed: bool,
 
+    /// Seconds between automatic background refreshes of the issue list.
+    /// `0` disables auto-refresh. Overridden by `--refresh`.
+    #[serde(default = "refresh_interval_default")]
+    pub refresh_interval: u64,
+
     /// Name of the colour profile to use, one of the `[color_profiles.*]`
     /// tables below. Unset → built-in colours.
     #[serde(default)]
@@ -35,11 +40,16 @@ fn default_collapsed_default() -> bool {
     true
 }
 
+fn refresh_interval_default() -> u64 {
+    300
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             default_org: None,
             default_collapsed: true,
+            refresh_interval: refresh_interval_default(),
             color_profile: None,
             color_profiles: HashMap::new(),
         }
@@ -122,6 +132,33 @@ mod tests {
         std::fs::write(&path, "default_collapsed = false\n").unwrap();
         let cfg = Config::load_from(&path).unwrap();
         assert!(!cfg.default_collapsed);
+    }
+
+    #[test]
+    fn refresh_interval_defaults_to_five_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_org = \"pgmac-net\"\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.refresh_interval, 300);
+    }
+
+    #[test]
+    fn parses_refresh_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "refresh_interval = 60\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.refresh_interval, 60);
+    }
+
+    #[test]
+    fn refresh_interval_zero_disables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "refresh_interval = 0\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.refresh_interval, 0);
     }
 
     #[test]

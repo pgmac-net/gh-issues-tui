@@ -338,6 +338,9 @@ pub struct App {
     /// Cursor position for the calendar date picker.
     pub calendar_cursor: NaiveDate,
     pub loading: bool,
+    /// The in-flight fetch was started by the auto-refresh ticker, not a
+    /// keypress — picks the quieter status wording when it lands.
+    pub auto_refreshing: bool,
     pub include_closed: bool,
     pub status: Option<String>,
     /// Most recently observed API rate limit state.
@@ -380,6 +383,7 @@ impl App {
             select_idx: 0,
             calendar_cursor: Utc::now().date_naive(),
             loading: true,
+            auto_refreshing: false,
             include_closed,
             status: None,
             rate_limit: None,
@@ -390,7 +394,17 @@ impl App {
         }
     }
 
+    /// Whether a background auto-refresh may fire now: no fetch already in
+    /// flight, no rate-limit lockout, and nothing being composed or
+    /// confirmed (only the passive Normal and Help modes qualify).
+    pub fn should_auto_refresh(&self) -> bool {
+        !self.loading
+            && self.rate_limit_error.is_none()
+            && matches!(self.mode, Mode::Normal | Mode::Help)
+    }
+
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
+        let prev_selected = self.selected_issue().map(|i| i.id.clone());
         self.repos = repos;
         // First-seen repos take the configured default; repos the user has
         // already interacted with keep their manual collapse state. When the
@@ -411,6 +425,25 @@ impl App {
         }
         self.loading = false;
         self.rebuild_rows();
+        // Keep the highlight on the same issue across a refresh — new data
+        // can insert/remove rows, and the index-based selection would
+        // otherwise silently land elsewhere. A vanished issue keeps the
+        // index clamped by `rebuild_rows`.
+        if let Some(id) = prev_selected
+            && let Some(idx) = self.rows.iter().position(|row| match row {
+                Row::Issue {
+                    repo_idx,
+                    issue_idx,
+                } => self
+                    .repos
+                    .get(*repo_idx)
+                    .and_then(|r| r.issues.get(*issue_idx))
+                    .is_some_and(|i| i.id == id),
+                Row::RepoHeader { .. } => false,
+            })
+        {
+            self.selected = idx;
+        }
     }
 
     /// True when the repo filter text exactly names a fetched repo — then
@@ -1477,5 +1510,84 @@ mod tests {
             parse_date("2026-07-05"),
             NaiveDate::from_ymd_opt(2026, 7, 5)
         );
+    }
+
+    fn select_issue(app: &mut App, id: &str) {
+        let idx = app
+            .rows
+            .iter()
+            .position(|row| match row {
+                Row::Issue {
+                    repo_idx,
+                    issue_idx,
+                } => app.repos[*repo_idx].issues[*issue_idx].id == id,
+                Row::RepoHeader { .. } => false,
+            })
+            .expect("issue row present");
+        app.selected = idx;
+    }
+
+    #[test]
+    fn set_data_keeps_selection_on_same_issue() {
+        let mut app = two_repo_app();
+        select_issue(&mut app, "I_1");
+
+        // Refresh delivers a new issue that sorts above the selected one.
+        app.set_data(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![
+                    issue(1, "first bug", IssueState::Open),
+                    issue(2, "feature idea", IssueState::Open),
+                    issue(5, "brand new", IssueState::Open),
+                ],
+            },
+            RepoIssues {
+                repo: "beta".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(3, "docs fix", IssueState::Open)],
+            },
+        ]);
+
+        assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some("I_1"));
+    }
+
+    #[test]
+    fn set_data_clamps_when_selected_issue_vanishes() {
+        let mut app = two_repo_app();
+        select_issue(&mut app, "I_3"); // last row (beta's only issue)
+
+        app.set_data(vec![RepoIssues {
+            repo: "alpha".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(1, "first bug", IssueState::Open)],
+        }]);
+
+        assert!(app.selected < app.rows.len());
+        assert!(app.selected_issue().is_none_or(|i| i.id != "I_3"));
+    }
+
+    #[test]
+    fn auto_refresh_gated_by_loading_rate_limit_and_mode() {
+        let mut app = two_repo_app(); // set_data cleared `loading`
+        assert!(app.should_auto_refresh());
+
+        app.loading = true;
+        assert!(!app.should_auto_refresh());
+        app.loading = false;
+
+        app.rate_limit_error = Some("rate limited".into());
+        assert!(!app.should_auto_refresh());
+        app.rate_limit_error = None;
+
+        app.mode = Mode::Input(InputKind::Search);
+        assert!(!app.should_auto_refresh());
+        app.mode = Mode::ConfirmState;
+        assert!(!app.should_auto_refresh());
+        app.mode = Mode::Help;
+        assert!(app.should_auto_refresh());
+        app.mode = Mode::Normal;
+        assert!(app.should_auto_refresh());
     }
 }

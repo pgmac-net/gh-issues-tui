@@ -24,12 +24,14 @@ pub enum AppEvent {
     MutationFailed(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     client: Client,
     org: String,
     initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
+    refresh_interval: u64,
     theme: Theme,
 ) -> Result<()> {
     let terminal = ratatui::init();
@@ -40,6 +42,7 @@ pub async fn run(
         initial_repo,
         include_closed,
         default_collapsed,
+        refresh_interval,
         theme,
     )
     .await;
@@ -55,11 +58,20 @@ async fn event_loop(
     initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
+    refresh_interval: u64,
     theme: Theme,
 ) -> Result<()> {
     let mut app = App::new(org, initial_repo, include_closed, default_collapsed);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
+
+    // Auto-refresh ticker. `interval` fires immediately on first tick, so
+    // start one period out; a disabled (0) interval still needs a valid
+    // ticker for `select!` — the branch is gated off instead.
+    let refresh_enabled = refresh_interval > 0;
+    let period = std::time::Duration::from_secs(refresh_interval.max(1));
+    let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     spawn_fetch(&client, &app, &tx);
 
@@ -75,6 +87,13 @@ async fn event_loop(
                 }
             }
             Some(msg) = rx.recv() => handle_app_event(&mut app, msg, &client, &tx),
+            _ = refresh.tick(), if refresh_enabled => {
+                if app.should_auto_refresh() {
+                    app.loading = true;
+                    app.auto_refreshing = true;
+                    spawn_fetch(&client, &app, &tx);
+                }
+            }
         }
 
         if app.should_quit {
@@ -145,14 +164,21 @@ fn handle_app_event(
         AppEvent::Data(Ok(repos)) => {
             app.rate_limit_error = None;
             app.set_data(repos);
+            let verb = if app.auto_refreshing {
+                "auto-refreshed"
+            } else {
+                "loaded"
+            };
+            app.auto_refreshing = false;
             app.status = Some(format!(
-                "loaded {} issues across {} repos",
+                "{verb} {} issues across {} repos",
                 app.repos.iter().map(|r| r.issues.len()).sum::<usize>(),
                 app.repos.len()
             ));
         }
         AppEvent::Data(Err(e)) => {
             app.loading = false;
+            app.auto_refreshing = false;
             if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
                 app.rate_limit_error = Some(e.clone());
                 app.status = Some(format!("load failed — {e}"));
