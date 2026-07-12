@@ -89,8 +89,9 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `Space` | collapse/expand the selected repo group |
 | `←` / `→` | collapse / expand the selected repo group (`←` in detail view backs out) |
 | `[` / `]` | collapse all / expand all groups |
-| `Enter` | open issue detail (loads the comment thread) |
-| `Esc` / `q` | back out of detail view |
+| `Enter` | open the issue in a right-hand detail pane (loads the comment thread) |
+| `Tab` / `Shift+Tab` | switch focus between the list and detail panes |
+| `Esc` / `q` | close the detail pane (from either pane) |
 | `o` / `O` | open issue / repo in the browser |
 | `/` | free-text search (title, body, `#number`) |
 | `f` | cycle state filter: open → closed → all |
@@ -116,6 +117,7 @@ Sort keys: updated, created, closed, state, assignee, author.
 - In the filter editor, repo/assignee/author/priority/status open a picker built from the loaded data (first entry clears the filter) and date fields open a calendar; text remains free-input.
 - Priority and status filters match `priority:<value>` / `status:<value>` labels (bare value or full label name, case-insensitive).
 - The repo filter is exact when its text exactly names a loaded repo (case-insensitive), so `api` won't also match `api-gateway`; otherwise it matches as a substring.
+- The detail pane splits the window 40/60 beside the list and live-follows the list selection: moving with `j`/`k` shows the newly selected issue (comments refetch per issue; landing on a repo header shows "no issue selected"). The focused pane has an accent-coloured border.
 - The info bar shows the API rate-limit budget (`API remaining/limit`); after a mutation the refetch is skipped if the budget is exhausted, and rate-limit errors stay visible until a fetch succeeds.
 
 ## Development

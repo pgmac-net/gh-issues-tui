@@ -325,6 +325,9 @@ pub struct App {
     pub sort_key: SortKey,
     pub sort_desc: bool,
     pub focus: Focus,
+    /// Whether the detail pane (right split) is open. `focus` says which
+    /// pane has keyboard focus while it is.
+    pub detail_open: bool,
     pub mode: Mode,
     pub input: InputState,
     pub filter_menu_idx: usize,
@@ -369,6 +372,7 @@ impl App {
             sort_key: SortKey::Updated,
             sort_desc: true,
             focus: Focus::List,
+            detail_open: false,
             mode: Mode::Normal,
             input: InputState::default(),
             filter_menu_idx: 0,
@@ -457,9 +461,35 @@ impl App {
         self.state_filter = StateFilter::Open;
         self.selected = 0;
         self.focus = Focus::List;
+        self.detail_open = false;
         self.detail_comments = None;
         self.detail_scroll = 0;
         self.loading = true;
+    }
+
+    /// Open the detail pane on the selected issue and focus it.
+    pub fn open_detail(&mut self) {
+        self.detail_open = true;
+        self.focus = Focus::Detail;
+        self.detail_scroll = 0;
+        self.detail_comments = None;
+    }
+
+    /// Close the detail pane, returning focus to the list.
+    pub fn close_detail(&mut self) {
+        self.detail_open = false;
+        self.focus = Focus::List;
+    }
+
+    /// Tab / Shift+Tab: move focus to the other pane. With two panes the
+    /// direction doesn't matter; no-op when the split is closed.
+    pub fn cycle_focus(&mut self) {
+        if self.detail_open {
+            self.focus = match self.focus {
+                Focus::List => Focus::Detail,
+                Focus::Detail => Focus::List,
+            };
+        }
     }
 
     /// Recompute the visible rows. Keeps the selection in range.
@@ -964,6 +994,36 @@ mod tests {
 
         app.apply_filter_input(InputKind::Search, "docs"); // filters change
         assert_eq!(app.visible_issue_count(), 1); // re-expanded
+    }
+
+    #[test]
+    fn detail_pane_open_close_and_focus_cycle() {
+        let mut app = two_repo_app();
+        assert!(!app.detail_open);
+        app.cycle_focus(); // split closed → no-op
+        assert_eq!(app.focus, Focus::List);
+
+        app.open_detail();
+        assert!(app.detail_open);
+        assert_eq!(app.focus, Focus::Detail);
+
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::List);
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Detail);
+
+        app.close_detail();
+        assert!(!app.detail_open);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn switch_org_closes_detail_pane() {
+        let mut app = two_repo_app();
+        app.open_detail();
+        app.switch_org("other".into());
+        assert!(!app.detail_open);
+        assert_eq!(app.focus, Focus::List);
     }
 
     #[test]

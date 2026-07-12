@@ -18,9 +18,14 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
     ])
     .areas(f.area());
 
-    match app.focus {
-        Focus::List => draw_list(f, app, t, main),
-        Focus::Detail => draw_detail(f, app, t, main),
+    if app.detail_open {
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .areas(main);
+        draw_list(f, app, t, left);
+        draw_detail(f, app, t, right);
+    } else {
+        draw_list(f, app, t, main);
     }
     draw_info_bar(f, app, t, info);
     draw_bottom_line(f, app, t, bottom);
@@ -71,7 +76,12 @@ fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(pane_border(app, t, Focus::List))
+                .title(title),
+        )
         .highlight_style(Style::default().bg(t.selected_bg))
         .highlight_symbol("> ");
 
@@ -120,8 +130,30 @@ fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
     ListItem::new(Line::from(spans))
 }
 
+/// Border style for a pane: accent when it has focus and the split is open.
+fn pane_border(app: &App, t: &Theme, pane: Focus) -> Style {
+    if app.detail_open && app.focus == pane {
+        Style::default().fg(t.accent)
+    } else {
+        Style::default()
+    }
+}
+
 fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pane_border(app, t, Focus::Detail))
+        .title(" issue (Tab switch · j/k scroll · Esc close) ");
     let Some(issue) = app.selected_issue() else {
+        // Live follow landed on a repo header (or an empty list).
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                "no issue selected",
+                Style::default().fg(t.dim),
+            ))
+            .block(block),
+            area,
+        );
         return;
     };
     let mut lines: Vec<Line> = vec![
@@ -206,11 +238,7 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     }
 
     let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" issue detail (Esc back, j/k scroll) "),
-        )
+        .block(block)
         .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, 0));
     f.render_widget(para, area);
@@ -439,7 +467,9 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("Space", "collapse/expand repo group"),
         ("← / →", "collapse / expand repo group"),
         ("[ / ]", "collapse all / expand all"),
-        ("Enter", "issue detail (comments)"),
+        ("Enter", "open issue in detail pane"),
+        ("Tab", "switch pane (Shift+Tab reverse)"),
+        ("Esc / q", "close detail pane"),
         ("o / O", "open issue / repo in browser"),
         ("/", "text search"),
         ("f", "cycle state filter (open/closed/all)"),

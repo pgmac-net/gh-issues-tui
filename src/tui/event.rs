@@ -106,6 +106,32 @@ fn spawn_comments(client: &Client, issue_id: String, tx: &mpsc::UnboundedSender<
     });
 }
 
+/// Run a selection-changing action, then live-update the detail pane: when
+/// the split is open and the selected issue changed, reset the pane and
+/// fetch the new issue's comments (stale responses are dropped by id in
+/// `handle_app_event`). Landing on a repo header just clears the pane.
+fn nav(
+    app: &mut App,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    action: impl FnOnce(&mut App),
+) {
+    let prev = app.selected_issue().map(|i| i.id.clone());
+    action(app);
+    if !app.detail_open {
+        return;
+    }
+    let current = app.selected_issue().map(|i| i.id.clone());
+    if current == prev {
+        return;
+    }
+    app.detail_scroll = 0;
+    app.detail_comments = None;
+    if let Some(id) = current {
+        spawn_comments(client, id, tx);
+    }
+}
+
 fn handle_app_event(
     app: &mut App,
     msg: AppEvent,
@@ -183,13 +209,14 @@ fn handle_normal_key(
 ) {
     match key.code {
         KeyCode::Char('q') => {
-            if app.focus == Focus::Detail {
-                app.focus = Focus::List;
+            if app.detail_open {
+                app.close_detail();
             } else {
                 app.should_quit = true;
             }
         }
-        KeyCode::Esc if app.focus == Focus::Detail => app.focus = Focus::List,
+        KeyCode::Esc if app.detail_open => app.close_detail(),
+        KeyCode::Tab | KeyCode::BackTab => app.cycle_focus(),
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char('r') => {
             app.loading = true;
@@ -202,35 +229,37 @@ fn handle_normal_key(
             if app.focus == Focus::Detail {
                 app.detail_scroll = app.detail_scroll.saturating_add(1);
             } else {
-                app.move_selection(1);
+                nav(app, client, tx, |a| a.move_selection(1));
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if app.focus == Focus::Detail {
                 app.detail_scroll = app.detail_scroll.saturating_sub(1);
             } else {
-                app.move_selection(-1);
+                nav(app, client, tx, |a| a.move_selection(-1));
             }
         }
-        KeyCode::PageDown => app.move_selection(15),
-        KeyCode::PageUp => app.move_selection(-15),
-        KeyCode::Char('g') | KeyCode::Home => app.selected = 0,
+        KeyCode::PageDown => nav(app, client, tx, |a| a.move_selection(15)),
+        KeyCode::PageUp => nav(app, client, tx, |a| a.move_selection(-15)),
+        KeyCode::Char('g') | KeyCode::Home => nav(app, client, tx, |a| a.selected = 0),
         KeyCode::Char('G') | KeyCode::End => {
-            app.selected = app.rows.len().saturating_sub(1);
+            nav(app, client, tx, |a| {
+                a.selected = a.rows.len().saturating_sub(1);
+            });
         }
 
-        // grouping (list focus only — in detail view ← backs out, → is a no-op)
+        // grouping (list focus only — in the detail pane ← focuses the list)
         KeyCode::Right if app.focus == Focus::List => app.set_current_collapsed(false),
         KeyCode::Left => {
             if app.focus == Focus::Detail {
                 app.focus = Focus::List;
             } else {
-                app.set_current_collapsed(true);
+                nav(app, client, tx, |a| a.set_current_collapsed(true));
             }
         }
-        KeyCode::Char(' ') => app.toggle_collapse(),
-        KeyCode::Char('[') => app.set_all_collapsed(true),
-        KeyCode::Char(']') => app.set_all_collapsed(false),
+        KeyCode::Char(' ') => nav(app, client, tx, App::toggle_collapse),
+        KeyCode::Char('[') => nav(app, client, tx, |a| a.set_all_collapsed(true)),
+        KeyCode::Char(']') => nav(app, client, tx, |a| a.set_all_collapsed(false)),
 
         // filters & sort
         KeyCode::Char('/') => {
@@ -293,13 +322,9 @@ fn handle_normal_key(
 
         // detail
         KeyCode::Enter => {
-            if app.selected_issue().is_some() {
-                app.focus = Focus::Detail;
-                app.detail_scroll = 0;
-                app.detail_comments = None;
-                if let Some(issue) = app.selected_issue() {
-                    spawn_comments(client, issue.id.clone(), tx);
-                }
+            if let Some(issue_id) = app.selected_issue().map(|i| i.id.clone()) {
+                app.open_detail();
+                spawn_comments(client, issue_id, tx);
             } else {
                 app.toggle_collapse();
             }
