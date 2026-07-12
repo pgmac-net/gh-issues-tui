@@ -4,7 +4,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::error::{GithubError, RATE_LIMIT_MSG_PREFIX, Result};
-use super::types::{Comment, Issue, IssueState, Label, RateLimitData, RepoIssues, RepoLabel};
+use super::types::{
+    Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
+    RepoIssues, RepoLabel,
+};
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 const REPOS_PAGE: u32 = 50;
@@ -297,6 +300,119 @@ impl Client {
         .map(drop)
     }
 
+    /// Everything the new-issue form's pickers need, in one query (plus a
+    /// separate, failure-tolerant issue-types query — that field is an org
+    /// feature not available for every owner and must not kill the form).
+    pub async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions> {
+        let data = self
+            .graphql(
+                "query($owner: String!, $name: String!) {
+                   repository(owner: $owner, name: $name) {
+                     id
+                     labels(first: 100, orderBy: {field: NAME, direction: ASC}) { nodes { id name } }
+                     assignableUsers(first: 100) { nodes { id login } }
+                     milestones(first: 50, states: [OPEN], orderBy: {field: DUE_DATE, direction: ASC}) { nodes { id title } }
+                     projectsV2(first: 50) { nodes { id title } }
+                   }
+                 }",
+                json!({ "owner": org, "name": repo }),
+            )
+            .await?;
+        if data.get("repository").is_some_and(Value::is_null) {
+            return Err(GithubError::Shape(format!("no repository {org}/{repo}")));
+        }
+        let repo_id = data
+            .pointer("/repository/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| GithubError::Shape("missing repository.id".into()))?
+            .to_string();
+
+        let labels: Vec<IdName> = parse_at(&data, &["repository", "labels", "nodes"])?;
+        let users: Vec<IdLogin> = parse_at(&data, &["repository", "assignableUsers", "nodes"])?;
+        let milestones: Vec<IdTitle> = parse_at(&data, &["repository", "milestones", "nodes"])?;
+        let projects: Vec<IdTitle> = parse_at(&data, &["repository", "projectsV2", "nodes"])?;
+
+        let issue_types = self.issue_types(org, repo).await.unwrap_or_default();
+
+        Ok(FormOptions {
+            repo_id,
+            labels,
+            users: users.into_iter().map(IdLogin::into_id_name).collect(),
+            milestones: milestones.into_iter().map(IdTitle::into_id_name).collect(),
+            projects: projects.into_iter().map(IdTitle::into_id_name).collect(),
+            issue_types,
+        })
+    }
+
+    async fn issue_types(&self, org: &str, repo: &str) -> Result<Vec<IdName>> {
+        let data = self
+            .graphql(
+                "query($owner: String!, $name: String!) {
+                   repository(owner: $owner, name: $name) {
+                     issueTypes(first: 25) { nodes { id name } }
+                   }
+                 }",
+                json!({ "owner": org, "name": repo }),
+            )
+            .await?;
+        parse_at(&data, &["repository", "issueTypes", "nodes"])
+    }
+
+    /// Create an issue, returning `(number, url)`. When `project_id` is set
+    /// the new issue is added to that ProjectV2 with a follow-up mutation
+    /// (`CreateIssueInput` has no ProjectsV2 field).
+    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+        let mut input = json!({
+            "repositoryId": p.repo_id,
+            "title": p.title,
+            "body": p.body,
+        });
+        if !p.assignee_ids.is_empty() {
+            input["assigneeIds"] = json!(p.assignee_ids);
+        }
+        if !p.label_ids.is_empty() {
+            input["labelIds"] = json!(p.label_ids);
+        }
+        if let Some(m) = &p.milestone_id {
+            input["milestoneId"] = json!(m);
+        }
+        if let Some(t) = &p.issue_type_id {
+            input["issueTypeId"] = json!(t);
+        }
+        let data = self
+            .graphql(
+                "mutation($input: CreateIssueInput!) {
+                   createIssue(input: $input) { issue { id number url } }
+                 }",
+                json!({ "input": input }),
+            )
+            .await?;
+        let issue = data
+            .pointer("/createIssue/issue")
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| GithubError::Shape("createIssue returned no issue".into()))?;
+        let issue_id = issue.get("id").and_then(Value::as_str).unwrap_or_default();
+        let number = issue.get("number").and_then(Value::as_u64).unwrap_or(0);
+        let url = issue
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        if let Some(pid) = &p.project_id {
+            self.graphql(
+                "mutation($projectId: ID!, $contentId: ID!) {
+                   addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                     item { id }
+                   }
+                 }",
+                json!({ "projectId": pid, "contentId": issue_id }),
+            )
+            .await?;
+        }
+        Ok((number, url))
+    }
+
     pub async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {
         let data = self
             .graphql(
@@ -422,6 +538,36 @@ impl IssueNode {
 #[derive(Debug, Deserialize)]
 struct ActorNode {
     login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IdLogin {
+    id: String,
+    login: String,
+}
+
+impl IdLogin {
+    fn into_id_name(self) -> IdName {
+        IdName {
+            id: self.id,
+            name: self.login,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct IdTitle {
+    id: String,
+    title: String,
+}
+
+impl IdTitle {
+    fn into_id_name(self) -> IdName {
+        IdName {
+            id: self.id,
+            name: self.title,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

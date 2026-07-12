@@ -90,3 +90,34 @@ None — implemented as approved.
 
 - 84 unit tests (3 new for `enter_detail`: header no-op, closed-pane open+fetch, open-pane focus-only), clippy `-D warnings`, `fmt --check` — green.
 - Live pty+pyte drive (`.claude/skills/verify` recipe) against `pgmac-net`: `]`, `j`, `→` opened the detail pane showing the selected issue's body and comment thread; `←`/`→` flipped focus with the pane staying open; `q` closed back to the full-width list.
+
+# Development log — new-issue form (2026-07-13)
+
+Work driven by [pgmac-net/gh-issues-tui#10](https://github.com/pgmac-net/gh-issues-tui/issues/10), delivered in PR #16 on Paul's `pgmac/create-new-issue` branch (his first-pass commit 62bbe29 preserved underneath).
+
+## Process
+
+1. Reviewed Paul's first pass (single-line title prompt → `createIssue`): kept the `n` trigger and client structure; superseded the interim `InputKind::CreateIssue` flow; `createIssue` now returns `issue { number url }`; the per-create repo-id lookup was replaced by the id riding along with the form-options fetch.
+2. Plan + review posted to the ticket; scope decisions confirmed before implementation (all 8 fields, multi-line body, continue Paul's branch, zero-issue repos deferred).
+3. Form built by mirroring the filter-editor machinery (field list → per-field popup/input) rather than inventing a new pattern.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Form machinery | mirror `FilterMenu`/`SelectField` | Proven in-repo pattern; users already know the interaction |
+| Body editor | line-wise composition of the existing `InputState` | `tui-textarea` 0.7 (latest) pins ratatui 0.29, incompatible with our 0.30 — duplicate-crate type clash. `InputState` already solves UTF-8 char-boundary editing per line |
+| Options fetch | one query (repo id, labels, assignable users, open milestones, Projects V2); issue types separate + failure-tolerated | issue types are an org feature; an unavailable field must not kill the whole form |
+| Priority | single-select over `priority:*` labels, merged (deduped) into `labelIds` | GitHub has no native priority; matches the org convention the filter code already uses |
+| Project | `addProjectV2ItemById` after creation | `CreateIssueInput` has no ProjectsV2 field |
+| Multi-select | Space toggles a working set on `App`, Enter commits, Esc discards | Keeps `IssueForm` state clean and popup cancellation cheap |
+| Stale options | dropped by repo name | Same idiom as `AppEvent::Comments` |
+
+## Diversions from plan
+
+- `tui-textarea` dropped for the version conflict above (noted on the ticket when found). Everything else as approved.
+
+## Verification
+
+- 92 unit tests (11 new), clippy `-D warnings`, `fmt --check` — green.
+- Live pty+pyte E2E against the real API from inside the repo clone (auto-scoped): `n` → typed title, two-line body, toggled `documentation` in the labels multi-select, submitted from `[ Create issue ]` — issue #15 appeared in the refetched list; `gh issue view` confirmed body `"Line one\nline two"` and the label; scratch closed and deleted.

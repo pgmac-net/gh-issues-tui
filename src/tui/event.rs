@@ -7,9 +7,9 @@ use tokio::sync::mpsc;
 
 use crate::github::Client;
 use crate::github::error::RATE_LIMIT_MSG_PREFIX;
-use crate::github::types::{Comment, IssueState, RepoIssues};
+use crate::github::types::{Comment, FormOptions, IssueState, RepoIssues};
 
-use super::app::{App, Focus, InputKind, Mode, StateFilter};
+use super::app::{App, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter};
 use super::theme::Theme;
 use super::ui;
 
@@ -22,6 +22,11 @@ pub enum AppEvent {
     },
     MutationDone(String),
     MutationFailed(String),
+    /// Per-repo picker options for the new-issue form.
+    FormOptions {
+        repo: String,
+        result: Result<FormOptions, String>,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -113,6 +118,23 @@ fn spawn_fetch(client: &Client, app: &App, tx: &mpsc::UnboundedSender<AppEvent>)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::Data(result));
+    });
+}
+
+fn spawn_form_options(
+    client: &Client,
+    org: String,
+    repo: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client
+            .repo_form_options(&org, &repo)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::FormOptions { repo, result });
     });
 }
 
@@ -212,6 +234,16 @@ fn handle_app_event(
             }
             app.status = Some(format!("failed: {e}"));
         }
+        AppEvent::FormOptions { repo, result } => match result {
+            Ok(options) => app.set_form_options(&repo, options),
+            Err(e) => {
+                // Without options there is no repo id, so the form cannot
+                // submit — surface the error; the user can Esc out.
+                if app.issue_form.as_ref().is_some_and(|f| f.repo == repo) {
+                    app.status = Some(format!("form options failed: {e}"));
+                }
+            }
+        },
     }
 }
 
@@ -223,8 +255,163 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
         Mode::SelectField(idx) => handle_select_field_key(app, key, idx),
         Mode::Calendar(idx) => handle_calendar_key(app, key, idx),
         Mode::ConfirmState => handle_confirm_key(app, key, client, tx),
+        Mode::IssueForm => handle_issue_form_key(app, key, client, tx),
+        Mode::IssueFormSelect(idx) => handle_form_select_key(app, key, idx),
+        Mode::IssueFormMulti(idx) => handle_form_multi_key(app, key, idx),
+        Mode::IssueFormBody => handle_form_body_key(app, key),
         Mode::Help => app.mode = Mode::Normal,
     }
+}
+
+fn handle_issue_form_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let Some(form) = &mut app.issue_form else {
+        app.mode = Mode::Normal;
+        return;
+    };
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.cancel_issue_form();
+            app.status = Some("issue creation cancelled".into());
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            form.field_idx = (form.field_idx + 1).min(ISSUE_FORM_CREATE_ROW);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            form.field_idx = form.field_idx.saturating_sub(1);
+        }
+        KeyCode::Enter => {
+            let idx = form.field_idx;
+            match idx {
+                0 => {
+                    let current = form.title.clone();
+                    app.input.start(&current);
+                    app.mode = Mode::Input(InputKind::FormTitle);
+                }
+                1 => app.mode = Mode::IssueFormBody,
+                _ if IssueForm::is_multi_field(idx) => {
+                    app.select_options = form.field_options(idx);
+                    app.multi_selected = form.multi_set(idx).clone();
+                    app.select_idx = 0;
+                    app.mode = Mode::IssueFormMulti(idx);
+                }
+                _ if IssueForm::is_select_field(idx) => {
+                    // "—" (none) is prepended; stored choices are offset by 1.
+                    let mut opts = form.field_options(idx);
+                    opts.insert(0, "\u{2014}".to_string());
+                    app.select_options = opts;
+                    app.select_idx = form.get_single(idx).map_or(0, |i| i + 1);
+                    app.mode = Mode::IssueFormSelect(idx);
+                }
+                _ => submit_issue_form(app, client, tx),
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_form_select_key(app: &mut App, key: KeyEvent, idx: usize) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::IssueForm,
+        KeyCode::Char('j') | KeyCode::Down => {
+            if !app.select_options.is_empty() {
+                app.select_idx = (app.select_idx + 1) % app.select_options.len();
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if !app.select_options.is_empty() {
+                app.select_idx =
+                    (app.select_idx + app.select_options.len() - 1) % app.select_options.len();
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(form) = &mut app.issue_form
+                && !app.select_options.is_empty()
+            {
+                // Index 0 is "—" (clear); real options are offset by 1.
+                form.set_single(idx, app.select_idx.checked_sub(1));
+            }
+            app.mode = Mode::IssueForm;
+        }
+        _ => {}
+    }
+}
+
+fn handle_form_multi_key(app: &mut App, key: KeyEvent, idx: usize) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::IssueForm, // discard toggles
+        KeyCode::Char('j') | KeyCode::Down => {
+            if !app.select_options.is_empty() {
+                app.select_idx = (app.select_idx + 1) % app.select_options.len();
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if !app.select_options.is_empty() {
+                app.select_idx =
+                    (app.select_idx + app.select_options.len() - 1) % app.select_options.len();
+            }
+        }
+        KeyCode::Char(' ') => {
+            if !app.select_options.is_empty() && !app.multi_selected.remove(&app.select_idx) {
+                app.multi_selected.insert(app.select_idx);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(form) = &mut app.issue_form {
+                *form.multi_set_mut(idx) = app.multi_selected.clone();
+            }
+            app.mode = Mode::IssueForm;
+        }
+        _ => {}
+    }
+}
+
+fn handle_form_body_key(app: &mut App, key: KeyEvent) {
+    let Some(form) = &mut app.issue_form else {
+        app.mode = Mode::Normal;
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => app.mode = Mode::IssueForm, // content kept
+        KeyCode::Enter => form.body.newline(),
+        KeyCode::Backspace => form.body.backspace(),
+        KeyCode::Left => form.body.left(),
+        KeyCode::Right => form.body.right(),
+        KeyCode::Up => form.body.up(),
+        KeyCode::Down => form.body.down(),
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            form.body.insert(c);
+        }
+        _ => {}
+    }
+}
+
+fn submit_issue_form(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let Some(form) = &app.issue_form else { return };
+    if form.options.is_none() {
+        app.status = Some("still loading repo options — try again in a moment".into());
+        return;
+    }
+    let Some(params) = form.build_params() else {
+        app.status = Some("a title is required".into());
+        return;
+    };
+    let repo = form.repo.clone();
+    app.cancel_issue_form();
+    app.status = Some(format!("creating issue in {repo}…"));
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let msg = match client.create_issue(&params).await {
+            Ok((number, _url)) => AppEvent::MutationDone(format!("created #{number} in {repo}")),
+            Err(e) => AppEvent::MutationFailed(e.to_string()),
+        };
+        let _ = tx.send(msg);
+    });
 }
 
 fn handle_normal_key(
@@ -404,6 +591,12 @@ fn handle_normal_key(
                 app.mode = Mode::Input(InputKind::Title);
             }
         }
+        KeyCode::Char('n') => {
+            if let Some(repo) = app.selected_repo().map(|r| r.repo.clone()) {
+                app.open_issue_form(repo.clone());
+                spawn_form_options(client, app.org.clone(), repo, tx);
+            }
+        }
         _ => {}
     }
 }
@@ -417,10 +610,10 @@ fn handle_input_key(
 ) {
     match key.code {
         KeyCode::Esc => {
-            app.mode = if matches!(kind, InputKind::FilterField(_)) {
-                Mode::FilterMenu
-            } else {
-                Mode::Normal
+            app.mode = match kind {
+                InputKind::FilterField(_) => Mode::FilterMenu,
+                InputKind::FormTitle => Mode::IssueForm,
+                _ => Mode::Normal,
             };
         }
         KeyCode::Enter => {
@@ -502,6 +695,12 @@ fn submit_input(
             app.status = Some(format!("switching to {org}…"));
             app.switch_org(org);
             spawn_fetch(client, app, tx);
+        }
+        InputKind::FormTitle => {
+            if let Some(form) = &mut app.issue_form {
+                form.title = value.trim().to_string();
+            }
+            app.mode = Mode::IssueForm;
         }
     }
 }
