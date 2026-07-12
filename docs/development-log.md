@@ -121,3 +121,30 @@ Work driven by [pgmac-net/gh-issues-tui#10](https://github.com/pgmac-net/gh-issu
 
 - 92 unit tests (11 new), clippy `-D warnings`, `fmt --check` — green.
 - Live pty+pyte E2E against the real API from inside the repo clone (auto-scoped): `n` → typed title, two-line body, toggled `documentation` in the labels multi-select, submitted from `[ Create issue ]` — issue #15 appeared in the refetched list; `gh issue view` confirmed body `"Line one\nline two"` and the label; scratch closed and deleted.
+
+# Development log — picker type-ahead (2026-07-13)
+
+Work driven by [pgmac-net/gh-issues-tui#9](https://github.com/pgmac-net/gh-issues-tui/issues/9), delivered in PR #17 on branch `9-picker-typeahead`.
+
+## Process
+
+Scope confirmed with Paul before planning: direct typing (not a `/`-prefix mode) and all pickers, not just the repo one. Plan approved on the ticket, then implemented in one PR.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Typing model | chars filter immediately; ↑/↓ navigate | Ticket's literal ask ("just start typing"); costs j/k/g/G/q inside pickers only |
+| Index model | `select_idx` positional in the filtered view, commits map back via `picker_selected_original()` | Form pickers store indices into `FormOptions` lists and multi-select `[x]` marks key off original indices — value-based commits would silently break them |
+| Shared handler | one `picker_common_key` + one `start_picker` entry point | Three picker modes (filter editor, form single, form multi) must not drift |
+| No-match Enter | no-op (empty picker still closes) | Mis-typed filter shouldn't dismiss the picker and lose context |
+| Filter row prefix | ASCII `/`, not 🔎 | Wide-emoji cell widths are unreliable across terminals; also crashed the pyte test driver (IndexError in wcwidth handling) — found live during verification |
+
+## Diversions from plan
+
+- Plan said "🔎 row"; shipped `/` row for the terminal-width reason above. Behaviour unchanged.
+
+## Verification
+
+- 100 unit tests (9 new), clippy `-D warnings`, `fmt --check` — green.
+- Live pty+pyte drive over the 19-repo pgmac-net list: `F` → repo picker → typed `gh-i` → list narrowed to `gh-issues-tui` under the `/ gh-i█` row → Enter applied the repo filter → issue list collapsed to that repo.
