@@ -275,7 +275,17 @@ fn handle_normal_key(
         }
 
         // grouping (list focus only — in the detail pane ← focuses the list)
-        KeyCode::Right if app.focus == Focus::List => app.set_current_collapsed(false),
+        KeyCode::Right if app.focus == Focus::List => {
+            if app.selected_issue().is_some() {
+                // Issue row: → goes deeper into the detail pane (mirror of
+                // ← backing out), opening the split like Enter if needed.
+                if let Some(issue_id) = app.enter_detail() {
+                    spawn_comments(client, issue_id, tx);
+                }
+            } else {
+                app.set_current_collapsed(false);
+            }
+        }
         KeyCode::Left => {
             if app.focus == Focus::Detail {
                 app.focus = Focus::List;

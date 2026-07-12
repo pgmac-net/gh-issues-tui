@@ -510,6 +510,21 @@ impl App {
         self.detail_comments = None;
     }
 
+    /// `→` on an issue row: move focus into the detail pane, opening the
+    /// split first when it is closed. Returns the issue id when the pane
+    /// was newly opened and its comments need fetching. No-op (`None`)
+    /// on repo header rows — there `→` keeps meaning "expand the group".
+    pub fn enter_detail(&mut self) -> Option<String> {
+        let id = self.selected_issue().map(|i| i.id.clone())?;
+        if self.detail_open {
+            self.focus = Focus::Detail;
+            None
+        } else {
+            self.open_detail();
+            Some(id)
+        }
+    }
+
     /// Close the detail pane, returning focus to the list.
     pub fn close_detail(&mut self) {
         self.detail_open = false;
@@ -1502,6 +1517,36 @@ mod tests {
         assert!(App::is_select_field(4)); // priority
         assert!(App::is_select_field(5)); // status
         assert!(!App::is_select_field(6)); // created after
+    }
+
+    #[test]
+    fn enter_detail_on_header_is_none_and_keeps_pane_closed() {
+        let mut app = two_repo_app();
+        app.selected = 0; // repo header
+        assert_eq!(app.enter_detail(), None);
+        assert!(!app.detail_open);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn enter_detail_opens_closed_pane_and_requests_comments() {
+        let mut app = two_repo_app();
+        app.selected = 1; // first issue row
+        let expected = app.selected_issue().unwrap().id.clone();
+        assert_eq!(app.enter_detail(), Some(expected));
+        assert!(app.detail_open);
+        assert_eq!(app.focus, Focus::Detail);
+    }
+
+    #[test]
+    fn enter_detail_on_open_pane_just_moves_focus() {
+        let mut app = two_repo_app();
+        app.selected = 1;
+        app.open_detail();
+        app.focus = Focus::List; // as after ← backing out
+        assert_eq!(app.enter_detail(), None); // no comment refetch
+        assert!(app.detail_open);
+        assert_eq!(app.focus, Focus::Detail);
     }
 
     #[test]
