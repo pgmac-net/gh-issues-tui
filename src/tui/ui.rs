@@ -302,6 +302,7 @@ fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 InputKind::Labels => "labels (comma-separated)",
                 InputKind::Title => "title",
                 InputKind::Org => "org/owner (Enter switches)",
+                InputKind::CreateIssue => "new issue title (Enter creates)",
             };
             let line = Line::from(vec![
                 Span::styled(format!(" {prompt}: "), Style::default().fg(t.accent)),
@@ -481,6 +482,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("a", "edit assignees"),
         ("l", "edit labels"),
         ("t", "edit title"),
+        ("n", "new issue"),
         ("r", "reload"),
         ("q", "back / quit"),
     ];

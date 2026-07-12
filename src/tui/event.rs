@@ -394,6 +394,10 @@ fn handle_normal_key(
                 app.mode = Mode::Input(InputKind::Title);
             }
         }
+        KeyCode::Char('n') if app.selected_repo().is_some() => {
+            app.input.start("");
+            app.mode = Mode::Input(InputKind::CreateIssue);
+        }
         _ => {}
     }
 }
@@ -492,6 +496,31 @@ fn submit_input(
             app.status = Some(format!("switching to {org}…"));
             app.switch_org(org);
             spawn_fetch(client, app, tx);
+        }
+        InputKind::CreateIssue => {
+            let title = value.trim().to_string();
+            if title.is_empty() {
+                app.status = Some("empty title discarded".into());
+                return;
+            }
+            let Some(repo) = app.selected_repo().map(|r| r.repo.clone()) else {
+                app.status = Some("no repo selected".into());
+                return;
+            };
+            let org = app.org.clone();
+            let client = client.clone();
+            let tx = tx.clone();
+            app.status = Some("creating issue…".into());
+            tokio::spawn(async move {
+                let msg = match client
+                    .create_issue(&org, &repo, &title, "")
+                    .await
+                {
+                    Ok(()) => AppEvent::MutationDone("issue created".to_string()),
+                    Err(e) => AppEvent::MutationFailed(e.to_string()),
+                };
+                let _ = tx.send(msg);
+            });
         }
     }
 }

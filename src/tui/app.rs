@@ -255,6 +255,8 @@ pub enum InputKind {
     Title,
     /// Switch the org/owner being browsed.
     Org,
+    /// Create a new issue in the selected repo.
+    CreateIssue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

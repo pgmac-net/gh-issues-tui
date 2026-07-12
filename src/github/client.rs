@@ -297,6 +297,32 @@ impl Client {
         .map(drop)
     }
 
+    pub async fn create_issue(&self, org: &str, repo: &str, title: &str, body: &str) -> Result<()> {
+        let data = self
+            .graphql(
+                "query($owner: String!, $name: String!) {
+                   repository(owner: $owner, name: $name) { id }
+                 }",
+                json!({ "owner": org, "name": repo }),
+            )
+            .await?;
+        let repo_id = data
+            .pointer("/repository/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| GithubError::Shape(format!("no repository {org}/{repo}")))?
+            .to_string();
+        self.graphql(
+            "mutation($repoId: ID!, $title: String!, $body: String!) {
+               createIssue(input: {repositoryId: $repoId, title: $title, body: $body}) {
+                 clientMutationId
+               }
+             }",
+            json!({ "repoId": repo_id, "title": title, "body": body }),
+        )
+        .await
+        .map(drop)
+    }
+
     pub async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {
         let data = self
             .graphql(
