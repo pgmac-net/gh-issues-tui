@@ -1,4 +1,5 @@
 mod config;
+mod cwd_repo;
 mod github;
 mod tui;
 
@@ -37,16 +38,41 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = config::Config::load()?;
 
-    let org = cli.org.or_else(|| cfg.default_org.clone()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no organisation given: pass --org or set default_org in {}",
-            config::Config::path().display()
-        )
-    })?;
+    // Precedence: --org flag → cwd git remote (owner + repo filter) →
+    // config default_org. The repo filter only applies when the org being
+    // browsed is the detected remote's owner.
+    let detected = cwd_repo::detect();
+    let (org, initial_repo) = match (cli.org, detected) {
+        (Some(org), Some((owner, repo))) => {
+            let filter = owner.eq_ignore_ascii_case(&org).then_some(repo);
+            (org, filter)
+        }
+        (Some(org), None) => (org, None),
+        (None, Some((owner, repo))) => (owner, Some(repo)),
+        (None, None) => (
+            cfg.default_org.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no organisation given: pass --org, set default_org in {}, \
+                     or run from inside a GitHub repository clone",
+                    config::Config::path().display()
+                )
+            })?,
+            None,
+        ),
+    };
 
+    let theme = cfg.resolve_theme()?;
     let token = github::auth::resolve_token(cli.token)?;
     let client = github::Client::new(token)?;
 
     install_panic_hook();
-    tui::run(client, org, cli.all, cfg.default_collapsed).await
+    tui::run(
+        client,
+        org,
+        initial_repo,
+        cli.all,
+        cfg.default_collapsed,
+        theme,
+    )
+    .await
 }

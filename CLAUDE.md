@@ -22,28 +22,35 @@ Three top-level modules wired together in `src/main.rs`:
 
 | Module | Purpose |
 |--------|---------|
-| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`). |
+| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`, `color_profile` + `[color_profiles.*]`). |
+| `cwd_repo` | Detects the cwd's `origin` GitHub remote (`(owner, repo)`), best-effort via `git remote get-url origin`. |
 | `github` | Async GitHub GraphQL v4 client + token resolution. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |
+
+Startup org resolution in `main.rs`: `--org` flag → cwd git remote (owner, plus the repo name as the initial repo filter) → `default_org`. The detected repo filter is applied with `--org` only when the remote owner matches the flag.
 
 ### github/
 
 - `auth.rs` — `resolve_token`: `--token` flag → `GITHUB_TOKEN` → `GH_TOKEN` → `gh auth token`. Injectable closures make the chain unit-testable.
-- `client.rs` — `Client` (cheaply cloneable, one `reqwest::Client`). `org_issues` walks `organization.repositories` with cursor pagination and follows nested per-repo issue pagination — deliberately NOT the search API, which caps at 1000 results. Mutations: `add_comment`, `set_state`, `update_title`, `set_assignees` (resolves logins → node ids), `set_labels` (resolves names → label ids via `repo_labels`).
+- `client.rs` — `Client` (cheaply cloneable, one `reqwest::Client`). `org_issues` walks `repositoryOwner.repositories` (works for both organisations and user accounts) with cursor pagination and follows nested per-repo issue pagination — deliberately NOT the search API, which caps at 1000 results. Mutations: `add_comment`, `set_state`, `update_title`, `set_assignees` (resolves logins → node ids), `set_labels` (resolves names → label ids via `repo_labels`).
 - `types.rs` — domain types (`Issue`, `RepoIssues`, `Comment`, `IssueState`). GraphQL response DTOs live privately in `client.rs`.
 
 ### tui/
 
+- `theme.rs` — `Theme` (resolved UI colours, `Default` = original scheme) + `ColorProfile` (per-field optional overrides deserialized from `[color_profiles.<name>]`; colours parse via ratatui's `Color` serde: names/hex/index). `Config::resolve_theme` picks the profile named by `color_profile`; a missing name is a startup error. `ui::draw` takes `&Theme` — no colour constants in `ui.rs`.
 - `app.rs` — All state and pure logic: `Filters` (text/repo/assignee/author/date bounds), `SortKey`, collapsible `Row` model (`RepoHeader`/`Issue`), `InputState` (char-indexed, UTF-8 safe), `Mode` (Normal/Input/FilterMenu/ConfirmState/Help). `rebuild_rows()` recomputes the visible list from data + filters + sort + collapsed set. This module has no I/O — it holds the bulk of the unit tests.
+- Detail view is a 40/60 split pane (`detail_open` on `App`; `Focus` = which pane has keys). List navigation live-follows into the pane via `nav()` in `event.rs` (fetches comments only when the selected issue id actually changed); `AppEvent::Comments` drops stale responses by issue id. Esc/q close the split from either pane; Tab/BackTab cycle focus.
 - `event.rs` — Async event loop: `tokio::select!` over crossterm `EventStream` and an mpsc channel of `AppEvent`s from spawned background tasks. All GitHub calls happen in spawned tasks; mutations send `MutationDone` which triggers a full refetch (simple consistency over optimistic updates).
 - `ui.rs` — Pure render from `&App`. No state mutation in draw code.
 
 ## Key design invariants
 
 - **Tokens never in config.** `Config` has no token field; resolution is env/CLI/`gh` only.
-- **Pagination over search.** Issue fetch must stay on `organization.repositories` → `issues` cursors. Do not switch to the GraphQL/REST search API — it silently caps at 1000 results org-wide.
+- **Pagination over search.** Issue fetch must stay on `repositoryOwner.repositories` → `issues` cursors. Do not switch to the GraphQL/REST search API — it silently caps at 1000 results org-wide.
+- **Repo filter is exact-when-exact.** When the filter text exactly equals a loaded repo name (case-insensitive) only that repo matches; otherwise substring. Computed per `rebuild_rows` pass.
+- **Org switch resets view state.** `App::switch_org` clears data, filters, collapse and seen-repo sets (keeps `include_closed`); callers must spawn a refetch.
 - **`rebuild_rows` after any change** to filters, sort, collapse state, or data. Selection is clamped there; stale indices panic otherwise.
-- **Collapse state keyed by repo name** (not index) so it survives reloads. `default_collapsed` is applied in `set_data` only to repos not yet in `seen_repos`, so manual expand/collapse choices always win over the config default.
+- **Collapse state keyed by repo name** (not index) so it survives reloads. `default_collapsed` (config default: true) is applied in `set_data` only to repos not yet in `seen_repos`, so manual expand/collapse choices always win over the config default. Exception: when the current filters leave exactly one repo group visible (`single_visible_repo`), that group defaults to expanded.
 - **Panic hook** in `main.rs` restores the terminal before printing panics. Anything that touches terminal state must stay safe to drop in this path.
 - **Closed issues are lazily fetched.** Startup fetches open-only unless `--all`; the first switch of the state filter away from `open` sets `include_closed` and refetches once.
 

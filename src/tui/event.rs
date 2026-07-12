@@ -10,6 +10,7 @@ use crate::github::error::RATE_LIMIT_MSG_PREFIX;
 use crate::github::types::{Comment, IssueState, RepoIssues};
 
 use super::app::{App, Focus, InputKind, Mode, StateFilter};
+use super::theme::Theme;
 use super::ui;
 
 /// Messages from background tasks back into the UI loop.
@@ -26,30 +27,44 @@ pub enum AppEvent {
 pub async fn run(
     client: Client,
     org: String,
+    initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
+    theme: Theme,
 ) -> Result<()> {
     let terminal = ratatui::init();
-    let result = event_loop(terminal, client, org, include_closed, default_collapsed).await;
+    let result = event_loop(
+        terminal,
+        client,
+        org,
+        initial_repo,
+        include_closed,
+        default_collapsed,
+        theme,
+    )
+    .await;
     ratatui::restore();
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn event_loop(
     mut terminal: DefaultTerminal,
     client: Client,
     org: String,
+    initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
+    theme: Theme,
 ) -> Result<()> {
-    let mut app = App::new(org, include_closed, default_collapsed);
+    let mut app = App::new(org, initial_repo, include_closed, default_collapsed);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
 
     spawn_fetch(&client, &app, &tx);
 
     loop {
-        terminal.draw(|f| ui::draw(f, &app))?;
+        terminal.draw(|f| ui::draw(f, &app, &theme))?;
 
         tokio::select! {
             Some(Ok(ev)) = keys.next() => {
@@ -89,6 +104,32 @@ fn spawn_comments(client: &Client, issue_id: String, tx: &mpsc::UnboundedSender<
         let result = client.comments(&issue_id).await.map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::Comments { issue_id, result });
     });
+}
+
+/// Run a selection-changing action, then live-update the detail pane: when
+/// the split is open and the selected issue changed, reset the pane and
+/// fetch the new issue's comments (stale responses are dropped by id in
+/// `handle_app_event`). Landing on a repo header just clears the pane.
+fn nav(
+    app: &mut App,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    action: impl FnOnce(&mut App),
+) {
+    let prev = app.selected_issue().map(|i| i.id.clone());
+    action(app);
+    if !app.detail_open {
+        return;
+    }
+    let current = app.selected_issue().map(|i| i.id.clone());
+    if current == prev {
+        return;
+    }
+    app.detail_scroll = 0;
+    app.detail_comments = None;
+    if let Some(id) = current {
+        spawn_comments(client, id, tx);
+    }
 }
 
 fn handle_app_event(
@@ -168,13 +209,14 @@ fn handle_normal_key(
 ) {
     match key.code {
         KeyCode::Char('q') => {
-            if app.focus == Focus::Detail {
-                app.focus = Focus::List;
+            if app.detail_open {
+                app.close_detail();
             } else {
                 app.should_quit = true;
             }
         }
-        KeyCode::Esc if app.focus == Focus::Detail => app.focus = Focus::List,
+        KeyCode::Esc if app.detail_open => app.close_detail(),
+        KeyCode::Tab | KeyCode::BackTab => app.cycle_focus(),
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char('r') => {
             app.loading = true;
@@ -187,35 +229,37 @@ fn handle_normal_key(
             if app.focus == Focus::Detail {
                 app.detail_scroll = app.detail_scroll.saturating_add(1);
             } else {
-                app.move_selection(1);
+                nav(app, client, tx, |a| a.move_selection(1));
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if app.focus == Focus::Detail {
                 app.detail_scroll = app.detail_scroll.saturating_sub(1);
             } else {
-                app.move_selection(-1);
+                nav(app, client, tx, |a| a.move_selection(-1));
             }
         }
-        KeyCode::PageDown => app.move_selection(15),
-        KeyCode::PageUp => app.move_selection(-15),
-        KeyCode::Char('g') | KeyCode::Home => app.selected = 0,
+        KeyCode::PageDown => nav(app, client, tx, |a| a.move_selection(15)),
+        KeyCode::PageUp => nav(app, client, tx, |a| a.move_selection(-15)),
+        KeyCode::Char('g') | KeyCode::Home => nav(app, client, tx, |a| a.selected = 0),
         KeyCode::Char('G') | KeyCode::End => {
-            app.selected = app.rows.len().saturating_sub(1);
+            nav(app, client, tx, |a| {
+                a.selected = a.rows.len().saturating_sub(1);
+            });
         }
 
-        // grouping (list focus only — in detail view ← backs out, → is a no-op)
+        // grouping (list focus only — in the detail pane ← focuses the list)
         KeyCode::Right if app.focus == Focus::List => app.set_current_collapsed(false),
         KeyCode::Left => {
             if app.focus == Focus::Detail {
                 app.focus = Focus::List;
             } else {
-                app.set_current_collapsed(true);
+                nav(app, client, tx, |a| a.set_current_collapsed(true));
             }
         }
-        KeyCode::Char(' ') => app.toggle_collapse(),
-        KeyCode::Char('[') => app.set_all_collapsed(true),
-        KeyCode::Char(']') => app.set_all_collapsed(false),
+        KeyCode::Char(' ') => nav(app, client, tx, App::toggle_collapse),
+        KeyCode::Char('[') => nav(app, client, tx, |a| a.set_all_collapsed(true)),
+        KeyCode::Char(']') => nav(app, client, tx, |a| a.set_all_collapsed(false)),
 
         // filters & sort
         KeyCode::Char('/') => {
@@ -232,6 +276,7 @@ fn handle_normal_key(
                 spawn_fetch(client, app, tx);
             }
             app.rebuild_rows();
+            app.expand_single_visible();
         }
         KeyCode::Char('F') => {
             app.filter_menu_idx = 0;
@@ -244,6 +289,13 @@ fn handle_normal_key(
         KeyCode::Char('S') => {
             app.sort_desc = !app.sort_desc;
             app.rebuild_rows();
+        }
+
+        // switch org/owner
+        KeyCode::Char('w') => {
+            let current = app.org.clone();
+            app.input.start(&current);
+            app.mode = Mode::Input(InputKind::Org);
         }
 
         // open in browser
@@ -270,13 +322,9 @@ fn handle_normal_key(
 
         // detail
         KeyCode::Enter => {
-            if app.selected_issue().is_some() {
-                app.focus = Focus::Detail;
-                app.detail_scroll = 0;
-                app.detail_comments = None;
-                if let Some(issue) = app.selected_issue() {
-                    spawn_comments(client, issue.id.clone(), tx);
-                }
+            if let Some(issue_id) = app.selected_issue().map(|i| i.id.clone()) {
+                app.open_detail();
+                spawn_comments(client, issue_id, tx);
             } else {
                 app.toggle_collapse();
             }
@@ -409,6 +457,16 @@ fn submit_input(
                 c.update_title(&id, &value).await
             });
         }
+        InputKind::Org => {
+            let org = value.trim().to_string();
+            if org.is_empty() || org.eq_ignore_ascii_case(&app.org) {
+                app.status = Some("org unchanged".into());
+                return;
+            }
+            app.status = Some(format!("switching to {org}…"));
+            app.switch_org(org);
+            spawn_fetch(client, app, tx);
+        }
     }
 }
 
@@ -426,6 +484,7 @@ fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') => {
             app.filters.clear();
             app.rebuild_rows();
+            app.expand_single_visible();
         }
         KeyCode::Enter => {
             let idx = app.filter_menu_idx;

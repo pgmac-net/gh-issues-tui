@@ -113,8 +113,18 @@ impl Filters {
             && on_or_before(issue.closed_at, self.closed_before)
     }
 
-    pub fn repo_matches(&self, repo: &str) -> bool {
-        self.repo.is_empty() || repo.to_lowercase().contains(&self.repo.to_lowercase())
+    /// `exact` is set when the filter text exactly names a fetched repo —
+    /// then only that repo matches, so "api" can't drag in "api-gateway".
+    /// Otherwise the filter is a case-insensitive substring.
+    pub fn repo_matches(&self, repo: &str, exact: bool) -> bool {
+        if self.repo.is_empty() {
+            return true;
+        }
+        if exact {
+            repo.eq_ignore_ascii_case(&self.repo)
+        } else {
+            repo.to_lowercase().contains(&self.repo.to_lowercase())
+        }
     }
 
     pub fn is_active(&self) -> bool {
@@ -243,6 +253,8 @@ pub enum InputKind {
     Assignees,
     Labels,
     Title,
+    /// Switch the org/owner being browsed.
+    Org,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,6 +325,9 @@ pub struct App {
     pub sort_key: SortKey,
     pub sort_desc: bool,
     pub focus: Focus,
+    /// Whether the detail pane (right split) is open. `focus` says which
+    /// pane has keyboard focus while it is.
+    pub detail_open: bool,
     pub mode: Mode,
     pub input: InputState,
     pub filter_menu_idx: usize,
@@ -335,7 +350,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(org: String, include_closed: bool, default_collapsed: bool) -> Self {
+    pub fn new(
+        org: String,
+        initial_repo: Option<String>,
+        include_closed: bool,
+        default_collapsed: bool,
+    ) -> Self {
         Self {
             org,
             repos: Vec::new(),
@@ -345,10 +365,14 @@ impl App {
             rows: Vec::new(),
             selected: 0,
             state_filter: StateFilter::Open,
-            filters: Filters::default(),
+            filters: Filters {
+                repo: initial_repo.unwrap_or_default(),
+                ..Filters::default()
+            },
             sort_key: SortKey::Updated,
             sort_desc: true,
             focus: Focus::List,
+            detail_open: false,
             mode: Mode::Normal,
             input: InputState::default(),
             filter_menu_idx: 0,
@@ -369,14 +393,103 @@ impl App {
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
         self.repos = repos;
         // First-seen repos take the configured default; repos the user has
-        // already interacted with keep their manual collapse state.
+        // already interacted with keep their manual collapse state. When the
+        // current filters leave exactly one repo group visible, that group
+        // defaults to expanded so its issues are immediately readable.
+        let auto_expand = if self.default_collapsed {
+            self.single_visible_repo()
+        } else {
+            None
+        };
         for repo in &self.repos {
-            if self.seen_repos.insert(repo.repo.clone()) && self.default_collapsed {
+            if self.seen_repos.insert(repo.repo.clone())
+                && self.default_collapsed
+                && auto_expand.as_deref() != Some(repo.repo.as_str())
+            {
                 self.collapsed.insert(repo.repo.clone());
             }
         }
         self.loading = false;
         self.rebuild_rows();
+    }
+
+    /// True when the repo filter text exactly names a fetched repo — then
+    /// `Filters::repo_matches` matches only that repo instead of substrings.
+    fn repo_filter_exact(&self) -> bool {
+        !self.filters.repo.is_empty()
+            && self
+                .repos
+                .iter()
+                .any(|r| r.repo.eq_ignore_ascii_case(&self.filters.repo))
+    }
+
+    /// Expand the lone visible repo group, if any. Called after every
+    /// filter change so filtering down to one repo reveals its issues;
+    /// a manual collapse afterwards sticks until the filters change again.
+    pub fn expand_single_visible(&mut self) {
+        if let Some(repo) = self.single_visible_repo()
+            && self.collapsed.remove(&repo)
+        {
+            self.rebuild_rows();
+        }
+    }
+
+    /// Name of the only repo group visible under the current filters, or
+    /// `None` when zero or several groups are visible.
+    fn single_visible_repo(&self) -> Option<String> {
+        let exact = self.repo_filter_exact();
+        let mut visible = self.repos.iter().filter(|r| {
+            self.filters.repo_matches(&r.repo, exact)
+                && r.issues
+                    .iter()
+                    .any(|i| self.filters.matches(i, self.state_filter))
+        });
+        let first = visible.next()?;
+        visible.next().is_none().then(|| first.repo.clone())
+    }
+
+    /// Switch to browsing a different org/owner: drop all fetched data and
+    /// per-org view state (filters, collapse, seen repos) for a fresh view.
+    /// Keeps `include_closed` so the state-filter dataset stays consistent.
+    pub fn switch_org(&mut self, org: String) {
+        self.org = org;
+        self.repos.clear();
+        self.rows.clear();
+        self.collapsed.clear();
+        self.seen_repos.clear();
+        self.filters.clear();
+        self.state_filter = StateFilter::Open;
+        self.selected = 0;
+        self.focus = Focus::List;
+        self.detail_open = false;
+        self.detail_comments = None;
+        self.detail_scroll = 0;
+        self.loading = true;
+    }
+
+    /// Open the detail pane on the selected issue and focus it.
+    pub fn open_detail(&mut self) {
+        self.detail_open = true;
+        self.focus = Focus::Detail;
+        self.detail_scroll = 0;
+        self.detail_comments = None;
+    }
+
+    /// Close the detail pane, returning focus to the list.
+    pub fn close_detail(&mut self) {
+        self.detail_open = false;
+        self.focus = Focus::List;
+    }
+
+    /// Tab / Shift+Tab: move focus to the other pane. With two panes the
+    /// direction doesn't matter; no-op when the split is closed.
+    pub fn cycle_focus(&mut self) {
+        if self.detail_open {
+            self.focus = match self.focus {
+                Focus::List => Focus::Detail,
+                Focus::Detail => Focus::List,
+            };
+        }
     }
 
     /// Recompute the visible rows. Keeps the selection in range.
@@ -385,8 +498,9 @@ impl App {
             sort_issues(&mut repo.issues, self.sort_key, self.sort_desc);
         }
         self.rows.clear();
+        let repo_exact = self.repo_filter_exact();
         for (ri, repo) in self.repos.iter().enumerate() {
-            if !self.filters.repo_matches(&repo.repo) {
+            if !self.filters.repo_matches(&repo.repo, repo_exact) {
                 continue;
             }
             let visible: Vec<usize> = repo
@@ -492,11 +606,25 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Count of issues currently visible (excludes headers).
+    /// Count of issues currently visible (excludes headers). Test helper —
+    /// production code shows `filtered_issue_count` instead.
+    #[cfg(test)]
     pub fn visible_issue_count(&self) -> usize {
         self.rows
             .iter()
             .filter(|r| matches!(r, Row::Issue { .. }))
+            .count()
+    }
+
+    /// Count of issues passing the current filters, including those hidden
+    /// inside collapsed repo groups. Shown in the list title.
+    pub fn filtered_issue_count(&self) -> usize {
+        let exact = self.repo_filter_exact();
+        self.repos
+            .iter()
+            .filter(|r| self.filters.repo_matches(&r.repo, exact))
+            .flat_map(|r| r.issues.iter())
+            .filter(|i| self.filters.matches(i, self.state_filter))
             .count()
     }
 
@@ -525,6 +653,7 @@ impl App {
             _ => {}
         }
         self.rebuild_rows();
+        self.expand_single_visible();
     }
 
     pub fn current_filter_value(&self, idx: usize) -> String {
@@ -648,7 +777,7 @@ mod tests {
     }
 
     fn app_with(repos: Vec<RepoIssues>) -> App {
-        let mut app = App::new("org".into(), false, false);
+        let mut app = App::new("org".into(), None, false, false);
         app.set_data(repos);
         app
     }
@@ -691,7 +820,7 @@ mod tests {
 
     #[test]
     fn default_collapsed_starts_all_groups_folded() {
-        let mut app = App::new("org".into(), false, true);
+        let mut app = App::new("org".into(), None, false, true);
         app.set_data(vec![
             RepoIssues {
                 repo: "alpha".into(),
@@ -711,13 +840,20 @@ mod tests {
     #[test]
     fn default_collapsed_preserves_manual_expand_across_reload() {
         let repos = || {
-            vec![RepoIssues {
-                repo: "alpha".into(),
-                repo_url: "u".into(),
-                issues: vec![issue(1, "a", IssueState::Open)],
-            }]
+            vec![
+                RepoIssues {
+                    repo: "alpha".into(),
+                    repo_url: "u".into(),
+                    issues: vec![issue(1, "a", IssueState::Open)],
+                },
+                RepoIssues {
+                    repo: "beta".into(),
+                    repo_url: "u".into(),
+                    issues: vec![issue(2, "b", IssueState::Open)],
+                },
+            ]
         };
-        let mut app = App::new("org".into(), false, true);
+        let mut app = App::new("org".into(), None, false, true);
         app.set_data(repos());
         assert_eq!(app.visible_issue_count(), 0);
 
@@ -741,10 +877,9 @@ mod tests {
             repo_url: "u".into(),
             issues: vec![issue(2, "b", IssueState::Open)],
         };
-        let mut app = App::new("org".into(), false, true);
+        let mut app = App::new("org".into(), None, false, true);
         app.set_data(vec![alpha.clone()]);
-        app.selected = 0;
-        app.toggle_collapse(); // expand alpha
+        assert!(!app.collapsed.contains("alpha")); // single group auto-expands
 
         app.set_data(vec![alpha, beta]); // beta appears for the first time
         assert!(!app.collapsed.contains("alpha"));
@@ -753,9 +888,159 @@ mod tests {
     }
 
     #[test]
+    fn default_collapsed_single_repo_starts_expanded() {
+        let mut app = App::new("org".into(), None, false, true);
+        app.set_data(vec![RepoIssues {
+            repo: "solo".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(1, "a", IssueState::Open)],
+        }]);
+        assert!(!app.collapsed.contains("solo"));
+        assert_eq!(app.visible_issue_count(), 1);
+    }
+
+    #[test]
+    fn default_collapsed_expands_only_repo_matching_initial_filter() {
+        let mut app = App::new("org".into(), Some("beta".into()), false, true);
+        app.set_data(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "beta".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(2, "b", IssueState::Open)],
+            },
+        ]);
+        // beta is the single visible group → expanded; alpha still defaults
+        // collapsed and shows once the filter is cleared.
+        assert!(!app.collapsed.contains("beta"));
+        assert!(app.collapsed.contains("alpha"));
+        assert_eq!(app.visible_issue_count(), 1);
+
+        app.filters.clear();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 1); // beta open, alpha folded
+        assert_eq!(app.rows.len(), 3); // two headers + beta's issue
+    }
+
+    #[test]
+    fn manual_collapse_of_single_repo_survives_reload() {
+        let repos = || {
+            vec![RepoIssues {
+                repo: "solo".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            }]
+        };
+        let mut app = App::new("org".into(), None, false, true);
+        app.set_data(repos());
+        assert_eq!(app.visible_issue_count(), 1); // auto-expanded
+
+        app.selected = 0;
+        app.toggle_collapse(); // user folds it
+        assert_eq!(app.visible_issue_count(), 0);
+
+        app.set_data(repos()); // reload must not force it back open
+        assert_eq!(app.visible_issue_count(), 0);
+    }
+
+    #[test]
     fn without_default_collapsed_groups_start_expanded() {
         let app = two_repo_app(); // uses default_collapsed = false
         assert_eq!(app.visible_issue_count(), 3);
+    }
+
+    #[test]
+    fn filtering_to_single_repo_expands_it() {
+        let mut app = two_repo_app();
+        app.set_all_collapsed(true);
+        assert_eq!(app.visible_issue_count(), 0);
+
+        // Repo filter leaving one visible group expands it.
+        app.apply_filter_input(InputKind::FilterField(1), "beta");
+        assert_eq!(app.visible_issue_count(), 1);
+        assert!(!app.collapsed.contains("beta"));
+
+        // Text search narrowing to one group expands too.
+        app.set_all_collapsed(true);
+        app.apply_filter_input(InputKind::FilterField(1), "");
+        app.apply_filter_input(InputKind::Search, "docs");
+        assert_eq!(app.visible_issue_count(), 1); // beta's "docs fix"
+    }
+
+    #[test]
+    fn filtering_to_multiple_repos_keeps_them_folded() {
+        let mut app = two_repo_app();
+        app.set_all_collapsed(true);
+        // "a" substring-matches both alpha and beta — no auto-expand.
+        app.apply_filter_input(InputKind::FilterField(1), "a");
+        assert_eq!(app.visible_issue_count(), 0);
+        assert_eq!(app.rows.len(), 2); // two folded headers
+    }
+
+    #[test]
+    fn manual_collapse_sticks_until_filters_change_again() {
+        let mut app = two_repo_app();
+        app.set_all_collapsed(true);
+        app.apply_filter_input(InputKind::FilterField(1), "beta");
+        assert_eq!(app.visible_issue_count(), 1); // auto-expanded
+
+        app.selected = 0;
+        app.toggle_collapse(); // user folds it — must stay folded
+        assert_eq!(app.visible_issue_count(), 0);
+
+        app.apply_filter_input(InputKind::Search, "docs"); // filters change
+        assert_eq!(app.visible_issue_count(), 1); // re-expanded
+    }
+
+    #[test]
+    fn detail_pane_open_close_and_focus_cycle() {
+        let mut app = two_repo_app();
+        assert!(!app.detail_open);
+        app.cycle_focus(); // split closed → no-op
+        assert_eq!(app.focus, Focus::List);
+
+        app.open_detail();
+        assert!(app.detail_open);
+        assert_eq!(app.focus, Focus::Detail);
+
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::List);
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Detail);
+
+        app.close_detail();
+        assert!(!app.detail_open);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn switch_org_closes_detail_pane() {
+        let mut app = two_repo_app();
+        app.open_detail();
+        app.switch_org("other".into());
+        assert!(!app.detail_open);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn filtered_issue_count_includes_collapsed_groups() {
+        let mut app = two_repo_app(); // 3 issues across alpha + beta
+        app.set_all_collapsed(true);
+        assert_eq!(app.visible_issue_count(), 0);
+        assert_eq!(app.filtered_issue_count(), 3);
+
+        app.filters.repo = "beta".into();
+        app.rebuild_rows();
+        assert_eq!(app.filtered_issue_count(), 1);
+
+        app.filters.clear();
+        app.filters.text = "bug".into();
+        app.rebuild_rows();
+        assert_eq!(app.filtered_issue_count(), 1);
     }
 
     #[test]
@@ -778,6 +1063,81 @@ mod tests {
         app.rebuild_rows();
         assert_eq!(app.visible_issue_count(), 1);
         assert_eq!(app.rows.len(), 2); // beta header + issue 3
+    }
+
+    #[test]
+    fn repo_filter_is_exact_when_text_names_a_repo() {
+        let mut app = app_with(vec![
+            RepoIssues {
+                repo: "api".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "api-gateway".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(2, "b", IssueState::Open)],
+            },
+        ]);
+        app.filters.repo = "api".into();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 1);
+        assert!(matches!(app.rows[0], Row::RepoHeader { repo_idx: 0 }));
+
+        // Case-insensitive exact match still wins over substring.
+        app.filters.repo = "API".into();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 1);
+
+        // No exact match → substring behavior matches both.
+        app.filters.repo = "ap".into();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 2);
+    }
+
+    #[test]
+    fn initial_repo_filter_applies_on_first_load() {
+        let mut app = App::new("org".into(), Some("beta".into()), false, false);
+        app.set_data(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "a", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "beta".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(2, "b", IssueState::Open)],
+            },
+        ]);
+        assert!(app.filters.is_active());
+        assert_eq!(app.visible_issue_count(), 1);
+        assert!(matches!(app.rows[0], Row::RepoHeader { repo_idx: 1 }));
+
+        app.filters.clear();
+        app.rebuild_rows();
+        assert_eq!(app.visible_issue_count(), 2);
+    }
+
+    #[test]
+    fn switch_org_resets_view_state() {
+        let mut app = two_repo_app();
+        app.filters.repo = "alpha".into();
+        app.collapsed.insert("beta".into());
+        app.state_filter = StateFilter::All;
+        app.selected = 2;
+        app.rebuild_rows();
+
+        app.switch_org("other".into());
+        assert_eq!(app.org, "other");
+        assert!(app.repos.is_empty());
+        assert!(app.rows.is_empty());
+        assert!(app.collapsed.is_empty());
+        assert!(app.seen_repos.is_empty());
+        assert!(!app.filters.is_active());
+        assert_eq!(app.state_filter, StateFilter::Open);
+        assert_eq!(app.selected, 0);
+        assert!(app.loading);
     }
 
     #[test]

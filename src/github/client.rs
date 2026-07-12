@@ -113,7 +113,8 @@ impl Client {
             .ok_or_else(|| GithubError::Shape("missing data".into()))
     }
 
-    /// Fetch all issues for every repository in the organisation.
+    /// Fetch all issues for every repository owned by `org` — an
+    /// organisation or a user account (`repositoryOwner` covers both).
     ///
     /// Iterates repositories with cursor pagination (avoids the 1000-result
     /// search API cap) and follows per-repo issue pagination where needed.
@@ -140,7 +141,11 @@ impl Client {
                 )
                 .await?;
 
-            let repos: RepositoriesConn = parse_at(&data, &["organization", "repositories"])?;
+            // An unknown login yields `"repositoryOwner": null`, not an error.
+            if data.get("repositoryOwner").is_some_and(Value::is_null) {
+                return Err(GithubError::Shape(format!("no such org or user: {org}")));
+            }
+            let repos: RepositoriesConn = parse_at(&data, &["repositoryOwner", "repositories"])?;
             for repo in repos.nodes {
                 let mut issues: Vec<Issue> =
                     repo.issues.nodes.iter().map(IssueNode::to_issue).collect();
@@ -448,8 +453,8 @@ macro_rules! issue_fields {
 
 const ORG_ISSUES_QUERY: &str = concat!(
     "query($org: String!, $reposFirst: Int!, $issuesFirst: Int!, $repoCursor: String, $states: [IssueState!]) {
-       organization(login: $org) {
-         repositories(first: $reposFirst, after: $repoCursor, orderBy: {field: NAME, direction: ASC}) {
+       repositoryOwner(login: $org) {
+         repositories(first: $reposFirst, after: $repoCursor, ownerAffiliations: OWNER, orderBy: {field: NAME, direction: ASC}) {
            pageInfo { hasNextPage endCursor }
            nodes {
              name url
@@ -570,5 +575,14 @@ mod tests {
             assert!(ORG_ISSUES_QUERY.contains(field));
             assert!(REPO_ISSUES_QUERY.contains(field));
         }
+    }
+
+    #[test]
+    fn issues_query_supports_user_and_org_owners() {
+        assert!(ORG_ISSUES_QUERY.contains("repositoryOwner(login: $org)"));
+        assert!(!ORG_ISSUES_QUERY.contains("organization(login:"));
+        // Without OWNER affiliation a user login also lists repos they merely
+        // collaborate on or reach via org membership.
+        assert!(ORG_ISSUES_QUERY.contains("ownerAffiliations: OWNER"));
     }
 }

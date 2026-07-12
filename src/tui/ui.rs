@@ -8,11 +8,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use crate::github::types::Issue;
 
 use super::app::{App, FILTER_FIELDS, Focus, InputKind, Mode, Row};
+use super::theme::Theme;
 
-const ACCENT: Color = Color::Cyan;
-const DIM: Color = Color::DarkGray;
-
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
     let [main, info, bottom] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
@@ -20,23 +18,28 @@ pub fn draw(f: &mut Frame, app: &App) {
     ])
     .areas(f.area());
 
-    match app.focus {
-        Focus::List => draw_list(f, app, main),
-        Focus::Detail => draw_detail(f, app, main),
+    if app.detail_open {
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .areas(main);
+        draw_list(f, app, t, left);
+        draw_detail(f, app, t, right);
+    } else {
+        draw_list(f, app, t, main);
     }
-    draw_info_bar(f, app, info);
-    draw_bottom_line(f, app, bottom);
+    draw_info_bar(f, app, t, info);
+    draw_bottom_line(f, app, t, bottom);
 
     match app.mode {
-        Mode::FilterMenu => draw_filter_menu(f, app),
-        Mode::SelectField(idx) => draw_select_popup(f, app, idx),
-        Mode::Calendar(idx) => draw_calendar_popup(f, app, idx),
-        Mode::Help => draw_help(f),
+        Mode::FilterMenu => draw_filter_menu(f, app, t),
+        Mode::SelectField(idx) => draw_select_popup(f, app, t, idx),
+        Mode::Calendar(idx) => draw_calendar_popup(f, app, t, idx),
+        Mode::Help => draw_help(f, t),
         _ => {}
     }
 }
 
-fn draw_list(f: &mut Frame, app: &App, area: Rect) {
+fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let items: Vec<ListItem> = app
         .rows
         .iter()
@@ -51,30 +54,35 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("{arrow} {}", repo.repo),
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!("  ({})", app.repo_visible_count(*repo_idx)),
-                        Style::default().fg(DIM),
+                        Style::default().fg(t.dim),
                     ),
                 ]))
             }
             Row::Issue {
                 repo_idx,
                 issue_idx,
-            } => issue_item(&app.repos[*repo_idx].issues[*issue_idx]),
+            } => issue_item(&app.repos[*repo_idx].issues[*issue_idx], t),
         })
         .collect();
 
     let title = if app.loading {
         format!(" {} — loading… ", app.org)
     } else {
-        format!(" {} — {} issues ", app.org, app.visible_issue_count())
+        format!(" {} — {} issues ", app.org, app.filtered_issue_count())
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 60)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(pane_border(app, t, Focus::List))
+                .title(title),
+        )
+        .highlight_style(Style::default().bg(t.selected_bg))
         .highlight_symbol("> ");
 
     let mut state = ListState::default();
@@ -84,60 +92,80 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn issue_item(issue: &Issue) -> ListItem<'static> {
+fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
     let state_span = match issue.state {
-        crate::github::types::IssueState::Open => {
-            Span::styled("●", Style::default().fg(Color::Green))
-        }
+        crate::github::types::IssueState::Open => Span::styled("●", Style::default().fg(t.open)),
         crate::github::types::IssueState::Closed => {
-            Span::styled("●", Style::default().fg(Color::Magenta))
+            Span::styled("●", Style::default().fg(t.closed))
         }
     };
     let mut spans = vec![
         Span::raw("   "),
         state_span,
-        Span::styled(format!(" #{:<5}", issue.number), Style::default().fg(DIM)),
+        Span::styled(format!(" #{:<5}", issue.number), Style::default().fg(t.dim)),
         Span::raw(issue.title.clone()),
     ];
     if !issue.assignees.is_empty() {
         spans.push(Span::styled(
             format!("  @{}", issue.assignees.join(",@")),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(t.assignee),
         ));
     }
     for label in &issue.labels {
         spans.push(Span::styled(
             format!(" [{}]", label.name),
-            Style::default().fg(label_color(&label.color)),
+            Style::default().fg(label_color(&label.color, t.label_fallback)),
         ));
     }
     if issue.comment_count > 0 {
         spans.push(Span::styled(
             format!(" 🗨{}", issue.comment_count),
-            Style::default().fg(DIM),
+            Style::default().fg(t.dim),
         ));
     }
     spans.push(Span::styled(
         format!("  {}", issue.updated_at.format("%Y-%m-%d")),
-        Style::default().fg(DIM),
+        Style::default().fg(t.dim),
     ));
     ListItem::new(Line::from(spans))
 }
 
-fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
+/// Border style for a pane: accent when it has focus and the split is open.
+fn pane_border(app: &App, t: &Theme, pane: Focus) -> Style {
+    if app.detail_open && app.focus == pane {
+        Style::default().fg(t.accent)
+    } else {
+        Style::default()
+    }
+}
+
+fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pane_border(app, t, Focus::Detail))
+        .title(" issue (Tab switch · j/k scroll · Esc close) ");
     let Some(issue) = app.selected_issue() else {
+        // Live follow landed on a repo header (or an empty list).
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                "no issue selected",
+                Style::default().fg(t.dim),
+            ))
+            .block(block),
+            area,
+        );
         return;
     };
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled(format!("#{} ", issue.number), Style::default().fg(DIM)),
+            Span::styled(format!("#{} ", issue.number), Style::default().fg(t.dim)),
             Span::styled(
                 issue.title.clone(),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled(format!("{} ", issue.state), state_style(issue)),
+            Span::styled(format!("{} ", issue.state), state_style(issue, t)),
             Span::styled(
                 format!(
                     "by {} · created {} · updated {}{}",
@@ -149,7 +177,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
                         .map(|c| format!(" · closed {}", c.format("%Y-%m-%d")))
                         .unwrap_or_default(),
                 ),
-                Style::default().fg(DIM),
+                Style::default().fg(t.dim),
             ),
         ]),
         Line::from(Span::styled(
@@ -171,7 +199,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
                         .join(", ")
                 },
             ),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(t.assignee),
         )),
         Line::default(),
     ];
@@ -182,20 +210,23 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 
     lines.push(Line::default());
     match &app.detail_comments {
-        None => lines.push(Line::styled("loading comments…", Style::default().fg(DIM))),
+        None => lines.push(Line::styled(
+            "loading comments…",
+            Style::default().fg(t.dim),
+        )),
         Some(comments) if comments.is_empty() => {
-            lines.push(Line::styled("no comments", Style::default().fg(DIM)));
+            lines.push(Line::styled("no comments", Style::default().fg(t.dim)));
         }
         Some(comments) => {
             for c in comments {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("── {} ", c.author),
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!("{} ", c.created_at.format("%Y-%m-%d %H:%M")),
-                        Style::default().fg(DIM),
+                        Style::default().fg(t.dim),
                     ),
                 ]));
                 for l in c.body.lines() {
@@ -207,28 +238,24 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" issue detail (Esc back, j/k scroll) "),
-        )
+        .block(block)
         .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, 0));
     f.render_widget(para, area);
 }
 
-fn state_style(issue: &Issue) -> Style {
+fn state_style(issue: &Issue, t: &Theme) -> Style {
     match issue.state {
-        crate::github::types::IssueState::Open => Style::default().fg(Color::Green),
-        crate::github::types::IssueState::Closed => Style::default().fg(Color::Magenta),
+        crate::github::types::IssueState::Open => Style::default().fg(t.open),
+        crate::github::types::IssueState::Closed => Style::default().fg(t.closed),
     }
 }
 
-fn draw_info_bar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_info_bar(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let mut spans = vec![
-        Span::styled(" state:", Style::default().fg(DIM)),
+        Span::styled(" state:", Style::default().fg(t.dim)),
         Span::raw(app.state_filter.label()),
-        Span::styled("  sort:", Style::default().fg(DIM)),
+        Span::styled("  sort:", Style::default().fg(t.dim)),
         Span::raw(format!(
             "{}{}",
             app.sort_key.label(),
@@ -238,11 +265,11 @@ fn draw_info_bar(f: &mut Frame, app: &App, area: Rect) {
     // Rate limit indicator
     if let Some(rl) = &app.rate_limit {
         let color = if rl.remaining < 10 {
-            Color::Red
+            t.error
         } else if rl.remaining < 100 {
-            Color::Yellow
+            t.warning
         } else {
-            DIM
+            t.dim
         };
         spans.push(Span::styled(
             format!("  API {}/{}", rl.remaining, rl.limit),
@@ -252,19 +279,19 @@ fn draw_info_bar(f: &mut Frame, app: &App, area: Rect) {
     if let Some(err) = &app.rate_limit_error {
         spans.push(Span::styled(
             format!("  ⚠ {err}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(t.error),
         ));
     } else if app.filters.is_active() {
         spans.push(Span::styled(
             "  [filters active — F to edit, F→c to clear]",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(t.warning),
         ));
     }
-    spans.push(Span::styled("  ?:help", Style::default().fg(DIM)));
+    spans.push(Span::styled("  ?:help", Style::default().fg(t.dim)));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_bottom_line(f: &mut Frame, app: &App, area: Rect) {
+fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     match app.mode {
         Mode::Input(kind) => {
             let prompt = match kind {
@@ -274,11 +301,12 @@ fn draw_bottom_line(f: &mut Frame, app: &App, area: Rect) {
                 InputKind::Assignees => "assignees (comma-separated logins)",
                 InputKind::Labels => "labels (comma-separated)",
                 InputKind::Title => "title",
+                InputKind::Org => "org/owner (Enter switches)",
             };
             let line = Line::from(vec![
-                Span::styled(format!(" {prompt}: "), Style::default().fg(ACCENT)),
+                Span::styled(format!(" {prompt}: "), Style::default().fg(t.accent)),
                 Span::raw(app.input.buffer.clone()),
-                Span::styled("█", Style::default().fg(ACCENT)),
+                Span::styled("█", Style::default().fg(t.accent)),
             ]);
             f.render_widget(Paragraph::new(line), area);
         }
@@ -293,7 +321,7 @@ fn draw_bottom_line(f: &mut Frame, app: &App, area: Rect) {
             f.render_widget(
                 Paragraph::new(Line::styled(
                     format!(" {action} this issue? y/n"),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(t.warning),
                 )),
                 area,
             );
@@ -301,14 +329,14 @@ fn draw_bottom_line(f: &mut Frame, app: &App, area: Rect) {
         _ => {
             let msg = app.status.clone().unwrap_or_default();
             f.render_widget(
-                Paragraph::new(Line::styled(format!(" {msg}"), Style::default().fg(DIM))),
+                Paragraph::new(Line::styled(format!(" {msg}"), Style::default().fg(t.dim))),
                 area,
             );
         }
     }
 }
 
-fn draw_filter_menu(f: &mut Frame, app: &App) {
+fn draw_filter_menu(f: &mut Frame, app: &App, t: &Theme) {
     let area = centered(f.area(), 60, FILTER_FIELDS.len() as u16 + 4);
     f.render_widget(Clear, area);
     let items: Vec<ListItem> = FILTER_FIELDS
@@ -317,12 +345,12 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
         .map(|(i, name)| {
             let value = app.current_filter_value(i);
             let style = if i == app.filter_menu_idx {
-                Style::default().bg(Color::Rgb(40, 40, 60))
+                Style::default().bg(t.selected_bg)
             } else {
                 Style::default()
             };
             ListItem::new(Line::from(vec![
-                Span::styled(format!(" {name:<28}"), style.fg(ACCENT)),
+                Span::styled(format!(" {name:<28}"), style.fg(t.accent)),
                 Span::styled(value, style),
             ]))
         })
@@ -335,7 +363,7 @@ fn draw_filter_menu(f: &mut Frame, app: &App) {
     f.render_widget(list, area);
 }
 
-fn draw_select_popup(f: &mut Frame, app: &App, idx: usize) {
+fn draw_select_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
     let field_name = FILTER_FIELDS[idx];
     let h = app.select_options.len() as u16 + 2;
     let area = centered(f.area(), 50, h);
@@ -346,7 +374,7 @@ fn draw_select_popup(f: &mut Frame, app: &App, idx: usize) {
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == app.select_idx {
-                Style::default().bg(Color::Rgb(40, 40, 60))
+                Style::default().bg(t.selected_bg)
             } else {
                 Style::default()
             };
@@ -366,7 +394,7 @@ fn draw_select_popup(f: &mut Frame, app: &App, idx: usize) {
     f.render_widget(list, area);
 }
 
-fn draw_calendar_popup(f: &mut Frame, app: &App, idx: usize) {
+fn draw_calendar_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
     let field_name = FILTER_FIELDS[idx];
     let cursor = app.calendar_cursor;
 
@@ -400,7 +428,7 @@ fn draw_calendar_popup(f: &mut Frame, app: &App, idx: usize) {
             } else if day <= days_in_month {
                 let style = if day == cursor.day() {
                     Style::default()
-                        .bg(Color::Rgb(40, 40, 60))
+                        .bg(t.selected_bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -416,10 +444,10 @@ fn draw_calendar_popup(f: &mut Frame, app: &App, idx: usize) {
 
     lines.push(Line::raw("".to_string()));
     lines.push(Line::from(vec![
-        Span::styled("\u{2190}\u{2192} day  ", Style::default().fg(DIM)),
-        Span::styled("\u{2191}\u{2193} week  ", Style::default().fg(DIM)),
-        Span::styled("PgUp/PgDn month  ", Style::default().fg(DIM)),
-        Span::styled("Enter select  Esc cancel", Style::default().fg(DIM)),
+        Span::styled("\u{2190}\u{2192} day  ", Style::default().fg(t.dim)),
+        Span::styled("\u{2191}\u{2193} week  ", Style::default().fg(t.dim)),
+        Span::styled("PgUp/PgDn month  ", Style::default().fg(t.dim)),
+        Span::styled("Enter select  Esc cancel", Style::default().fg(t.dim)),
     ]));
 
     let height = lines.len() as u16 + 2;
@@ -433,18 +461,21 @@ fn draw_calendar_popup(f: &mut Frame, app: &App, idx: usize) {
     f.render_widget(para, area);
 }
 
-fn draw_help(f: &mut Frame) {
+fn draw_help(f: &mut Frame, t: &Theme) {
     const HELP: &[(&str, &str)] = &[
         ("j/k ↑/↓", "move"),
         ("Space", "collapse/expand repo group"),
         ("← / →", "collapse / expand repo group"),
         ("[ / ]", "collapse all / expand all"),
-        ("Enter", "issue detail (comments)"),
+        ("Enter", "open issue in detail pane"),
+        ("Tab", "switch pane (Shift+Tab reverse)"),
+        ("Esc / q", "close detail pane"),
         ("o / O", "open issue / repo in browser"),
         ("/", "text search"),
         ("f", "cycle state filter (open/closed/all)"),
         ("F", "filter editor (pickers + calendar)"),
         ("s / S", "cycle sort key / toggle direction"),
+        ("w", "switch org/owner"),
         ("c", "add comment"),
         ("x", "close / reopen issue"),
         ("a", "edit assignees"),
@@ -459,7 +490,7 @@ fn draw_help(f: &mut Frame) {
         .iter()
         .map(|(k, v)| {
             Line::from(vec![
-                Span::styled(format!(" {k:<10}"), Style::default().fg(ACCENT).bold()),
+                Span::styled(format!(" {k:<10}"), Style::default().fg(t.accent).bold()),
                 Span::raw(*v),
             ])
         })
@@ -471,7 +502,7 @@ fn draw_help(f: &mut Frame) {
 }
 
 /// GitHub label colors arrive as 6-digit hex without `#`.
-fn label_color(hex: &str) -> Color {
+fn label_color(hex: &str, fallback: Color) -> Color {
     if hex.len() == 6
         && let (Ok(r), Ok(g), Ok(b)) = (
             u8::from_str_radix(&hex[0..2], 16),
@@ -481,7 +512,7 @@ fn label_color(hex: &str) -> Color {
     {
         return Color::Rgb(r, g, b);
     }
-    Color::Blue
+    fallback
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
