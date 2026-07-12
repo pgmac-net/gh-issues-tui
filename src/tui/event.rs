@@ -294,17 +294,17 @@ fn handle_issue_form_key(
                 }
                 1 => app.mode = Mode::IssueFormBody,
                 _ if IssueForm::is_multi_field(idx) => {
-                    app.select_options = form.field_options(idx);
+                    let opts = form.field_options(idx);
                     app.multi_selected = form.multi_set(idx).clone();
-                    app.select_idx = 0;
+                    app.start_picker(opts, 0);
                     app.mode = Mode::IssueFormMulti(idx);
                 }
                 _ if IssueForm::is_select_field(idx) => {
                     // "—" (none) is prepended; stored choices are offset by 1.
                     let mut opts = form.field_options(idx);
                     opts.insert(0, "\u{2014}".to_string());
-                    app.select_options = opts;
-                    app.select_idx = form.get_single(idx).map_or(0, |i| i + 1);
+                    let initial = form.get_single(idx).map_or(0, |i| i + 1);
+                    app.start_picker(opts, initial);
                     app.mode = Mode::IssueFormSelect(idx);
                 }
                 _ => submit_issue_form(app, client, tx),
@@ -314,50 +314,85 @@ fn handle_issue_form_key(
     }
 }
 
-fn handle_form_select_key(app: &mut App, key: KeyEvent, idx: usize) {
+/// Keys shared by every option picker: ↑/↓ navigation over the filtered
+/// view, Home/End, and type-ahead filter editing (chars append, Backspace
+/// deletes, Ctrl+U clears). Space is passed through when `space_filters`
+/// is false so the multi-select picker can use it to toggle. Returns true
+/// when the key was consumed.
+fn picker_common_key(app: &mut App, key: KeyEvent, space_filters: bool) -> bool {
+    let visible = app.filtered_select().len();
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::IssueForm,
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !app.select_options.is_empty() {
-                app.select_idx = (app.select_idx + 1) % app.select_options.len();
+        KeyCode::Down => {
+            if visible > 0 {
+                app.select_idx = (app.select_idx + 1) % visible;
             }
+            true
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if !app.select_options.is_empty() {
-                app.select_idx =
-                    (app.select_idx + app.select_options.len() - 1) % app.select_options.len();
+        KeyCode::Up => {
+            if visible > 0 {
+                app.select_idx = (app.select_idx + visible - 1) % visible;
             }
+            true
         }
-        KeyCode::Enter => {
-            if let Some(form) = &mut app.issue_form
-                && !app.select_options.is_empty()
-            {
-                // Index 0 is "—" (clear); real options are offset by 1.
-                form.set_single(idx, app.select_idx.checked_sub(1));
+        KeyCode::Home => {
+            app.select_idx = 0;
+            true
+        }
+        KeyCode::End => {
+            app.select_idx = visible.saturating_sub(1);
+            true
+        }
+        KeyCode::Backspace => {
+            app.picker_filter_backspace();
+            true
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.picker_filter_clear();
+            true
+        }
+        KeyCode::Char(' ') if !space_filters => false,
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.picker_filter_push(c);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn handle_form_select_key(app: &mut App, key: KeyEvent, idx: usize) {
+    if picker_common_key(app, key, true) {
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => app.mode = Mode::IssueForm,
+        KeyCode::Enter => match app.picker_selected_original() {
+            Some(orig) => {
+                if let Some(form) = &mut app.issue_form {
+                    // Index 0 is "—" (clear); real options are offset by 1.
+                    form.set_single(idx, orig.checked_sub(1));
+                }
+                app.mode = Mode::IssueForm;
             }
-            app.mode = Mode::IssueForm;
-        }
+            // No options at all → close; filter matching nothing → no-op
+            // so the filter can be corrected.
+            None if app.select_options.is_empty() => app.mode = Mode::IssueForm,
+            None => {}
+        },
         _ => {}
     }
 }
 
 fn handle_form_multi_key(app: &mut App, key: KeyEvent, idx: usize) {
+    if picker_common_key(app, key, false) {
+        return;
+    }
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::IssueForm, // discard toggles
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !app.select_options.is_empty() {
-                app.select_idx = (app.select_idx + 1) % app.select_options.len();
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if !app.select_options.is_empty() {
-                app.select_idx =
-                    (app.select_idx + app.select_options.len() - 1) % app.select_options.len();
-            }
-        }
+        KeyCode::Esc => app.mode = Mode::IssueForm, // discard toggles
         KeyCode::Char(' ') => {
-            if !app.select_options.is_empty() && !app.multi_selected.remove(&app.select_idx) {
-                app.multi_selected.insert(app.select_idx);
+            if let Some(orig) = app.picker_selected_original()
+                && !app.multi_selected.remove(&orig)
+            {
+                app.multi_selected.insert(orig);
             }
         }
         KeyCode::Enter => {
@@ -724,13 +759,10 @@ fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             let idx = app.filter_menu_idx;
             if App::is_select_field(idx) {
-                app.select_options = app.compute_select_options(idx);
+                let options = app.compute_select_options(idx);
                 let current = app.current_filter_value(idx);
-                app.select_idx = app
-                    .select_options
-                    .iter()
-                    .position(|v| v == &current)
-                    .unwrap_or(0);
+                let initial = options.iter().position(|v| v == &current).unwrap_or(0);
+                app.start_picker(options, initial);
                 app.mode = Mode::SelectField(idx);
             } else if App::is_calendar_field(idx) {
                 app.calendar_init(idx);
@@ -746,37 +778,27 @@ fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_select_field_key(app: &mut App, key: KeyEvent, idx: usize) {
+    if picker_common_key(app, key, true) {
+        return;
+    }
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::FilterMenu,
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !app.select_options.is_empty() {
-                app.select_idx = (app.select_idx + 1) % app.select_options.len();
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if !app.select_options.is_empty() {
-                app.select_idx =
-                    (app.select_idx + app.select_options.len() - 1) % app.select_options.len();
-            }
-        }
-        KeyCode::Home | KeyCode::Char('g') => app.select_idx = 0,
-        KeyCode::End | KeyCode::Char('G') => {
-            app.select_idx = app.select_options.len().saturating_sub(1);
-        }
-        KeyCode::Enter => {
-            if app.select_options.is_empty() {
+        KeyCode::Esc => app.mode = Mode::FilterMenu,
+        KeyCode::Enter => match app.picker_selected_original() {
+            Some(orig) => {
+                let raw = app.select_options[orig].clone();
+                let value = if raw == "\u{2014}" {
+                    String::new()
+                } else {
+                    raw
+                };
+                app.apply_filter_input(InputKind::FilterField(idx), &value);
                 app.mode = Mode::FilterMenu;
-                return;
             }
-            let raw = app.select_options[app.select_idx].clone();
-            let value = if raw == "\u{2014}" {
-                String::new()
-            } else {
-                raw
-            };
-            app.apply_filter_input(InputKind::FilterField(idx), &value);
-            app.mode = Mode::FilterMenu;
-        }
+            // No options at all → close; filter matching nothing → no-op
+            // so the filter can be corrected.
+            None if app.select_options.is_empty() => app.mode = Mode::FilterMenu,
+            None => {}
+        },
         _ => {}
     }
 }
@@ -917,5 +939,77 @@ mod tests {
     fn split_csv_trims_and_drops_empties() {
         assert_eq!(split_csv(" a , b ,, c "), vec!["a", "b", "c"]);
         assert!(split_csv("  ").is_empty());
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::from(code)
+    }
+
+    fn picker_test_app() -> App {
+        let mut app = App::new("org".into(), None, false, false);
+        app.start_picker(vec!["alpha".into(), "beta".into(), "gamma".into()], 0);
+        app
+    }
+
+    #[test]
+    fn typing_filters_and_arrows_navigate_filtered_view() {
+        let mut app = picker_test_app();
+        assert!(picker_common_key(&mut app, key(KeyCode::Char('a')), true));
+        // "a" matches alpha/beta/gamma... narrow further.
+        assert!(picker_common_key(&mut app, key(KeyCode::Char('m')), true));
+        assert_eq!(app.select_filter, "am");
+        assert_eq!(app.picker_selected_original(), Some(2)); // gamma
+
+        assert!(picker_common_key(&mut app, key(KeyCode::Backspace), true));
+        assert!(picker_common_key(&mut app, key(KeyCode::Down), true));
+        assert_eq!(app.select_filter, "a");
+        // filter "a" matches all three; Down moved 0 → 1.
+        assert_eq!(app.picker_selected_original(), Some(1));
+    }
+
+    #[test]
+    fn multi_picker_space_toggles_original_index_through_filter() {
+        let mut app = picker_test_app();
+        app.issue_form = Some(IssueForm::new("alpha".into()));
+        app.mode = Mode::IssueFormMulti(3);
+
+        handle_form_multi_key(&mut app, key(KeyCode::Char('g')), 3); // filter → gamma only
+        handle_form_multi_key(&mut app, key(KeyCode::Char(' ')), 3); // toggle it
+        assert!(
+            app.multi_selected.contains(&2),
+            "toggle must hit gamma's original index, got {:?}",
+            app.multi_selected
+        );
+
+        handle_form_multi_key(&mut app, key(KeyCode::Enter), 3);
+        assert_eq!(app.mode, Mode::IssueForm);
+        assert!(app.issue_form.unwrap().labels.contains(&2));
+    }
+
+    #[test]
+    fn select_picker_enter_noop_on_no_matches_but_closes_when_empty() {
+        let mut app = picker_test_app();
+        app.mode = Mode::SelectField(1);
+        handle_select_field_key(&mut app, key(KeyCode::Char('z')), 1); // no matches
+        handle_select_field_key(&mut app, key(KeyCode::Enter), 1);
+        assert_eq!(
+            app.mode,
+            Mode::SelectField(1),
+            "Enter must not pick from nothing"
+        );
+
+        app.start_picker(Vec::new(), 0); // truly empty picker
+        handle_select_field_key(&mut app, key(KeyCode::Enter), 1);
+        assert_eq!(app.mode, Mode::FilterMenu);
+    }
+
+    #[test]
+    fn select_picker_enter_applies_filtered_pick() {
+        let mut app = picker_test_app();
+        app.mode = Mode::SelectField(1); // repo filter field
+        handle_select_field_key(&mut app, key(KeyCode::Char('b')), 1);
+        handle_select_field_key(&mut app, key(KeyCode::Enter), 1);
+        assert_eq!(app.filters.repo, "beta");
+        assert_eq!(app.mode, Mode::FilterMenu);
     }
 }

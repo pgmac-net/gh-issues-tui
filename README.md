@@ -128,6 +128,7 @@ Known limitation: repos with no issues are omitted from the fetched list entirel
 - Only open issues are fetched at startup unless `--all` is given; switching the state filter to closed/all triggers a one-time refetch that includes closed issues.
 - Assignee and label edits replace the full set with what you type; comment/close/reopen/edit operations refresh the data on completion.
 - In the filter editor, repo/assignee/author/priority/status open a picker built from the loaded data (first entry clears the filter) and date fields open a calendar; text remains free-input.
+- Every option picker (filter editor and new-issue form) supports type-ahead: just start typing to narrow the list (case-insensitive substring, shown as a `/ <text>` row). `Backspace` edits the filter, `Ctrl+U` clears it, `↑`/`↓` navigate the matches, `Enter` picks, `Esc` closes. Because typing filters, `j`/`k`/`q` don't navigate/close inside pickers.
 - Priority and status filters match `priority:<value>` / `status:<value>` labels (bare value or full label name, case-insensitive).
 - The repo filter is exact when its text exactly names a loaded repo (case-insensitive), so `api` won't also match `api-gateway`; otherwise it matches as a substring.
 - The detail pane splits the window 40/60 beside the list and live-follows the list selection: moving with `j`/`k` shows the newly selected issue (comments refetch per issue; landing on a repo header shows "no issue selected"). The focused pane has an accent-coloured border.

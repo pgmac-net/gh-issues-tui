@@ -379,34 +379,69 @@ fn draw_filter_menu(f: &mut Frame, app: &App, t: &Theme) {
     f.render_widget(list, area);
 }
 
+/// Rows for an option picker under the active type-ahead filter: a `/`
+/// row while a filter is typed, then the filtered options. The highlight
+/// is positional within the filtered view; multi-select `[x]` marks and
+/// the "—" clear row key off original option indices. ASCII prefix on
+/// purpose — emoji cell widths are unreliable across terminals.
+fn picker_items(app: &App, t: &Theme, multi: bool, clear_label: &str) -> Vec<ListItem<'static>> {
+    let mut items: Vec<ListItem> = Vec::new();
+    if !app.select_filter.is_empty() {
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(" / ", Style::default().fg(t.accent)),
+            Span::raw(app.select_filter.clone()),
+            Span::styled("█", Style::default().fg(t.accent)),
+        ])));
+    }
+    let filtered = app.filtered_select();
+    if filtered.is_empty() {
+        let msg = if app.select_options.is_empty() {
+            " nothing available"
+        } else {
+            " no matches"
+        };
+        items.push(ListItem::new(Line::styled(
+            msg.to_string(),
+            Style::default().fg(t.dim),
+        )));
+        return items;
+    }
+    for (pos, (orig, opt)) in filtered.into_iter().enumerate() {
+        let style = if pos == app.select_idx {
+            Style::default().bg(t.selected_bg)
+        } else {
+            Style::default()
+        };
+        let text = if multi {
+            let mark = if app.multi_selected.contains(&orig) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            format!(" {mark} {opt}")
+        } else if opt == "\u{2014}" {
+            format!(" \u{2014} {clear_label} \u{2014}")
+        } else {
+            format!(" {opt}")
+        };
+        items.push(ListItem::new(Line::from(Span::styled(text, style))));
+    }
+    items
+}
+
+/// Popup height for `rows` list items (+2 borders), clamped to the frame.
+fn picker_height(f: &Frame, rows: usize) -> u16 {
+    (rows.max(1) as u16 + 2).min(f.area().height)
+}
+
 fn draw_select_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
     let field_name = FILTER_FIELDS[idx];
-    let h = app.select_options.len() as u16 + 2;
-    let area = centered(f.area(), 50, h);
+    let items = picker_items(app, t, false, "clear");
+    let area = centered(f.area(), 50, picker_height(f, items.len()));
     f.render_widget(Clear, area);
-    let items: Vec<ListItem> = app
-        .select_options
-        .iter()
-        .enumerate()
-        .map(|(i, opt)| {
-            let style = if i == app.select_idx {
-                Style::default().bg(t.selected_bg)
-            } else {
-                Style::default()
-            };
-            let prefix = if opt == "\u{2014}" {
-                "\u{2014} clear \u{2014}"
-            } else {
-                opt
-            };
-            ListItem::new(Line::from(vec![Span::styled(format!(" {prefix}"), style)]))
-        })
-        .collect();
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" select {field_name} (Enter picks, Esc cancels) ")),
-    );
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+        " select {field_name} (type to filter · Enter picks · Esc cancels) "
+    )));
     f.render_widget(list, area);
 }
 
@@ -465,44 +500,13 @@ fn draw_issue_form(f: &mut Frame, app: &App, t: &Theme) {
 /// or multi-select (Space toggles, checkbox markers).
 fn draw_form_choice_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize, multi: bool) {
     let field_name = ISSUE_FORM_FIELDS[idx];
-    let h = (app.select_options.len().max(1) as u16 + 2).min(f.area().height);
-    let area = centered(f.area(), 50, h);
+    let items = picker_items(app, t, multi, "none");
+    let area = centered(f.area(), 50, picker_height(f, items.len()));
     f.render_widget(Clear, area);
-    let items: Vec<ListItem> = if app.select_options.is_empty() {
-        vec![ListItem::new(Line::styled(
-            " nothing available",
-            Style::default().fg(t.dim),
-        ))]
-    } else {
-        app.select_options
-            .iter()
-            .enumerate()
-            .map(|(i, opt)| {
-                let style = if i == app.select_idx {
-                    Style::default().bg(t.selected_bg)
-                } else {
-                    Style::default()
-                };
-                let text = if multi {
-                    let mark = if app.multi_selected.contains(&i) {
-                        "[x]"
-                    } else {
-                        "[ ]"
-                    };
-                    format!(" {mark} {opt}")
-                } else if opt == "\u{2014}" {
-                    " \u{2014} none \u{2014}".to_string()
-                } else {
-                    format!(" {opt}")
-                };
-                ListItem::new(Line::from(Span::styled(text, style)))
-            })
-            .collect()
-    };
     let hint = if multi {
-        "Space toggles · Enter accepts · Esc cancels"
+        "type filters · Space toggles · Enter accepts"
     } else {
-        "Enter picks · Esc cancels"
+        "type filters · Enter picks · Esc cancels"
     };
     let list = List::new(items).block(
         Block::default()

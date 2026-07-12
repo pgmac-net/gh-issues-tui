@@ -660,8 +660,10 @@ pub struct App {
     pub filter_menu_idx: usize,
     /// Available options for the current select-field popup.
     pub select_options: Vec<String>,
-    /// Currently highlighted index in select_options.
+    /// Highlighted position within the *filtered* picker view.
     pub select_idx: usize,
+    /// Type-ahead filter narrowing the picker view; reset on picker open.
+    pub select_filter: String,
     /// Working set of toggled indices for the multi-select popup
     /// (committed to the form on Enter, discarded on Esc).
     pub multi_selected: std::collections::HashSet<usize>,
@@ -713,6 +715,7 @@ impl App {
             filter_menu_idx: 0,
             select_options: Vec::new(),
             select_idx: 0,
+            select_filter: String::new(),
             multi_selected: Default::default(),
             issue_form: None,
             calendar_cursor: Utc::now().date_naive(),
@@ -725,6 +728,56 @@ impl App {
             detail_comments: None,
             detail_scroll: 0,
             should_quit: false,
+        }
+    }
+
+    /// Open an option picker: set its options and initial highlight, and
+    /// reset the type-ahead filter.
+    pub fn start_picker(&mut self, options: Vec<String>, idx: usize) {
+        self.select_options = options;
+        self.select_idx = idx;
+        self.select_filter.clear();
+    }
+
+    /// The picker view under the type-ahead filter: `(original index,
+    /// text)` pairs matching case-insensitively. An empty filter shows
+    /// everything.
+    pub fn filtered_select(&self) -> Vec<(usize, &str)> {
+        let needle = self.select_filter.to_lowercase();
+        self.select_options
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| needle.is_empty() || o.to_lowercase().contains(&needle))
+            .map(|(i, o)| (i, o.as_str()))
+            .collect()
+    }
+
+    /// Index into `select_options` of the highlighted picker row, `None`
+    /// when the filter matches nothing.
+    pub fn picker_selected_original(&self) -> Option<usize> {
+        self.filtered_select().get(self.select_idx).map(|(i, _)| *i)
+    }
+
+    /// Append a type-ahead character; the highlight jumps to the first match.
+    pub fn picker_filter_push(&mut self, c: char) {
+        self.select_filter.push(c);
+        self.select_idx = 0;
+    }
+
+    pub fn picker_filter_backspace(&mut self) {
+        self.select_filter.pop();
+        self.clamp_picker_idx();
+    }
+
+    pub fn picker_filter_clear(&mut self) {
+        self.select_filter.clear();
+        self.clamp_picker_idx();
+    }
+
+    fn clamp_picker_idx(&mut self) {
+        let len = self.filtered_select().len();
+        if self.select_idx >= len {
+            self.select_idx = len.saturating_sub(1);
         }
     }
 
@@ -2119,6 +2172,65 @@ mod tests {
         assert_eq!(b.text(), "hé\nllo");
         b.backspace();
         assert_eq!(b.text(), "héllo");
+    }
+
+    fn picker_app(options: &[&str]) -> App {
+        let mut app = two_repo_app();
+        app.start_picker(options.iter().map(|s| s.to_string()).collect(), 0);
+        app
+    }
+
+    #[test]
+    fn picker_filter_narrows_and_maps_to_original_indices() {
+        let mut app = picker_app(&["\u{2014}", "ansible", "budgeteer", "gh-issues-tui", "ghar"]);
+        app.picker_filter_push('g');
+        app.picker_filter_push('h');
+        let filtered = app.filtered_select();
+        assert_eq!(
+            filtered,
+            vec![(3, "gh-issues-tui"), (4, "ghar")],
+            "case-insensitive substring over original indices"
+        );
+        assert_eq!(app.select_idx, 0); // reset to first match
+        assert_eq!(app.picker_selected_original(), Some(3));
+
+        app.select_idx = 1;
+        assert_eq!(app.picker_selected_original(), Some(4));
+    }
+
+    #[test]
+    fn picker_filter_matches_case_insensitively() {
+        let mut app = picker_app(&["Docker-Nagios", "homelabia"]);
+        app.picker_filter_push('N');
+        app.picker_filter_push('A');
+        assert_eq!(app.filtered_select(), vec![(0, "Docker-Nagios")]);
+    }
+
+    #[test]
+    fn picker_backspace_and_clear_restore_and_clamp() {
+        let mut app = picker_app(&["alpha", "beta"]);
+        app.select_idx = 1; // beta
+        app.picker_filter_push('x'); // no matches
+        assert!(app.filtered_select().is_empty());
+        assert_eq!(app.picker_selected_original(), None);
+
+        app.picker_filter_backspace();
+        assert_eq!(app.filtered_select().len(), 2);
+        assert!(app.select_idx < 2); // clamped into range
+
+        app.picker_filter_push('b');
+        app.picker_filter_clear();
+        assert_eq!(app.select_filter, "");
+        assert_eq!(app.filtered_select().len(), 2);
+    }
+
+    #[test]
+    fn start_picker_resets_filter() {
+        let mut app = picker_app(&["alpha"]);
+        app.picker_filter_push('z');
+        app.start_picker(vec!["beta".into()], 0);
+        assert_eq!(app.select_filter, "");
+        assert_eq!(app.filtered_select(), vec![(0, "beta")]);
     }
 
     #[test]
