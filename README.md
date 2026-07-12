@@ -109,11 +109,18 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (comma-separated names, must exist on the repo) |
 | `t` | edit the title |
+| `n` | create a new issue in the selected repo (opens the form) |
 | `r` | reload all data |
 | `?` | help |
 | `q` | quit |
 
 Sort keys: updated, created, closed, state, assignee, author.
+
+### Creating issues
+
+`n` opens a New-Issue form for the selected repo (from its header or any of its issue rows), modelled on GitHub's New Issue page: **title**, **description** (multi-line editor: Enter inserts a newline, Esc keeps the text and returns to the form), **assignees** and **labels** (multi-select pickers — Space toggles, Enter accepts), and **type**, **priority**, **project**, **milestone** (single-select pickers, `—` clears). Picker options load per repo when the form opens: assignable users, repo labels, issue types (where the org has them), the repo's Projects (V2), and open milestones. Priority follows the `priority:<value>` label convention — the chosen label is added to the issue's labels. `Enter` on `[ Create issue ]` submits; the status line reports `created #N` and the list refetches. `Esc` cancels the form.
+
+Known limitation: repos with no issues are omitted from the fetched list entirely, so a repo's *first* issue can't be created from here yet.
 
 ## Notes
 

@@ -1,7 +1,9 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::github::RateLimitData;
-use crate::github::types::{Comment, Issue, IssueState, RepoIssues};
+use crate::github::types::{
+    Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, RepoIssues,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateFilter {
@@ -242,6 +244,14 @@ pub enum Mode {
     Calendar(usize),
     /// y/n confirmation for close/reopen.
     ConfirmState,
+    /// New-issue form field list.
+    IssueForm,
+    /// Single-select popup for a new-issue form field.
+    IssueFormSelect(usize),
+    /// Multi-select popup (Space toggles) for a new-issue form field.
+    IssueFormMulti(usize),
+    /// Multi-line editor for the new issue's body.
+    IssueFormBody,
     Help,
 }
 
@@ -255,14 +265,220 @@ pub enum InputKind {
     Title,
     /// Switch the org/owner being browsed.
     Org,
-    /// Create a new issue in the selected repo.
-    CreateIssue,
+    /// Title field of the new-issue form.
+    FormTitle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     List,
     Detail,
+}
+
+/// The new-issue form fields, in display order. The row after the last
+/// field is the `[Create issue]` action (`ISSUE_FORM_CREATE_ROW`).
+pub const ISSUE_FORM_FIELDS: &[&str] = &[
+    "title",
+    "description",
+    "assignees",
+    "labels",
+    "type",
+    "priority",
+    "project",
+    "milestone",
+];
+
+/// Index of the `[Create issue]` row in the form.
+pub const ISSUE_FORM_CREATE_ROW: usize = ISSUE_FORM_FIELDS.len();
+
+/// State of the new-issue form. Selections index into the corresponding
+/// `FormOptions` list (not the "—"-prefixed popup display list).
+pub struct IssueForm {
+    /// Repo the issue will be created in, captured when the form opened.
+    pub repo: String,
+    pub title: String,
+    pub body: BodyEditor,
+    pub assignees: std::collections::HashSet<usize>,
+    pub labels: std::collections::HashSet<usize>,
+    pub issue_type: Option<usize>,
+    pub priority: Option<usize>,
+    pub project: Option<usize>,
+    pub milestone: Option<usize>,
+    /// `None` while the per-repo options fetch is still in flight.
+    pub options: Option<FormOptions>,
+    pub field_idx: usize,
+}
+
+impl IssueForm {
+    pub fn new(repo: String) -> Self {
+        Self {
+            repo,
+            title: String::new(),
+            body: BodyEditor::default(),
+            assignees: Default::default(),
+            labels: Default::default(),
+            issue_type: None,
+            priority: None,
+            project: None,
+            milestone: None,
+            options: None,
+            field_idx: 0,
+        }
+    }
+
+    /// True for fields edited with the multi-select popup.
+    pub fn is_multi_field(idx: usize) -> bool {
+        matches!(idx, 2 | 3)
+    }
+
+    /// True for fields edited with the single-select popup.
+    pub fn is_select_field(idx: usize) -> bool {
+        matches!(idx, 4..=7)
+    }
+
+    /// Labels acting as priorities under the `priority:<value>` convention.
+    pub fn priority_options(&self) -> Vec<&IdName> {
+        self.options
+            .as_ref()
+            .map(|o| {
+                o.labels
+                    .iter()
+                    .filter(|l| l.name.to_lowercase().starts_with("priority:"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The option list backing a select/multi field, as display names.
+    pub fn field_options(&self, idx: usize) -> Vec<String> {
+        let Some(o) = &self.options else {
+            return Vec::new();
+        };
+        let names = |v: &[IdName]| v.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+        match idx {
+            2 => names(&o.users),
+            3 => names(&o.labels),
+            4 => names(&o.issue_types),
+            5 => self
+                .priority_options()
+                .iter()
+                .map(|l| l.name.clone())
+                .collect(),
+            6 => names(&o.projects),
+            7 => names(&o.milestones),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Current selection(s) of a field as display text for the form row.
+    pub fn field_display(&self, idx: usize) -> String {
+        let opts = self.field_options(idx);
+        let pick = |sel: Option<usize>| sel.and_then(|i| opts.get(i).cloned()).unwrap_or_default();
+        match idx {
+            0 => self.title.clone(),
+            1 => self.body.summary(),
+            2 | 3 => {
+                let set = if idx == 2 {
+                    &self.assignees
+                } else {
+                    &self.labels
+                };
+                let mut picked: Vec<usize> = set.iter().copied().collect();
+                picked.sort_unstable();
+                picked
+                    .into_iter()
+                    .filter_map(|i| opts.get(i).cloned())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            4 => pick(self.issue_type),
+            5 => pick(self.priority),
+            6 => pick(self.project),
+            7 => pick(self.milestone),
+            _ => String::new(),
+        }
+    }
+
+    /// Set a single-select field; `None` clears it.
+    pub fn set_single(&mut self, idx: usize, choice: Option<usize>) {
+        match idx {
+            4 => self.issue_type = choice,
+            5 => self.priority = choice,
+            6 => self.project = choice,
+            7 => self.milestone = choice,
+            _ => {}
+        }
+    }
+
+    pub fn get_single(&self, idx: usize) -> Option<usize> {
+        match idx {
+            4 => self.issue_type,
+            5 => self.priority,
+            6 => self.project,
+            7 => self.milestone,
+            _ => None,
+        }
+    }
+
+    pub fn multi_set(&self, idx: usize) -> &std::collections::HashSet<usize> {
+        if idx == 2 {
+            &self.assignees
+        } else {
+            &self.labels
+        }
+    }
+
+    pub fn multi_set_mut(&mut self, idx: usize) -> &mut std::collections::HashSet<usize> {
+        if idx == 2 {
+            &mut self.assignees
+        } else {
+            &mut self.labels
+        }
+    }
+
+    /// Assemble the create parameters. `None` until the title is non-empty
+    /// and the options fetch has landed (repo id comes from it).
+    pub fn build_params(&self) -> Option<NewIssueParams> {
+        let o = self.options.as_ref()?;
+        let title = self.title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        let ids = |set: &std::collections::HashSet<usize>, from: &[IdName]| {
+            let mut picked: Vec<usize> = set.iter().copied().collect();
+            picked.sort_unstable();
+            picked
+                .into_iter()
+                .filter_map(|i| from.get(i).map(|x| x.id.clone()))
+                .collect::<Vec<String>>()
+        };
+        let mut label_ids = ids(&self.labels, &o.labels);
+        if let Some(p) = self.priority
+            && let Some(label) = self.priority_options().get(p).map(|l| l.id.clone())
+            && !label_ids.contains(&label)
+        {
+            label_ids.push(label);
+        }
+        Some(NewIssueParams {
+            repo_id: o.repo_id.clone(),
+            title: title.to_string(),
+            body: self.body.text().trim_end().to_string(),
+            assignee_ids: ids(&self.assignees, &o.users),
+            label_ids,
+            milestone_id: self
+                .milestone
+                .and_then(|i| o.milestones.get(i))
+                .map(|m| m.id.clone()),
+            issue_type_id: self
+                .issue_type
+                .and_then(|i| o.issue_types.get(i))
+                .map(|t| t.id.clone()),
+            project_id: self
+                .project
+                .and_then(|i| o.projects.get(i))
+                .map(|p| p.id.clone()),
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -306,6 +522,115 @@ impl InputState {
             .map(|(b, _)| b)
             .unwrap_or(self.buffer.len())
     }
+
+    /// Split at the cursor: everything before stays, the tail is returned.
+    fn split_at_cursor(&mut self) -> String {
+        let byte = self.byte_at(self.cursor);
+        self.buffer.split_off(byte)
+    }
+}
+
+/// Minimal multi-line editor for the issue body: one UTF-8-safe
+/// `InputState` per line. Always holds at least one line.
+#[derive(Debug)]
+pub struct BodyEditor {
+    pub lines: Vec<InputState>,
+    /// Index of the line the cursor is on.
+    pub line: usize,
+}
+
+impl Default for BodyEditor {
+    fn default() -> Self {
+        Self {
+            lines: vec![InputState::default()],
+            line: 0,
+        }
+    }
+}
+
+impl BodyEditor {
+    pub fn insert(&mut self, c: char) {
+        self.lines[self.line].insert(c);
+    }
+
+    /// Enter: split the current line at the cursor.
+    pub fn newline(&mut self) {
+        let tail = self.lines[self.line].split_at_cursor();
+        self.line += 1;
+        self.lines.insert(
+            self.line,
+            InputState {
+                buffer: tail,
+                cursor: 0,
+            },
+        );
+    }
+
+    /// Backspace: within a line deletes a char; at column 0 merges the
+    /// line into the previous one.
+    pub fn backspace(&mut self) {
+        if self.lines[self.line].cursor > 0 {
+            self.lines[self.line].backspace();
+        } else if self.line > 0 {
+            let removed = self.lines.remove(self.line);
+            self.line -= 1;
+            let prev = &mut self.lines[self.line];
+            prev.cursor = prev.buffer.chars().count();
+            prev.buffer.push_str(&removed.buffer);
+        }
+    }
+
+    pub fn left(&mut self) {
+        self.lines[self.line].left();
+    }
+
+    pub fn right(&mut self) {
+        self.lines[self.line].right();
+    }
+
+    pub fn up(&mut self) {
+        if self.line > 0 {
+            self.line -= 1;
+            self.clamp_cursor();
+        }
+    }
+
+    pub fn down(&mut self) {
+        if self.line + 1 < self.lines.len() {
+            self.line += 1;
+            self.clamp_cursor();
+        }
+    }
+
+    fn clamp_cursor(&mut self) {
+        let len = self.lines[self.line].buffer.chars().count();
+        let cur = &mut self.lines[self.line].cursor;
+        *cur = (*cur).min(len);
+    }
+
+    pub fn text(&self) -> String {
+        self.lines
+            .iter()
+            .map(|l| l.buffer.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// One-line summary for the form row.
+    pub fn summary(&self) -> String {
+        let text = self.text();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        let first = trimmed.lines().next().unwrap_or_default();
+        let extra = trimmed.lines().count().saturating_sub(1);
+        if extra > 0 {
+            format!("{first} (+{extra} more lines)")
+        } else {
+            first.to_string()
+        }
+    }
 }
 
 pub struct App {
@@ -337,6 +662,11 @@ pub struct App {
     pub select_options: Vec<String>,
     /// Currently highlighted index in select_options.
     pub select_idx: usize,
+    /// Working set of toggled indices for the multi-select popup
+    /// (committed to the form on Enter, discarded on Esc).
+    pub multi_selected: std::collections::HashSet<usize>,
+    /// The new-issue form, present while it is open.
+    pub issue_form: Option<IssueForm>,
     /// Cursor position for the calendar date picker.
     pub calendar_cursor: NaiveDate,
     pub loading: bool,
@@ -383,6 +713,8 @@ impl App {
             filter_menu_idx: 0,
             select_options: Vec::new(),
             select_idx: 0,
+            multi_selected: Default::default(),
+            issue_form: None,
             calendar_cursor: Utc::now().date_naive(),
             loading: true,
             auto_refreshing: false,
@@ -393,6 +725,29 @@ impl App {
             detail_comments: None,
             detail_scroll: 0,
             should_quit: false,
+        }
+    }
+
+    /// Open the new-issue form targeting `repo`. Options arrive later via
+    /// `set_form_options`; the caller spawns that fetch.
+    pub fn open_issue_form(&mut self, repo: String) {
+        self.issue_form = Some(IssueForm::new(repo));
+        self.mode = Mode::IssueForm;
+    }
+
+    /// Discard the form and return to Normal mode.
+    pub fn cancel_issue_form(&mut self) {
+        self.issue_form = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Deliver a per-repo options fetch. Dropped when the form has been
+    /// closed or retargeted since the fetch was spawned (stale response).
+    pub fn set_form_options(&mut self, repo: &str, options: FormOptions) {
+        if let Some(form) = &mut self.issue_form
+            && form.repo == repo
+        {
+            form.options = Some(options);
         }
     }
 
@@ -1613,6 +1968,172 @@ mod tests {
 
         assert!(app.selected < app.rows.len());
         assert!(app.selected_issue().is_none_or(|i| i.id != "I_3"));
+    }
+
+    fn form_options() -> FormOptions {
+        let id_name = |id: &str, name: &str| IdName {
+            id: id.into(),
+            name: name.into(),
+        };
+        FormOptions {
+            repo_id: "R_repo".into(),
+            labels: vec![
+                id_name("L_bug", "bug"),
+                id_name("L_enh", "enhancement"),
+                id_name("L_ph", "priority:high"),
+                id_name("L_pl", "priority:low"),
+            ],
+            users: vec![id_name("U_pgmac", "pgmac"), id_name("U_bot", "bot")],
+            milestones: vec![id_name("M_1", "v1.0")],
+            projects: vec![id_name("P_1", "Homelab")],
+            issue_types: vec![id_name("T_bug", "Bug"), id_name("T_feat", "Feature")],
+        }
+    }
+
+    #[test]
+    fn issue_form_opens_and_options_land() {
+        let mut app = two_repo_app();
+        app.open_issue_form("alpha".into());
+        assert_eq!(app.mode, Mode::IssueForm);
+        let form = app.issue_form.as_ref().unwrap();
+        assert_eq!(form.repo, "alpha");
+        assert!(form.options.is_none());
+        assert!(form.field_options(3).is_empty()); // loading → empty
+
+        app.set_form_options("alpha", form_options());
+        let form = app.issue_form.as_ref().unwrap();
+        assert_eq!(form.field_options(2), vec!["pgmac", "bot"]);
+        assert_eq!(form.field_options(5), vec!["priority:high", "priority:low"]);
+    }
+
+    #[test]
+    fn stale_form_options_are_dropped() {
+        let mut app = two_repo_app();
+        app.open_issue_form("alpha".into());
+        app.set_form_options("beta", form_options()); // stale: other repo
+        assert!(app.issue_form.as_ref().unwrap().options.is_none());
+
+        app.cancel_issue_form();
+        app.set_form_options("alpha", form_options()); // stale: form closed
+        assert!(app.issue_form.is_none());
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn build_params_requires_options_and_title() {
+        let mut form = IssueForm::new("alpha".into());
+        form.title = "hello".into();
+        assert!(form.build_params().is_none()); // options not loaded
+
+        form.options = Some(form_options());
+        form.title = "   ".into();
+        assert!(form.build_params().is_none()); // blank title
+
+        form.title = "hello".into();
+        let p = form.build_params().unwrap();
+        assert_eq!(p.repo_id, "R_repo");
+        assert_eq!(p.title, "hello");
+        assert!(p.label_ids.is_empty() && p.assignee_ids.is_empty());
+        assert!(p.milestone_id.is_none() && p.issue_type_id.is_none() && p.project_id.is_none());
+    }
+
+    #[test]
+    fn build_params_assembles_ids_and_merges_priority() {
+        let mut form = IssueForm::new("alpha".into());
+        form.options = Some(form_options());
+        form.title = "t".into();
+        form.assignees.insert(0); // pgmac
+        form.labels.insert(0); // bug
+        form.priority = Some(0); // priority:high → L_ph
+        form.issue_type = Some(1); // Feature
+        form.project = Some(0);
+        form.milestone = Some(0);
+
+        let p = form.build_params().unwrap();
+        assert_eq!(p.assignee_ids, vec!["U_pgmac"]);
+        assert_eq!(p.label_ids, vec!["L_bug", "L_ph"]);
+        assert_eq!(p.issue_type_id.as_deref(), Some("T_feat"));
+        assert_eq!(p.project_id.as_deref(), Some("P_1"));
+        assert_eq!(p.milestone_id.as_deref(), Some("M_1"));
+
+        // Picking the same priority label in the labels field must not
+        // duplicate its id.
+        form.labels.insert(2); // priority:high via labels
+        let p = form.build_params().unwrap();
+        assert_eq!(
+            p.label_ids.iter().filter(|i| *i == "L_ph").count(),
+            1,
+            "priority label id duplicated"
+        );
+    }
+
+    #[test]
+    fn form_field_display_joins_multi_selections() {
+        let mut form = IssueForm::new("alpha".into());
+        form.options = Some(form_options());
+        form.labels.insert(1);
+        form.labels.insert(0);
+        assert_eq!(form.field_display(3), "bug, enhancement");
+        form.priority = Some(1);
+        assert_eq!(form.field_display(5), "priority:low");
+    }
+
+    #[test]
+    fn body_editor_splits_merges_and_clamps() {
+        let mut b = BodyEditor::default();
+        for c in "hello".chars() {
+            b.insert(c);
+        }
+        b.left();
+        b.left(); // cursor after "hel"
+        b.newline();
+        assert_eq!(b.text(), "hel\nlo");
+        assert_eq!(b.line, 1);
+        assert_eq!(b.lines[1].cursor, 0);
+
+        b.backspace(); // col 0 → merge back
+        assert_eq!(b.text(), "hello");
+        assert_eq!(b.line, 0);
+        assert_eq!(b.lines[0].cursor, 3); // at the old split point
+
+        b.newline();
+        b.insert('x');
+        b.up(); // cursor col clamps within line 0
+        assert_eq!(b.line, 0);
+        b.down();
+        assert_eq!(b.line, 1);
+        assert_eq!(b.text(), "hel\nxlo");
+        assert_eq!(b.summary(), "hel (+1 more lines)");
+    }
+
+    #[test]
+    fn body_editor_handles_multibyte() {
+        let mut b = BodyEditor::default();
+        for c in "héllo".chars() {
+            b.insert(c);
+        }
+        b.left();
+        b.left();
+        b.left(); // after "hé"
+        b.newline();
+        assert_eq!(b.text(), "hé\nllo");
+        b.backspace();
+        assert_eq!(b.text(), "héllo");
+    }
+
+    #[test]
+    fn auto_refresh_blocked_in_form_modes() {
+        let mut app = two_repo_app();
+        assert!(app.should_auto_refresh());
+        for mode in [
+            Mode::IssueForm,
+            Mode::IssueFormSelect(4),
+            Mode::IssueFormMulti(2),
+            Mode::IssueFormBody,
+        ] {
+            app.mode = mode;
+            assert!(!app.should_auto_refresh(), "{mode:?} must block refresh");
+        }
     }
 
     #[test]

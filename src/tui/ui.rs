@@ -7,7 +7,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 
 use crate::github::types::Issue;
 
-use super::app::{App, FILTER_FIELDS, Focus, InputKind, Mode, Row};
+use super::app::{
+    App, FILTER_FIELDS, Focus, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row,
+};
 use super::theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
@@ -34,6 +36,19 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
         Mode::FilterMenu => draw_filter_menu(f, app, t),
         Mode::SelectField(idx) => draw_select_popup(f, app, t, idx),
         Mode::Calendar(idx) => draw_calendar_popup(f, app, t, idx),
+        Mode::IssueForm => draw_issue_form(f, app, t),
+        Mode::IssueFormSelect(idx) => {
+            draw_issue_form(f, app, t);
+            draw_form_choice_popup(f, app, t, idx, false);
+        }
+        Mode::IssueFormMulti(idx) => {
+            draw_issue_form(f, app, t);
+            draw_form_choice_popup(f, app, t, idx, true);
+        }
+        Mode::IssueFormBody => {
+            draw_issue_form(f, app, t);
+            draw_form_body_popup(f, app, t);
+        }
         Mode::Help => draw_help(f, t),
         _ => {}
     }
@@ -302,7 +317,7 @@ fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 InputKind::Labels => "labels (comma-separated)",
                 InputKind::Title => "title",
                 InputKind::Org => "org/owner (Enter switches)",
-                InputKind::CreateIssue => "new issue title (Enter creates)",
+                InputKind::FormTitle => "issue title (Enter sets)",
             };
             let line = Line::from(vec![
                 Span::styled(format!(" {prompt}: "), Style::default().fg(t.accent)),
@@ -393,6 +408,153 @@ fn draw_select_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
             .title(format!(" select {field_name} (Enter picks, Esc cancels) ")),
     );
     f.render_widget(list, area);
+}
+
+fn draw_issue_form(f: &mut Frame, app: &App, t: &Theme) {
+    let Some(form) = &app.issue_form else { return };
+    let area = centered(f.area(), 70, ISSUE_FORM_FIELDS.len() as u16 + 4);
+    f.render_widget(Clear, area);
+
+    let mut items: Vec<ListItem> = ISSUE_FORM_FIELDS
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let style = if i == form.field_idx {
+                Style::default().bg(t.selected_bg)
+            } else {
+                Style::default()
+            };
+            let value = if form.options.is_none() && i >= 2 {
+                "loading…".to_string()
+            } else {
+                form.field_display(i)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {name:<14}"), style.fg(t.accent)),
+                Span::styled(value, style),
+            ]))
+        })
+        .collect();
+
+    let create_style = if form.field_idx == ISSUE_FORM_CREATE_ROW {
+        Style::default()
+            .bg(t.selected_bg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+    items.push(ListItem::new(Line::raw("")));
+    items.push(ListItem::new(Line::from(Span::styled(
+        " [ Create issue ]",
+        create_style.fg(t.open),
+    ))));
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(t.accent))
+            .title(format!(
+                " new issue in {} (Enter edit · Esc cancel) ",
+                form.repo
+            )),
+    );
+    f.render_widget(list, area);
+}
+
+/// Option popup for a form field: single-select (with the "—" clear row)
+/// or multi-select (Space toggles, checkbox markers).
+fn draw_form_choice_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize, multi: bool) {
+    let field_name = ISSUE_FORM_FIELDS[idx];
+    let h = (app.select_options.len().max(1) as u16 + 2).min(f.area().height);
+    let area = centered(f.area(), 50, h);
+    f.render_widget(Clear, area);
+    let items: Vec<ListItem> = if app.select_options.is_empty() {
+        vec![ListItem::new(Line::styled(
+            " nothing available",
+            Style::default().fg(t.dim),
+        ))]
+    } else {
+        app.select_options
+            .iter()
+            .enumerate()
+            .map(|(i, opt)| {
+                let style = if i == app.select_idx {
+                    Style::default().bg(t.selected_bg)
+                } else {
+                    Style::default()
+                };
+                let text = if multi {
+                    let mark = if app.multi_selected.contains(&i) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    };
+                    format!(" {mark} {opt}")
+                } else if opt == "\u{2014}" {
+                    " \u{2014} none \u{2014}".to_string()
+                } else {
+                    format!(" {opt}")
+                };
+                ListItem::new(Line::from(Span::styled(text, style)))
+            })
+            .collect()
+    };
+    let hint = if multi {
+        "Space toggles · Enter accepts · Esc cancels"
+    } else {
+        "Enter picks · Esc cancels"
+    };
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {field_name} ({hint}) ")),
+    );
+    f.render_widget(list, area);
+}
+
+fn draw_form_body_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let Some(form) = &app.issue_form else { return };
+    let area = centered(f.area(), 76, 18.min(f.area().height));
+    f.render_widget(Clear, area);
+    let inner_height = area.height.saturating_sub(2) as usize;
+
+    // Keep the cursor line visible: show a window of lines around it.
+    let top = form
+        .body
+        .line
+        .saturating_sub(inner_height.saturating_sub(1));
+    let lines: Vec<Line> = form
+        .body
+        .lines
+        .iter()
+        .enumerate()
+        .skip(top)
+        .take(inner_height)
+        .map(|(i, l)| {
+            if i == form.body.line {
+                let byte = l
+                    .buffer
+                    .char_indices()
+                    .nth(l.cursor)
+                    .map(|(b, _)| b)
+                    .unwrap_or(l.buffer.len());
+                Line::from(vec![
+                    Span::raw(l.buffer[..byte].to_string()),
+                    Span::styled("█", Style::default().fg(t.accent)),
+                    Span::raw(l.buffer[byte..].to_string()),
+                ])
+            } else {
+                Line::raw(l.buffer.clone())
+            }
+        })
+        .collect();
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(t.accent))
+            .title(" description (Enter newline · Esc done) "),
+    );
+    f.render_widget(para, area);
 }
 
 fn draw_calendar_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {

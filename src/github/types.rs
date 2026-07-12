@@ -62,6 +62,42 @@ pub struct RepoLabel {
     pub name: String,
 }
 
+/// A GraphQL node id + display name, as shown in new-issue form pickers.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct IdName {
+    pub id: String,
+    pub name: String,
+}
+
+/// Everything the new-issue form's pickers need, fetched per repo.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FormOptions {
+    pub repo_id: String,
+    pub labels: Vec<IdName>,
+    /// Assignable users; `name` is the login.
+    pub users: Vec<IdName>,
+    /// Open milestones; `name` is the title.
+    pub milestones: Vec<IdName>,
+    /// ProjectsV2 linked to the repo; `name` is the title.
+    pub projects: Vec<IdName>,
+    /// Issue types (org feature; empty when unavailable).
+    pub issue_types: Vec<IdName>,
+}
+
+/// Parameters for `Client::create_issue`. Ids come from `FormOptions`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewIssueParams {
+    pub repo_id: String,
+    pub title: String,
+    pub body: String,
+    pub assignee_ids: Vec<String>,
+    pub label_ids: Vec<String>,
+    pub milestone_id: Option<String>,
+    pub issue_type_id: Option<String>,
+    /// Applied after creation via `addProjectV2ItemById`.
+    pub project_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RateLimitData {
     pub remaining: u64,
