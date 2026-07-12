@@ -22,7 +22,7 @@ Three top-level modules wired together in `src/main.rs`:
 
 | Module | Purpose |
 |--------|---------|
-| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`). |
+| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`, `color_profile` + `[color_profiles.*]`). |
 | `cwd_repo` | Detects the cwd's `origin` GitHub remote (`(owner, repo)`), best-effort via `git remote get-url origin`. |
 | `github` | Async GitHub GraphQL v4 client + token resolution. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |
@@ -37,6 +37,7 @@ Startup org resolution in `main.rs`: `--org` flag → cwd git remote (owner, plu
 
 ### tui/
 
+- `theme.rs` — `Theme` (resolved UI colours, `Default` = original scheme) + `ColorProfile` (per-field optional overrides deserialized from `[color_profiles.<name>]`; colours parse via ratatui's `Color` serde: names/hex/index). `Config::resolve_theme` picks the profile named by `color_profile`; a missing name is a startup error. `ui::draw` takes `&Theme` — no colour constants in `ui.rs`.
 - `app.rs` — All state and pure logic: `Filters` (text/repo/assignee/author/date bounds), `SortKey`, collapsible `Row` model (`RepoHeader`/`Issue`), `InputState` (char-indexed, UTF-8 safe), `Mode` (Normal/Input/FilterMenu/ConfirmState/Help). `rebuild_rows()` recomputes the visible list from data + filters + sort + collapsed set. This module has no I/O — it holds the bulk of the unit tests.
 - `event.rs` — Async event loop: `tokio::select!` over crossterm `EventStream` and an mpsc channel of `AppEvent`s from spawned background tasks. All GitHub calls happen in spawned tasks; mutations send `MutationDone` which triggers a full refetch (simple consistency over optimistic updates).
 - `ui.rs` — Pure render from `&App`. No state mutation in draw code.

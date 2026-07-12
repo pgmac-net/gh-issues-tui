@@ -55,6 +55,31 @@ default_collapsed = false   # start with repo groups expanded (default: true)
 
 With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
 
+### Colour profiles
+
+Define any number of `[color_profiles.<name>]` tables and pick one with `color_profile`:
+
+```toml
+color_profile = "gruvbox"
+
+[color_profiles.gruvbox]
+accent      = "#83a598"   # repo headers, prompts, help keys
+dim         = "#928374"   # issue numbers, dates, metadata
+selected_bg = "#3c3836"   # selection bar (list + pickers + calendar)
+open        = "#b8bb26"   # open-issue dot and label
+closed      = "#d3869b"   # closed-issue dot and label
+assignee    = "#fabd2f"   # assignee badges / detail meta line
+warning     = "#fe8019"   # rate-limit warnings, y/n prompts
+error       = "#fb4934"   # errors
+label_fallback = "blue"   # labels with unparsable GitHub colours
+
+[color_profiles.mono]
+accent = "white"
+selected_bg = "8"
+```
+
+Every entry is optional — unset entries keep the built-in colour. Values accept ratatui colour names (`"cyan"`, `"lightgreen"`, `"dark gray"`), hex (`"#2d5aa0"`), or ANSI indexes (`"8"`). Naming a profile that isn't defined is a startup error listing the profiles that are.
+
 ## Keys
 
 | Key | Action |

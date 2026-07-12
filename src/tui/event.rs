@@ -10,6 +10,7 @@ use crate::github::error::RATE_LIMIT_MSG_PREFIX;
 use crate::github::types::{Comment, IssueState, RepoIssues};
 
 use super::app::{App, Focus, InputKind, Mode, StateFilter};
+use super::theme::Theme;
 use super::ui;
 
 /// Messages from background tasks back into the UI loop.
@@ -29,6 +30,7 @@ pub async fn run(
     initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
+    theme: Theme,
 ) -> Result<()> {
     let terminal = ratatui::init();
     let result = event_loop(
@@ -38,12 +40,14 @@ pub async fn run(
         initial_repo,
         include_closed,
         default_collapsed,
+        theme,
     )
     .await;
     ratatui::restore();
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn event_loop(
     mut terminal: DefaultTerminal,
     client: Client,
@@ -51,6 +55,7 @@ async fn event_loop(
     initial_repo: Option<String>,
     include_closed: bool,
     default_collapsed: bool,
+    theme: Theme,
 ) -> Result<()> {
     let mut app = App::new(org, initial_repo, include_closed, default_collapsed);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -59,7 +64,7 @@ async fn event_loop(
     spawn_fetch(&client, &app, &tx);
 
     loop {
-        terminal.draw(|f| ui::draw(f, &app))?;
+        terminal.draw(|f| ui::draw(f, &app, &theme))?;
 
         tokio::select! {
             Some(Ok(ev)) = keys.next() => {

@@ -61,9 +61,18 @@ async fn main() -> Result<()> {
         ),
     };
 
+    let theme = cfg.resolve_theme()?;
     let token = github::auth::resolve_token(cli.token)?;
     let client = github::Client::new(token)?;
 
     install_panic_hook();
-    tui::run(client, org, initial_repo, cli.all, cfg.default_collapsed).await
+    tui::run(
+        client,
+        org,
+        initial_repo,
+        cli.all,
+        cfg.default_collapsed,
+        theme,
+    )
+    .await
 }
