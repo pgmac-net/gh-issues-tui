@@ -62,3 +62,31 @@ None — implemented as approved.
 
 - 81 unit tests (6 new: config default/explicit/zero parsing, selection preserved and clamped across `set_data`, gating predicate), clippy `-D warnings`, `fmt --check` — all green.
 - Live smoke test: `--org pgmac-net --refresh 4` in a sized pseudo-tty (`script` + `stty`; note a bare `script` pty has zero size and ratatui renders nothing) — observed `loaded 107 issues across 19 repos` then `auto-refreshed 107 issues across 19 repos` after the ticker fired.
+
+# Development log — right arrow into detail pane (2026-07-13)
+
+Work driven by [pgmac-net/gh-issues-tui#12](https://github.com/pgmac-net/gh-issues-tui/issues/12), delivered in PR #14 on branch `12-right-arrow-detail`.
+
+## Process
+
+1. Plan posted to the ticket and approved before code. Key observation enabling a clean design: `→` on an issue row was already a no-op (a visible issue row implies its repo group is expanded), so the key was free to take on "move into the detail pane" without losing anything.
+2. Implementation in one small PR: `App::enter_detail`, the `→` handler split in `event.rs`, help overlay + README key table, tests.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| `→` on issue row, pane closed | open the pane focused, same as `Enter` (comments load) | `→` consistently means "go deeper"; ticket asked for intuitive symmetry with `←` |
+| `→` on issue row, pane open | flip focus only, no comment refetch | Mirror of `←` backing out; refetch would be wasted API budget |
+| `→` on repo header | unchanged (expand group) | Existing muscle memory; headers have no detail view |
+| Logic placement | `App::enter_detail` returning `Option<issue id>` for the needed comment fetch | Keeps `event.rs` thin and the behaviour unit-testable without I/O |
+| Help overlay | split the single `← / →` row into two rows | Combined description of both meanings exceeded the 52-column help box |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- 84 unit tests (3 new for `enter_detail`: header no-op, closed-pane open+fetch, open-pane focus-only), clippy `-D warnings`, `fmt --check` — green.
+- Live pty+pyte drive (`.claude/skills/verify` recipe) against `pgmac-net`: `]`, `j`, `→` opened the detail pane showing the selected issue's body and comment thread; `←`/`→` flipped focus with the pane staying open; `q` closed back to the full-width list.
