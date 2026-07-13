@@ -53,7 +53,7 @@ fn on_or_before(ts: Option<DateTime<Utc>>, bound: Option<NaiveDate>) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Filters {
     pub text: String,
     pub repo: String,
@@ -69,6 +69,30 @@ pub struct Filters {
     pub updated_before: Option<NaiveDate>,
     pub closed_after: Option<NaiveDate>,
     pub closed_before: Option<NaiveDate>,
+    /// Hide repo groups with zero visible issues. Defaults true (today's
+    /// clean view); `App::clear_filters`/`switch_org` restore the config
+    /// default rather than this one.
+    pub hide_empty: bool,
+}
+
+impl Default for Filters {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            repo: String::new(),
+            assignee: String::new(),
+            author: String::new(),
+            priority: String::new(),
+            status: String::new(),
+            created_after: None,
+            created_before: None,
+            updated_after: None,
+            updated_before: None,
+            closed_after: None,
+            closed_before: None,
+            hide_empty: true,
+        }
+    }
 }
 
 impl Filters {
@@ -229,7 +253,12 @@ pub const FILTER_FIELDS: &[&str] = &[
     "updated before",
     "closed after",
     "closed before",
+    "hide empty repos",
 ];
+
+/// Index of the "hide empty repos" toggle row in `FILTER_FIELDS` — it is
+/// flipped in place on Enter rather than opening an input or picker.
+pub const FILTER_HIDE_EMPTY_IDX: usize = FILTER_FIELDS.len() - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -644,6 +673,9 @@ pub struct App {
     pub seen_repos: std::collections::HashSet<String>,
     /// Config: newly seen repos start collapsed.
     pub default_collapsed: bool,
+    /// Config: default for the hide-empty-repos filter; restored on
+    /// filter clear and org switch.
+    pub hide_empty_default: bool,
     /// Visible rows derived from repos + filters + sort + collapsed.
     pub rows: Vec<Row>,
     pub selected: usize,
@@ -699,6 +731,7 @@ impl App {
             collapsed: Default::default(),
             seen_repos: Default::default(),
             default_collapsed,
+            hide_empty_default: true,
             rows: Vec::new(),
             selected: 0,
             state_filter: StateFilter::Open,
@@ -900,7 +933,7 @@ impl App {
         self.rows.clear();
         self.collapsed.clear();
         self.seen_repos.clear();
-        self.filters.clear();
+        self.clear_filters();
         self.state_filter = StateFilter::Open;
         self.selected = 0;
         self.focus = Focus::List;
@@ -968,7 +1001,7 @@ impl App {
                 .filter(|(_, i)| self.filters.matches(i, self.state_filter))
                 .map(|(idx, _)| idx)
                 .collect();
-            if visible.is_empty() {
+            if visible.is_empty() && self.filters.hide_empty {
                 continue;
             }
             self.rows.push(Row::RepoHeader { repo_idx: ri });
@@ -1105,7 +1138,9 @@ impl App {
                     8 => self.filters.updated_after = parse_date(&v),
                     9 => self.filters.updated_before = parse_date(&v),
                     10 => self.filters.closed_after = parse_date(&v),
-                    _ => self.filters.closed_before = parse_date(&v),
+                    11 => self.filters.closed_before = parse_date(&v),
+                    // "hide empty repos" toggles in place, never via input.
+                    _ => {}
                 }
             }
             _ => {}
@@ -1128,8 +1163,36 @@ impl App {
             8 => d(self.filters.updated_after),
             9 => d(self.filters.updated_before),
             10 => d(self.filters.closed_after),
-            _ => d(self.filters.closed_before),
+            11 => d(self.filters.closed_before),
+            _ => if self.filters.hide_empty { "yes" } else { "no" }.to_string(),
         }
+    }
+
+    /// Flip the hide-empty-repos filter and recompute the rows.
+    pub fn toggle_hide_empty(&mut self) {
+        self.filters.hide_empty = !self.filters.hide_empty;
+        self.rebuild_rows();
+        self.expand_single_visible();
+    }
+
+    /// Clear the filter editor back to its defaults — the hide-empty
+    /// toggle returns to the *config* default, not blanket false.
+    pub fn clear_filters(&mut self) {
+        self.filters.clear();
+        self.filters.hide_empty = self.hide_empty_default;
+    }
+
+    /// Whether the filters-active indicator should show: any text/date
+    /// filter set, or the hide-empty toggle moved off its config default.
+    pub fn filters_active(&self) -> bool {
+        self.filters.is_active() || self.filters.hide_empty != self.hide_empty_default
+    }
+
+    /// Set the config-derived default for the hide-empty filter, applying
+    /// it to the live filter too (called once at startup).
+    pub fn set_hide_empty_default(&mut self, hide: bool) {
+        self.hide_empty_default = hide;
+        self.filters.hide_empty = hide;
     }
 
     /// Build the list of options shown when the user presses Enter on a
@@ -2231,6 +2294,98 @@ mod tests {
         app.start_picker(vec!["beta".into()], 0);
         assert_eq!(app.select_filter, "");
         assert_eq!(app.filtered_select(), vec![(0, "beta")]);
+    }
+
+    fn app_with_empty_repo() -> App {
+        app_with(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(1, "first bug", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "empty-repo".into(),
+                repo_url: "u".into(),
+                issues: vec![],
+            },
+        ])
+    }
+
+    #[test]
+    fn hide_empty_hides_and_toggle_reveals_zero_issue_repos() {
+        let mut app = app_with_empty_repo();
+        // Default: hidden — only alpha's header + issue.
+        assert_eq!(app.rows.len(), 2);
+
+        app.toggle_hide_empty();
+        assert_eq!(app.rows.len(), 3); // + empty-repo header
+        assert!(matches!(app.rows[2], Row::RepoHeader { repo_idx: 1 }));
+        assert_eq!(app.repo_visible_count(1), 0);
+
+        app.toggle_hide_empty();
+        assert_eq!(app.rows.len(), 2);
+    }
+
+    #[test]
+    fn hide_empty_off_also_reveals_filtered_to_zero_groups() {
+        let mut app = two_repo_app();
+        app.filters.text = "docs".into(); // matches only beta's issue
+        app.rebuild_rows();
+        assert_eq!(app.rows.len(), 2); // beta header + its issue
+
+        app.toggle_hide_empty();
+        // alpha reappears as an empty group under the same rule.
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| matches!(r, Row::RepoHeader { repo_idx: 0 }))
+        );
+        assert_eq!(app.repo_visible_count(0), 0);
+    }
+
+    #[test]
+    fn clear_filters_restores_config_default_not_false() {
+        let mut app = app_with_empty_repo();
+        app.set_hide_empty_default(false); // config says show empties
+        app.rebuild_rows();
+        assert_eq!(app.rows.len(), 3);
+        assert!(!app.filters_active(), "config default is not 'active'");
+
+        app.toggle_hide_empty(); // user hides them this session
+        assert!(app.filters_active());
+
+        app.clear_filters();
+        app.rebuild_rows();
+        assert!(!app.filters.hide_empty); // back to config default
+        assert!(!app.filters_active());
+        assert_eq!(app.rows.len(), 3);
+    }
+
+    #[test]
+    fn switch_org_restores_hide_empty_default() {
+        let mut app = app_with_empty_repo();
+        app.toggle_hide_empty();
+        assert!(!app.filters.hide_empty);
+        app.switch_org("other".into());
+        assert!(app.filters.hide_empty); // default true restored
+    }
+
+    #[test]
+    fn filters_active_only_on_hide_empty_deviation() {
+        let mut app = two_repo_app();
+        assert!(!app.filters_active());
+        app.toggle_hide_empty();
+        assert!(app.filters_active());
+        app.toggle_hide_empty();
+        assert!(!app.filters_active());
+    }
+
+    #[test]
+    fn hide_empty_row_shows_yes_no_in_filter_menu() {
+        let mut app = two_repo_app();
+        assert_eq!(app.current_filter_value(FILTER_HIDE_EMPTY_IDX), "yes");
+        app.toggle_hide_empty();
+        assert_eq!(app.current_filter_value(FILTER_HIDE_EMPTY_IDX), "no");
     }
 
     #[test]

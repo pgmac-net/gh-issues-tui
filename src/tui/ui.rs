@@ -296,7 +296,7 @@ fn draw_info_bar(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             format!("  ⚠ {err}"),
             Style::default().fg(t.error),
         ));
-    } else if app.filters.is_active() {
+    } else if app.filters_active() {
         spans.push(Span::styled(
             "  [filters active — F to edit, F→c to clear]",
             Style::default().fg(t.warning),

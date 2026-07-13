@@ -150,6 +150,10 @@ impl Client {
             }
             let repos: RepositoriesConn = parse_at(&data, &["repositoryOwner", "repositories"])?;
             for repo in repos.nodes {
+                // Repos with issues disabled can never hold issues — skip.
+                if !repo.has_issues_enabled {
+                    continue;
+                }
                 let mut issues: Vec<Issue> =
                     repo.issues.nodes.iter().map(IssueNode::to_issue).collect();
 
@@ -173,13 +177,13 @@ impl Client {
                     page = conn.page_info;
                 }
 
-                if !issues.is_empty() {
-                    out.push(RepoIssues {
-                        repo: repo.name,
-                        repo_url: repo.url,
-                        issues,
-                    });
-                }
+                // Empty repos are kept: the hide-empty-repos filter decides
+                // their visibility client-side, so toggling needs no refetch.
+                out.push(RepoIssues {
+                    repo: repo.name,
+                    repo_url: repo.url,
+                    issues,
+                });
             }
 
             if !repos.page_info.has_next_page {
@@ -470,10 +474,17 @@ struct RepositoriesConn {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RepoNode {
     name: String,
     url: String,
+    #[serde(default = "default_true")]
+    has_issues_enabled: bool,
     issues: IssuesConn,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -600,10 +611,10 @@ macro_rules! issue_fields {
 const ORG_ISSUES_QUERY: &str = concat!(
     "query($org: String!, $reposFirst: Int!, $issuesFirst: Int!, $repoCursor: String, $states: [IssueState!]) {
        repositoryOwner(login: $org) {
-         repositories(first: $reposFirst, after: $repoCursor, ownerAffiliations: OWNER, orderBy: {field: NAME, direction: ASC}) {
+         repositories(first: $reposFirst, after: $repoCursor, ownerAffiliations: OWNER, isArchived: false, orderBy: {field: NAME, direction: ASC}) {
            pageInfo { hasNextPage endCursor }
            nodes {
-             name url
+             name url hasIssuesEnabled
              issues(first: $issuesFirst, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
                pageInfo { hasNextPage endCursor }
                nodes { ",

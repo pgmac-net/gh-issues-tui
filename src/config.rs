@@ -25,6 +25,11 @@ pub struct Config {
     #[serde(default = "refresh_interval_default")]
     pub refresh_interval: u64,
 
+    /// Hide repo groups with no visible issues (the default). The filter
+    /// editor can flip this per session; clearing filters restores it.
+    #[serde(default = "hide_empty_repos_default")]
+    pub hide_empty_repos: bool,
+
     /// Name of the colour profile to use, one of the `[color_profiles.*]`
     /// tables below. Unset → built-in colours.
     #[serde(default)]
@@ -44,12 +49,17 @@ fn refresh_interval_default() -> u64 {
     300
 }
 
+fn hide_empty_repos_default() -> bool {
+    true
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             default_org: None,
             default_collapsed: true,
             refresh_interval: refresh_interval_default(),
+            hide_empty_repos: true,
             color_profile: None,
             color_profiles: HashMap::new(),
         }
@@ -150,6 +160,17 @@ mod tests {
         std::fs::write(&path, "refresh_interval = 60\n").unwrap();
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.refresh_interval, 60);
+    }
+
+    #[test]
+    fn hide_empty_repos_defaults_true_and_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_org = \"pgmac-net\"\n").unwrap();
+        assert!(Config::load_from(&path).unwrap().hide_empty_repos);
+
+        std::fs::write(&path, "hide_empty_repos = false\n").unwrap();
+        assert!(!Config::load_from(&path).unwrap().hide_empty_repos);
     }
 
     #[test]

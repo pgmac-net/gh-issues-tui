@@ -53,6 +53,7 @@ Optional TOML config at `~/.config/gh-issues/config.toml`:
 default_org = "my-org"
 default_collapsed = false   # start with repo groups expanded (default: true)
 refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
+hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
 ```
 
 With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
@@ -120,7 +121,7 @@ Sort keys: updated, created, closed, state, assignee, author.
 
 `n` opens a New-Issue form for the selected repo (from its header or any of its issue rows), modelled on GitHub's New Issue page: **title**, **description** (multi-line editor: Enter inserts a newline, Esc keeps the text and returns to the form), **assignees** and **labels** (multi-select pickers — Space toggles, Enter accepts), and **type**, **priority**, **project**, **milestone** (single-select pickers, `—` clears). Picker options load per repo when the form opens: assignable users, repo labels, issue types (where the org has them), the repo's Projects (V2), and open milestones. Priority follows the `priority:<value>` label convention — the chosen label is added to the issue's labels. `Enter` on `[ Create issue ]` submits; the status line reports `created #N` and the list refetches. `Esc` cancels the form.
 
-Known limitation: repos with no issues are omitted from the fetched list entirely, so a repo's *first* issue can't be created from here yet.
+To create the *first* issue in a repo that shows no issues, flip the `hide empty repos` filter to `no` (`F` → last row → Enter) — the repo's `(0)` header appears and `n` works on it.
 
 ## Notes
 
@@ -128,6 +129,7 @@ Known limitation: repos with no issues are omitted from the fetched list entirel
 - Only open issues are fetched at startup unless `--all` is given; switching the state filter to closed/all triggers a one-time refetch that includes closed issues.
 - Assignee and label edits replace the full set with what you type; comment/close/reopen/edit operations refresh the data on completion.
 - In the filter editor, repo/assignee/author/priority/status open a picker built from the loaded data (first entry clears the filter) and date fields open a calendar; text remains free-input.
+- Repo groups with zero visible issues are hidden by default. The `hide empty repos` row in the filter editor toggles this in place (Enter flips yes/no): set to `no`, every repo appears — including repos with no issues at all and groups emptied by the current filters — as a `(0)` header. Clearing filters (`F` → `c`) and switching org reset the toggle to the `hide_empty_repos` config default. Archived repos and repos with issues disabled are never shown.
 - Every option picker (filter editor and new-issue form) supports type-ahead: just start typing to narrow the list (case-insensitive substring, shown as a `/ <text>` row). `Backspace` edits the filter, `Ctrl+U` clears it, `↑`/`↓` navigate the matches, `Enter` picks, `Esc` closes. Because typing filters, `j`/`k`/`q` don't navigate/close inside pickers.
 - Priority and status filters match `priority:<value>` / `status:<value>` labels (bare value or full label name, case-insensitive).
 - The repo filter is exact when its text exactly names a loaded repo (case-insensitive), so `api` won't also match `api-gateway`; otherwise it matches as a substring.

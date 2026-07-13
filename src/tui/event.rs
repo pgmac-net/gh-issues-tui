@@ -37,6 +37,7 @@ pub async fn run(
     include_closed: bool,
     default_collapsed: bool,
     refresh_interval: u64,
+    hide_empty_repos: bool,
     theme: Theme,
 ) -> Result<()> {
     let terminal = ratatui::init();
@@ -48,6 +49,7 @@ pub async fn run(
         include_closed,
         default_collapsed,
         refresh_interval,
+        hide_empty_repos,
         theme,
     )
     .await;
@@ -64,9 +66,11 @@ async fn event_loop(
     include_closed: bool,
     default_collapsed: bool,
     refresh_interval: u64,
+    hide_empty_repos: bool,
     theme: Theme,
 ) -> Result<()> {
     let mut app = App::new(org, initial_repo, include_closed, default_collapsed);
+    app.set_hide_empty_default(hide_empty_repos);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
 
@@ -752,13 +756,15 @@ fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
                 (app.filter_menu_idx + FILTER_FIELDS.len() - 1) % FILTER_FIELDS.len();
         }
         KeyCode::Char('c') => {
-            app.filters.clear();
+            app.clear_filters();
             app.rebuild_rows();
             app.expand_single_visible();
         }
         KeyCode::Enter => {
             let idx = app.filter_menu_idx;
-            if App::is_select_field(idx) {
+            if idx == super::app::FILTER_HIDE_EMPTY_IDX {
+                app.toggle_hide_empty();
+            } else if App::is_select_field(idx) {
                 let options = app.compute_select_options(idx);
                 let current = app.current_filter_value(idx);
                 let initial = options.iter().position(|v| v == &current).unwrap_or(0);
