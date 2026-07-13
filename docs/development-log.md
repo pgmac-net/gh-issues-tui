@@ -148,3 +148,27 @@ Scope confirmed with Paul before planning: direct typing (not a `/`-prefix mode)
 
 - 100 unit tests (9 new), clippy `-D warnings`, `fmt --check` — green.
 - Live pty+pyte drive over the 19-repo pgmac-net list: `F` → repo picker → typed `gh-i` → list narrowed to `gh-issues-tui` under the `/ gh-i█` row → Enter applied the repo filter → issue list collapsed to that repo.
+
+# Development log — hide-empty-repos filter (2026-07-13)
+
+Work driven by [pgmac-net/gh-issues-tui#20](https://github.com/pgmac-net/gh-issues-tui/issues/20), delivered in PR #21 on branch `20-hide-empty-repos-filter`. Direction chosen: Paul's ticket comment — a filter with a config default — over the original show-always / creation-picker / bare-toggle options.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Approach | filter-editor toggle + `hide_empty_repos` config default | Discoverable in the existing `F` editor; default-true keeps the clean view; config-default-on-clear matches `default_collapsed` behaviour |
+| "Empty" semantics | zero **visible** issues | One rule for never-had-issues repos and filter-emptied groups; rides the existing `visible.is_empty()` line in `rebuild_rows` |
+| Fetch | always include empty repos; exclude archived (`isArchived: false`) and issues-disabled (`hasIssuesEnabled`) repos | Instant client-side toggle, no refetch; archived/disabled repos can never be useful here. Forks kept — they can carry issues |
+| Field UX | Enter toggles yes/no in place (`FILTER_HIDE_EMPTY_IDX` intercept) | Boolean row; a picker would be two keystrokes for two values |
+| Reset + indicator | `clear_filters`/`switch_org` restore the config default; `filters_active()` counts only deviation | Paul's explicit spec: clearing filters returns to the config setting, and a config default isn't an "active" filter |
+| `Filters::default()` | manual impl with `hide_empty: true` | A derived `false` default would have leaked "show empties" into every `Filters::default()` call site and silently changed filtered-to-zero behaviour |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- 107 unit tests (7 new), clippy `-D warnings`, `fmt --check` — green.
+- Live pty+pyte drive against pgmac-net: 19 repos at baseline → filter toggled to `no` → 46 repos with `(0)` headers → `F`→`c` → 19 again; repo-filtered to the empty `ansible-role-apotd`, `n` opened the create form targeting it (first-issue creation, the limitation deferred from #10, now closed out).
