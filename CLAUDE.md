@@ -22,7 +22,7 @@ Three top-level modules wired together in `src/main.rs`:
 
 | Module | Purpose |
 |--------|---------|
-| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`, `refresh_interval`, `color_profile` + `[color_profiles.*]`). |
+| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`, `refresh_interval`, `hide_empty_repos`, `color_profile` + `[color_profiles.*]`). |
 | `cwd_repo` | Detects the cwd's `origin` GitHub remote (`(owner, repo)`), best-effort via `git remote get-url origin`. |
 | `github` | Async GitHub GraphQL v4 client + token resolution. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |
@@ -56,6 +56,7 @@ Startup org resolution in `main.rs`: `--org` flag → cwd git remote (owner, plu
 - **Collapse state keyed by repo name** (not index) so it survives reloads. `default_collapsed` (config default: true) is applied in `set_data` only to repos not yet in `seen_repos`, so manual expand/collapse choices always win over the config default. Exception: when the current filters leave exactly one repo group visible (`single_visible_repo`), that group defaults to expanded.
 - **Panic hook** in `main.rs` restores the terminal before printing panics. Anything that touches terminal state must stay safe to drop in this path.
 - **Closed issues are lazily fetched.** Startup fetches open-only unless `--all`; the first switch of the state filter away from `open` sets `include_closed` and refetches once.
+- **Empty repos are fetched, visibility is a filter.** `org_issues` keeps zero-issue repos (excludes archived and issues-disabled ones at the query) so the `hide empty repos` filter toggles instantly client-side. "Empty" = zero *visible* issues — one rule for never-had-issues repos and filtered-to-zero groups alike (`rebuild_rows`). The toggle's reset value is the config default (`hide_empty_default` on `App`): `clear_filters` and `switch_org` restore it, and `filters_active()` counts it only when it deviates. The filter-editor row flips in place on Enter (`FILTER_HIDE_EMPTY_IDX` intercept in `handle_filter_menu_key`).
 
 ## Release process
 

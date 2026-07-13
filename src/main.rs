@@ -78,6 +78,7 @@ async fn main() -> Result<()> {
         cli.all,
         cfg.default_collapsed,
         cli.refresh.unwrap_or(cfg.refresh_interval),
+        cfg.hide_empty_repos,
         theme,
     )
     .await
