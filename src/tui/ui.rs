@@ -49,6 +49,7 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
             draw_issue_form(f, app, t);
             draw_form_body_popup(f, app, t);
         }
+        Mode::PrioritySet => draw_priority_popup(f, app, t),
         Mode::Help => draw_help(f, t),
         _ => {}
     }
@@ -453,6 +454,18 @@ fn draw_select_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
     f.render_widget(list, area);
 }
 
+fn draw_priority_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let items = picker_items(app, t, false, "clear");
+    let area = centered(f.area(), 50, picker_height(f, items.len()));
+    f.render_widget(Clear, area);
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" set priority (type to filter · Enter sets · Esc cancels) "),
+    );
+    f.render_widget(list, area);
+}
+
 fn draw_issue_form(f: &mut Frame, app: &App, t: &Theme) {
     let Some(form) = &app.issue_form else { return };
     let area = centered(f.area(), 70, ISSUE_FORM_FIELDS.len() as u16 + 4);
@@ -657,6 +670,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("a", "edit assignees"),
         ("l", "edit labels"),
         ("t", "edit title"),
+        ("p", "set priority"),
         ("n", "new issue"),
         ("r", "reload"),
         ("q", "back / quit"),

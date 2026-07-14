@@ -7,9 +7,12 @@ use tokio::sync::mpsc;
 
 use crate::github::Client;
 use crate::github::error::RATE_LIMIT_MSG_PREFIX;
-use crate::github::types::{Comment, FormOptions, IssueState, RepoIssues};
+use crate::github::types::{Comment, FormOptions, IssueState, RepoIssues, RepoLabel};
 
-use super::app::{App, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter};
+use super::app::{
+    App, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter, priority_label_set,
+    priority_set_options,
+};
 use super::theme::Theme;
 use super::ui;
 
@@ -26,6 +29,11 @@ pub enum AppEvent {
     FormOptions {
         repo: String,
         result: Result<FormOptions, String>,
+    },
+    /// Repo labels fetched for the set-priority picker.
+    PriorityOptions {
+        issue_id: String,
+        result: Result<Vec<RepoLabel>, String>,
     },
 }
 
@@ -142,6 +150,24 @@ fn spawn_form_options(
     });
 }
 
+fn spawn_priority_options(
+    client: &Client,
+    org: String,
+    repo: String,
+    issue_id: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client
+            .repo_labels(&org, &repo)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::PriorityOptions { issue_id, result });
+    });
+}
+
 fn spawn_comments(client: &Client, issue_id: String, tx: &mpsc::UnboundedSender<AppEvent>) {
     let client = client.clone();
     let tx = tx.clone();
@@ -248,6 +274,44 @@ fn handle_app_event(
                 }
             }
         },
+        AppEvent::PriorityOptions { issue_id, result } => {
+            // Stale unless we are still in Normal mode waiting on this
+            // issue's options with the selection unmoved.
+            if app.mode != Mode::Normal
+                || app.priority_pick_issue.as_deref() != Some(issue_id.as_str())
+                || app.selected_issue().is_none_or(|i| i.id != issue_id)
+            {
+                if app.priority_pick_issue.as_deref() == Some(issue_id.as_str()) {
+                    app.priority_pick_issue = None;
+                }
+                return;
+            }
+            match result {
+                Ok(labels) => {
+                    let options = priority_set_options(&labels);
+                    if options.len() == 1 {
+                        app.status = Some("no priority:* labels on this repo".into());
+                        app.priority_pick_issue = None;
+                    } else {
+                        // Highlight the issue's current priority when set.
+                        let idx = app
+                            .selected_issue()
+                            .and_then(|i| i.priority_label())
+                            .and_then(|l| {
+                                options.iter().position(|o| o.eq_ignore_ascii_case(&l.name))
+                            })
+                            .unwrap_or(0);
+                        app.status = None;
+                        app.start_picker(options, idx);
+                        app.mode = Mode::PrioritySet;
+                    }
+                }
+                Err(e) => {
+                    app.status = Some(format!("priorities failed: {e}"));
+                    app.priority_pick_issue = None;
+                }
+            }
+        }
     }
 }
 
@@ -263,7 +327,64 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
         Mode::IssueFormSelect(idx) => handle_form_select_key(app, key, idx),
         Mode::IssueFormMulti(idx) => handle_form_multi_key(app, key, idx),
         Mode::IssueFormBody => handle_form_body_key(app, key),
+        Mode::PrioritySet => handle_priority_set_key(app, key, client, tx),
         Mode::Help => app.mode = Mode::Normal,
+    }
+}
+
+fn handle_priority_set_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    if picker_common_key(app, key, true) {
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => {
+            app.priority_pick_issue = None;
+            app.mode = Mode::Normal;
+        }
+        KeyCode::Enter => {
+            let Some(orig) = app.picker_selected_original() else {
+                // Filter matches nothing: keep the picker open unless it is
+                // truly empty (mirrors the select-field picker).
+                if app.select_options.is_empty() {
+                    app.priority_pick_issue = None;
+                    app.mode = Mode::Normal;
+                }
+                return;
+            };
+            let pick = app.select_options[orig].clone();
+            // The selection cannot move while the picker is open, but the
+            // issue can vanish under a refetch that landed before it opened.
+            let still_target = app
+                .selected_issue()
+                .is_some_and(|i| app.priority_pick_issue.as_deref() == Some(i.id.as_str()));
+            app.priority_pick_issue = None;
+            app.mode = Mode::Normal;
+            if !still_target {
+                app.status = Some("selection changed — priority not set".into());
+                return;
+            }
+            let names = priority_label_set(
+                app.selected_issue().expect("checked above"),
+                (pick != "\u{2014}").then_some(pick.as_str()),
+            );
+            let (org, repo) = match app.selected_repo() {
+                Some(r) => (app.org.clone(), r.repo.clone()),
+                None => return,
+            };
+            with_issue(
+                app,
+                client,
+                tx,
+                "priority updated",
+                move |c, id| async move { c.set_labels(&id, &repo, &org, &names).await },
+            );
+        }
+        _ => {}
     }
 }
 
@@ -628,6 +749,17 @@ fn handle_normal_key(
                 let title = issue.title.clone();
                 app.input.start(&title);
                 app.mode = Mode::Input(InputKind::Title);
+            }
+        }
+        KeyCode::Char('p') => {
+            let target = app
+                .selected_issue()
+                .map(|i| i.id.clone())
+                .zip(app.selected_repo().map(|r| r.repo.clone()));
+            if let Some((issue_id, repo)) = target {
+                app.priority_pick_issue = Some(issue_id.clone());
+                app.status = Some("loading priorities…".into());
+                spawn_priority_options(client, app.org.clone(), repo, issue_id, tx);
             }
         }
         KeyCode::Char('n') => {
