@@ -716,3 +716,52 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         height: h,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::types::{Issue, IssueState, Label};
+
+    fn issue(labels: Vec<Label>) -> Issue {
+        Issue {
+            id: "id".into(),
+            number: 114,
+            title: "Upgrade Calico".into(),
+            body: String::new(),
+            state: IssueState::Open,
+            url: String::new(),
+            author: String::new(),
+            assignees: vec![],
+            labels,
+            comment_count: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            closed_at: None,
+        }
+    }
+
+    #[test]
+    fn title_style_uses_priority_label_color() {
+        let i = issue(vec![
+            Label {
+                name: "migrated-from-linear".into(),
+                color: "ededed".into(),
+            },
+            Label {
+                name: "priority:high".into(),
+                color: "d93f0b".into(),
+            },
+        ]);
+        let style = title_style(&i, &Theme::default());
+        assert_eq!(style.fg, Some(Color::Rgb(0xd9, 0x3f, 0x0b)));
+    }
+
+    #[test]
+    fn title_style_default_without_priority() {
+        let i = issue(vec![Label {
+            name: "bug".into(),
+            color: "d73a4a".into(),
+        }]);
+        assert_eq!(title_style(&i, &Theme::default()).fg, None);
+    }
+}

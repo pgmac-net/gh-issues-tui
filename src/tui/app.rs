@@ -245,6 +245,7 @@ pub enum SortKey {
     State,
     Assignee,
     Author,
+    Priority,
 }
 
 impl SortKey {
@@ -255,7 +256,8 @@ impl SortKey {
             SortKey::Closed => SortKey::State,
             SortKey::State => SortKey::Assignee,
             SortKey::Assignee => SortKey::Author,
-            SortKey::Author => SortKey::Updated,
+            SortKey::Author => SortKey::Priority,
+            SortKey::Priority => SortKey::Updated,
         }
     }
 
@@ -267,6 +269,7 @@ impl SortKey {
             SortKey::State => "state",
             SortKey::Assignee => "assignee",
             SortKey::Author => "author",
+            SortKey::Priority => "priority",
         }
     }
 }
@@ -280,8 +283,15 @@ pub fn sort_issues(issues: &mut [Issue], key: SortKey, descending: bool) {
             SortKey::State => format!("{}", a.state).cmp(&format!("{}", b.state)),
             SortKey::Assignee => a.assignees.join(",").cmp(&b.assignees.join(",")),
             SortKey::Author => a.author.cmp(&b.author),
+            SortKey::Priority => a.priority_rank().cmp(&b.priority_rank()),
         };
-        if descending { ord.reverse() } else { ord }
+        let ord = if descending { ord.reverse() } else { ord };
+        // Priority ties fall back to most-recently-updated first, in both directions.
+        if ord == std::cmp::Ordering::Equal && key == SortKey::Priority {
+            b.updated_at.cmp(&a.updated_at)
+        } else {
+            ord
+        }
     });
 }
 
@@ -1806,6 +1816,86 @@ mod tests {
             issues.iter().map(|i| i.number).collect::<Vec<_>>(),
             vec![3, 2, 1]
         );
+    }
+
+    fn priority_issue(number: u64, priority: Option<&str>) -> Issue {
+        let mut i = issue(number, "t", IssueState::Open);
+        if let Some(p) = priority {
+            i.labels = vec![crate::github::types::Label {
+                name: format!("priority:{p}"),
+                color: String::new(),
+            }];
+        }
+        i
+    }
+
+    #[test]
+    fn sort_by_priority_descending_and_ascending() {
+        let mut issues = vec![
+            priority_issue(1, Some("low")),
+            priority_issue(2, Some("urgent")),
+            priority_issue(3, Some("medium")),
+            priority_issue(4, Some("high")),
+            priority_issue(5, None),
+        ];
+        sort_issues(&mut issues, SortKey::Priority, true);
+        assert_eq!(
+            issues.iter().map(|i| i.number).collect::<Vec<_>>(),
+            vec![2, 4, 3, 1, 5]
+        );
+        sort_issues(&mut issues, SortKey::Priority, false);
+        assert_eq!(
+            issues.iter().map(|i| i.number).collect::<Vec<_>>(),
+            vec![5, 1, 3, 4, 2]
+        );
+    }
+
+    #[test]
+    fn sort_by_priority_unknown_value_ranks_with_unsorted() {
+        let mut issues = vec![
+            priority_issue(1, Some("P1")),
+            priority_issue(2, Some("low")),
+        ];
+        sort_issues(&mut issues, SortKey::Priority, true);
+        assert_eq!(
+            issues.iter().map(|i| i.number).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn priority_ties_break_by_updated_desc_in_both_directions() {
+        // updated_at grows with the issue number in the test helper.
+        let mut issues = vec![
+            priority_issue(1, Some("high")),
+            priority_issue(3, Some("high")),
+            priority_issue(2, Some("high")),
+        ];
+        sort_issues(&mut issues, SortKey::Priority, true);
+        assert_eq!(
+            issues.iter().map(|i| i.number).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+        sort_issues(&mut issues, SortKey::Priority, false);
+        assert_eq!(
+            issues.iter().map(|i| i.number).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+    }
+
+    #[test]
+    fn sort_key_cycle_covers_all_keys_and_wraps() {
+        let mut key = SortKey::Updated;
+        let mut seen = vec![key];
+        loop {
+            key = key.next();
+            if key == SortKey::Updated {
+                break;
+            }
+            seen.push(key);
+        }
+        assert_eq!(seen.len(), 7);
+        assert!(seen.contains(&SortKey::Priority));
     }
 
     #[test]
