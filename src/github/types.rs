@@ -42,6 +42,15 @@ pub struct Issue {
     pub closed_at: Option<DateTime<Utc>>,
 }
 
+impl Issue {
+    /// The first label following the `priority:<value>` convention, if any.
+    pub fn priority_label(&self) -> Option<&Label> {
+        self.labels
+            .iter()
+            .find(|l| l.name.to_lowercase().starts_with("priority:"))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RepoIssues {
     pub repo: String,
@@ -121,5 +130,71 @@ impl RateLimitData {
             }
             None => format!("epoch {}", self.reset),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn issue_with_labels(labels: Vec<Label>) -> Issue {
+        Issue {
+            id: "id".into(),
+            number: 1,
+            title: "t".into(),
+            body: String::new(),
+            state: IssueState::Open,
+            url: String::new(),
+            author: String::new(),
+            assignees: vec![],
+            labels,
+            comment_count: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            closed_at: None,
+        }
+    }
+
+    fn label(name: &str, color: &str) -> Label {
+        Label {
+            name: name.into(),
+            color: color.into(),
+        }
+    }
+
+    #[test]
+    fn priority_label_found() {
+        let issue = issue_with_labels(vec![
+            label("bug", "d73a4a"),
+            label("priority:high", "ff0000"),
+        ]);
+        assert_eq!(issue.priority_label().unwrap().name, "priority:high");
+    }
+
+    #[test]
+    fn priority_label_absent() {
+        let issue = issue_with_labels(vec![label("bug", "d73a4a")]);
+        assert!(issue.priority_label().is_none());
+    }
+
+    #[test]
+    fn priority_label_case_insensitive() {
+        let issue = issue_with_labels(vec![label("Priority:High", "ff0000")]);
+        assert_eq!(issue.priority_label().unwrap().name, "Priority:High");
+    }
+
+    #[test]
+    fn priority_label_first_wins() {
+        let issue = issue_with_labels(vec![
+            label("priority:low", "00ff00"),
+            label("priority:high", "ff0000"),
+        ]);
+        assert_eq!(issue.priority_label().unwrap().name, "priority:low");
+    }
+
+    #[test]
+    fn bare_priority_label_does_not_match() {
+        let issue = issue_with_labels(vec![label("priority", "ff0000")]);
+        assert!(issue.priority_label().is_none());
     }
 }

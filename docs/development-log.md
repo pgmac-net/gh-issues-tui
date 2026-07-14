@@ -172,3 +172,32 @@ None — implemented as approved.
 
 - 107 unit tests (7 new), clippy `-D warnings`, `fmt --check` — green.
 - Live pty+pyte drive against pgmac-net: 19 repos at baseline → filter toggled to `no` → 46 repos with `(0)` headers → `F`→`c` → 19 again; repo-filtered to the empty `ansible-role-apotd`, `n` opened the create form targeting it (first-issue creation, the limitation deferred from #10, now closed out).
+
+# Development log — colour code by priority (2026-07-14)
+
+Work driven by [pgmac-net/gh-issues-tui#26](https://github.com/pgmac-net/gh-issues-tui/issues/26), delivered in PR #27 on branch `26-priority-colour`.
+
+## Process
+
+1. **Plan** posted to the ticket and approved before implementation: colour issue titles with their `priority:*` label's own GitHub colour rather than introducing a config-driven priority→colour map.
+2. **Implementation** — `Issue::priority_label()` in `github::types` (first label starting `priority:`, case-insensitive, matching the existing filter/form convention), and a `title_style()` helper in `tui::ui` used by both the list rows (`issue_item`) and the detail pane header.
+3. **Delivery** — PR #27; tests and clippy green.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Colour source | The priority label's GitHub colour | Already the user's source of truth; works with any priority naming (`high`, `P1`, …); zero new config |
+| What gets coloured | Title only (list + detail header) | Labels/dates keep their own colours so rows stay scannable |
+| Multiple priority labels | First wins | Degenerate case; consistent with `priority_options()` ordering |
+| Unparsable label colour | `label_fallback` theme colour | Reuses the existing `label_color` parser and its fallback path |
+| Rejected alternative | `priority_colors` map in colour profiles | Priority values are free-form; can be layered on later if wanted |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- `cargo test` — 112 passed (5 new for `priority_label`).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.

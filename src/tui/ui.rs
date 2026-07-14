@@ -118,7 +118,7 @@ fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
         Span::raw("   "),
         state_span,
         Span::styled(format!(" #{:<5}", issue.number), Style::default().fg(t.dim)),
-        Span::raw(issue.title.clone()),
+        Span::styled(issue.title.clone(), title_style(issue, t)),
     ];
     if !issue.assignees.is_empty() {
         spans.push(Span::styled(
@@ -176,7 +176,7 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             Span::styled(format!("#{} ", issue.number), Style::default().fg(t.dim)),
             Span::styled(
                 issue.title.clone(),
-                Style::default().add_modifier(Modifier::BOLD),
+                title_style(issue, t).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
@@ -257,6 +257,14 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, 0));
     f.render_widget(para, area);
+}
+
+/// Title colour: the priority label's own colour when one is set, default otherwise.
+fn title_style(issue: &Issue, t: &Theme) -> Style {
+    match issue.priority_label() {
+        Some(l) => Style::default().fg(label_color(&l.color, t.label_fallback)),
+        None => Style::default(),
+    }
 }
 
 fn state_style(issue: &Issue, t: &Theme) -> Style {
