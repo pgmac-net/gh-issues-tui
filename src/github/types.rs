@@ -42,28 +42,39 @@ pub struct Issue {
     pub closed_at: Option<DateTime<Utc>>,
 }
 
+/// The value part of a `priority:<value>` label name, `None` for other labels.
+pub fn priority_value(name: &str) -> Option<&str> {
+    let (prefix, value) = name.split_at_checked("priority:".len())?;
+    prefix.eq_ignore_ascii_case("priority:").then_some(value)
+}
+
+/// Rank of a known priority value: low = 1, medium = 2, high = 3, urgent = 4.
+/// `None` for anything else — callers decide where unknown values land.
+pub fn priority_value_rank(value: &str) -> Option<u8> {
+    match value.to_lowercase().as_str() {
+        "low" => Some(1),
+        "medium" => Some(2),
+        "high" => Some(3),
+        "urgent" => Some(4),
+        _ => None,
+    }
+}
+
 impl Issue {
     /// The first label following the `priority:<value>` convention, if any.
     pub fn priority_label(&self) -> Option<&Label> {
         self.labels
             .iter()
-            .find(|l| l.name.to_lowercase().starts_with("priority:"))
+            .find(|l| priority_value(&l.name).is_some())
     }
 
     /// Sort rank from the priority label: low = 1, medium = 2, high = 3,
     /// urgent = 4; no priority or an unknown value = 0.
     pub fn priority_rank(&self) -> u8 {
-        let Some(label) = self.priority_label() else {
-            return 0;
-        };
-        let value = &label.name[label.name.find(':').map_or(0, |i| i + 1)..];
-        match value.to_lowercase().as_str() {
-            "low" => 1,
-            "medium" => 2,
-            "high" => 3,
-            "urgent" => 4,
-            _ => 0,
-        }
+        self.priority_label()
+            .and_then(|l| priority_value(&l.name))
+            .and_then(priority_value_rank)
+            .unwrap_or(0)
     }
 }
 
@@ -212,6 +223,21 @@ mod tests {
     fn bare_priority_label_does_not_match() {
         let issue = issue_with_labels(vec![label("priority", "ff0000")]);
         assert!(issue.priority_label().is_none());
+    }
+
+    #[test]
+    fn priority_value_extracts_case_insensitively() {
+        assert_eq!(priority_value("priority:high"), Some("high"));
+        assert_eq!(priority_value("Priority:High"), Some("High"));
+        assert_eq!(priority_value("bug"), None);
+        assert_eq!(priority_value("priority"), None);
+    }
+
+    #[test]
+    fn priority_value_rank_known_and_unknown() {
+        assert_eq!(priority_value_rank("low"), Some(1));
+        assert_eq!(priority_value_rank("Urgent"), Some(4));
+        assert_eq!(priority_value_rank("P1"), None);
     }
 
     #[test]

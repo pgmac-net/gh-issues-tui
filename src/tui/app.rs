@@ -3,6 +3,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::github::RateLimitData;
 use crate::github::types::{
     Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, RepoIssues, RepoLabel,
+    priority_value, priority_value_rank,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,39 +174,22 @@ impl Filters {
     }
 }
 
-/// The value part of a `priority:<value>` label name, `None` for other labels.
-fn priority_value(name: &str) -> Option<&str> {
-    let (prefix, value) = name.split_at_checked("priority:".len())?;
-    prefix.eq_ignore_ascii_case("priority:").then_some(value)
-}
-
-/// Picker ordering for a priority value: low → medium → high → urgent,
-/// unknown values after.
-fn priority_value_rank(value: &str) -> u8 {
-    match value.to_lowercase().as_str() {
-        "low" => 1,
-        "medium" => 2,
-        "high" => 3,
-        "urgent" => 4,
-        _ => 5,
-    }
-}
-
 /// Options for the set-priority picker: `—` (clear) first, then the repo's
 /// `priority:*` labels ordered low → urgent with unknown values last,
 /// alphabetical within a rank.
 pub fn priority_set_options(repo_labels: &[RepoLabel]) -> Vec<String> {
+    // Unknown priority values sort after the four known ranks.
+    let rank = |name: &str| {
+        priority_value(name)
+            .and_then(priority_value_rank)
+            .unwrap_or(5)
+    };
     let mut prio: Vec<&str> = repo_labels
         .iter()
         .map(|l| l.name.as_str())
         .filter(|n| priority_value(n).is_some())
         .collect();
-    prio.sort_by(|a, b| {
-        let (va, vb) = (priority_value(a).unwrap(), priority_value(b).unwrap());
-        priority_value_rank(va)
-            .cmp(&priority_value_rank(vb))
-            .then(a.cmp(b))
-    });
+    prio.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.cmp(b)));
     let mut opts = vec!["\u{2014}".to_string()];
     opts.extend(prio.into_iter().map(String::from));
     opts
