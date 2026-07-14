@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use crate::github::types::Issue;
 
 use super::app::{
-    App, FILTER_FIELDS, Focus, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row,
+    App, BODY_POPUP_WIDTH, FILTER_FIELDS, Focus, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS,
+    InputKind, Mode, Row, body_popup_width, cursor_row, wrap_lines,
 };
 use super::theme::Theme;
 
@@ -328,12 +329,12 @@ fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 InputKind::Org => "org/owner (Enter switches)",
                 InputKind::FormTitle => "issue title (Enter sets)",
             };
-            let line = Line::from(vec![
-                Span::styled(format!(" {prompt}: "), Style::default().fg(t.accent)),
-                Span::raw(app.input.buffer.clone()),
-                Span::styled("█", Style::default().fg(t.accent)),
-            ]);
-            f.render_widget(Paragraph::new(line), area);
+            let mut spans = vec![Span::styled(
+                format!(" {prompt}: "),
+                Style::default().fg(t.accent),
+            )];
+            spans.extend(cursor_spans(&app.input.buffer, app.input.cursor));
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
         }
         Mode::ConfirmState => {
             let action = app
@@ -539,37 +540,35 @@ fn draw_form_choice_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize, multi
 
 fn draw_form_body_popup(f: &mut Frame, app: &App, t: &Theme) {
     let Some(form) = &app.issue_form else { return };
-    let area = centered(f.area(), 76, 18.min(f.area().height));
+    let area = centered(f.area(), BODY_POPUP_WIDTH, 18.min(f.area().height));
     f.render_widget(Clear, area);
     let inner_height = area.height.saturating_sub(2) as usize;
+    let width = body_popup_width(f.area().width) as usize;
 
-    // Keep the cursor line visible: show a window of lines around it.
-    let top = form
-        .body
-        .line
-        .saturating_sub(inner_height.saturating_sub(1));
-    let lines: Vec<Line> = form
-        .body
-        .lines
+    // Word-wrapped visual rows; keep the cursor's row visible.
+    let rows = wrap_lines(&form.body.lines, width);
+    let (cur_row, cur_col) = cursor_row(
+        &rows,
+        form.body.line,
+        form.body.lines[form.body.line].cursor,
+    );
+    let top = cur_row.saturating_sub(inner_height.saturating_sub(1));
+    let lines: Vec<Line> = rows
         .iter()
         .enumerate()
         .skip(top)
         .take(inner_height)
-        .map(|(i, l)| {
-            if i == form.body.line {
-                let byte = l
-                    .buffer
-                    .char_indices()
-                    .nth(l.cursor)
-                    .map(|(b, _)| b)
-                    .unwrap_or(l.buffer.len());
-                Line::from(vec![
-                    Span::raw(l.buffer[..byte].to_string()),
-                    Span::styled("█", Style::default().fg(t.accent)),
-                    Span::raw(l.buffer[byte..].to_string()),
-                ])
+        .map(|(i, row)| {
+            let text: String = form.body.lines[row.line]
+                .buffer
+                .chars()
+                .skip(row.start)
+                .take(row.end - row.start)
+                .collect();
+            if i == cur_row {
+                Line::from(cursor_spans(&text, cur_col))
             } else {
-                Line::raw(l.buffer.clone())
+                Line::raw(text)
             }
         })
         .collect();
@@ -580,6 +579,24 @@ fn draw_form_body_popup(f: &mut Frame, app: &App, t: &Theme) {
             .title(" description (Enter newline · Esc done) "),
     );
     f.render_widget(para, area);
+}
+
+/// The text with the char at `cursor` drawn as a block cursor (reversed
+/// video); a reversed space when the cursor sits past the end of the text.
+fn cursor_spans(text: &str, cursor: usize) -> Vec<Span<'static>> {
+    let byte = text
+        .char_indices()
+        .nth(cursor)
+        .map(|(b, _)| b)
+        .unwrap_or(text.len());
+    let mut rest = text[byte..].chars();
+    let under = rest.next().unwrap_or(' ').to_string();
+    let after: String = rest.collect();
+    vec![
+        Span::raw(text[..byte].to_string()),
+        Span::styled(under, Style::default().add_modifier(Modifier::REVERSED)),
+        Span::raw(after),
+    ]
 }
 
 fn draw_calendar_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {

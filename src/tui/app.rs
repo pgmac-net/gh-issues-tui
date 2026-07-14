@@ -593,6 +593,71 @@ impl InputState {
         self.cursor = (self.cursor + 1).min(self.buffer.chars().count());
     }
 
+    /// Delete/Ctrl+D: remove the character under the cursor.
+    pub fn delete_char(&mut self) {
+        if self.cursor < self.buffer.chars().count() {
+            let byte = self.byte_at(self.cursor);
+            self.buffer.remove(byte);
+        }
+    }
+
+    pub fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn end(&mut self) {
+        self.cursor = self.buffer.chars().count();
+    }
+
+    /// Ctrl+←: to the start of the current or previous word
+    /// (whitespace-delimited).
+    pub fn word_left(&mut self) {
+        let chars: Vec<char> = self.buffer.chars().collect();
+        let mut i = self.cursor;
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        self.cursor = i;
+    }
+
+    /// Ctrl+→: to the end of the current or next word.
+    pub fn word_right(&mut self) {
+        let chars: Vec<char> = self.buffer.chars().collect();
+        let mut i = self.cursor;
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        self.cursor = i;
+    }
+
+    /// Ctrl+W: delete the word before the cursor (and the whitespace
+    /// between it and the cursor).
+    pub fn delete_word_back(&mut self) {
+        let end = self.byte_at(self.cursor);
+        self.word_left();
+        let start = self.byte_at(self.cursor);
+        self.buffer.replace_range(start..end, "");
+    }
+
+    /// Ctrl+U: delete from the cursor back to the start of the line.
+    pub fn kill_to_start(&mut self) {
+        let byte = self.byte_at(self.cursor);
+        self.buffer.replace_range(..byte, "");
+        self.cursor = 0;
+    }
+
+    /// Ctrl+K: delete from the cursor to the end of the line.
+    pub fn kill_to_end(&mut self) {
+        let byte = self.byte_at(self.cursor);
+        self.buffer.truncate(byte);
+    }
+
     fn byte_at(&self, char_idx: usize) -> usize {
         self.buffer
             .char_indices()
@@ -658,6 +723,18 @@ impl BodyEditor {
         }
     }
 
+    /// Delete/Ctrl+D: within a line deletes the char under the cursor; at
+    /// the end of a line merges the next line up (mirror of backspace).
+    pub fn delete_char(&mut self) {
+        let cur = &self.lines[self.line];
+        if cur.cursor < cur.buffer.chars().count() {
+            self.lines[self.line].delete_char();
+        } else if self.line + 1 < self.lines.len() {
+            let removed = self.lines.remove(self.line + 1);
+            self.lines[self.line].buffer.push_str(&removed.buffer);
+        }
+    }
+
     pub fn left(&mut self) {
         self.lines[self.line].left();
     }
@@ -666,24 +743,65 @@ impl BodyEditor {
         self.lines[self.line].right();
     }
 
-    pub fn up(&mut self) {
-        if self.line > 0 {
-            self.line -= 1;
-            self.clamp_cursor();
-        }
+    pub fn word_left(&mut self) {
+        self.lines[self.line].word_left();
     }
 
-    pub fn down(&mut self) {
-        if self.line + 1 < self.lines.len() {
-            self.line += 1;
-            self.clamp_cursor();
-        }
+    pub fn word_right(&mut self) {
+        self.lines[self.line].word_right();
     }
 
-    fn clamp_cursor(&mut self) {
-        let len = self.lines[self.line].buffer.chars().count();
-        let cur = &mut self.lines[self.line].cursor;
-        *cur = (*cur).min(len);
+    pub fn delete_word_back(&mut self) {
+        self.lines[self.line].delete_word_back();
+    }
+
+    pub fn home(&mut self) {
+        self.lines[self.line].home();
+    }
+
+    pub fn end(&mut self) {
+        self.lines[self.line].end();
+    }
+
+    pub fn kill_to_start(&mut self) {
+        self.lines[self.line].kill_to_start();
+    }
+
+    pub fn kill_to_end(&mut self) {
+        self.lines[self.line].kill_to_end();
+    }
+
+    /// Up one *visual* row of the `width`-wrapped layout, clamping the
+    /// column; a no-op on the first row.
+    pub fn up_visual(&mut self, width: usize) {
+        self.move_visual(width, -1);
+    }
+
+    /// Down one visual row; a no-op on the last.
+    pub fn down_visual(&mut self, width: usize) {
+        self.move_visual(width, 1);
+    }
+
+    fn move_visual(&mut self, width: usize, delta: isize) {
+        let rows = wrap_lines(&self.lines, width);
+        let (row_idx, col) = cursor_row(&rows, self.line, self.lines[self.line].cursor);
+        let Some(target) = row_idx
+            .checked_add_signed(delta)
+            .filter(|t| *t < rows.len())
+        else {
+            return;
+        };
+        let row = rows[target];
+        // On a non-final row the position `end` already belongs to the next
+        // visual row, so the rightmost landing spot is one before it.
+        let line_final = rows.get(target + 1).is_none_or(|n| n.line != row.line);
+        let max = if line_final {
+            row.end
+        } else {
+            row.end.saturating_sub(1)
+        };
+        self.line = row.line;
+        self.lines[self.line].cursor = (row.start + col).min(max);
     }
 
     pub fn text(&self) -> String {
@@ -709,6 +827,76 @@ impl BodyEditor {
             first.to_string()
         }
     }
+}
+
+/// The body-editor popup's outer width; the inner (text) width is this
+/// clamped to the frame minus the two border columns. One source of truth
+/// for the renderer and the key handler so wrap geometry always agrees.
+pub const BODY_POPUP_WIDTH: u16 = 76;
+
+pub fn body_popup_width(frame_width: u16) -> u16 {
+    BODY_POPUP_WIDTH.min(frame_width).saturating_sub(2)
+}
+
+/// One visual row of the word-wrapped body: a char range of a logical line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualRow {
+    /// Index into `BodyEditor::lines`.
+    pub line: usize,
+    /// Char range within that line (`start..end`).
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Word-wrap every logical line at `width` chars: break after the last
+/// whitespace fitting in the window, hard-break words longer than `width`.
+/// An empty line yields one empty row; `width` of 0 is treated as 1.
+pub fn wrap_lines(lines: &[InputState], width: usize) -> Vec<VisualRow> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    for (line_idx, l) in lines.iter().enumerate() {
+        let chars: Vec<char> = l.buffer.chars().collect();
+        let mut start = 0;
+        loop {
+            if chars.len() - start <= width {
+                rows.push(VisualRow {
+                    line: line_idx,
+                    start,
+                    end: chars.len(),
+                });
+                break;
+            }
+            let window_end = start + width;
+            let brk = (start..window_end)
+                .rev()
+                .find(|&i| chars[i].is_whitespace())
+                .map(|i| i + 1) // the space stays on this row
+                .unwrap_or(window_end); // no space: hard break
+            rows.push(VisualRow {
+                line: line_idx,
+                start,
+                end: brk,
+            });
+            start = brk;
+        }
+    }
+    rows
+}
+
+/// The visual position of a cursor: `(row index, column within the row)`.
+/// A cursor sitting exactly on a wrap boundary belongs to the start of the
+/// following row, except at the very end of a logical line.
+pub fn cursor_row(rows: &[VisualRow], line: usize, cursor: usize) -> (usize, usize) {
+    for (idx, row) in rows.iter().enumerate() {
+        if row.line != line {
+            continue;
+        }
+        let line_final = rows.get(idx + 1).is_none_or(|next| next.line != line);
+        if cursor < row.end || (cursor == row.end && line_final) {
+            return (idx, cursor - row.start);
+        }
+    }
+    (0, 0) // unreachable with a clamped cursor; safe fallback
 }
 
 pub struct App {
@@ -1931,6 +2119,206 @@ mod tests {
         assert_eq!(input.buffer, "hélxo");
     }
 
+    fn input(text: &str, cursor: usize) -> InputState {
+        InputState {
+            buffer: text.to_string(),
+            cursor,
+        }
+    }
+
+    #[test]
+    fn word_motion_is_whitespace_delimited() {
+        let mut i = input("foo-bar  baz héllo", 18);
+        i.word_left();
+        assert_eq!(i.cursor, 13); // start of "héllo"
+        i.word_left();
+        assert_eq!(i.cursor, 9); // start of "baz"
+        i.word_left();
+        assert_eq!(i.cursor, 0); // "foo-bar" is one word
+        i.word_right();
+        assert_eq!(i.cursor, 7); // end of "foo-bar"
+        i.word_right();
+        assert_eq!(i.cursor, 12); // end of "baz"
+    }
+
+    #[test]
+    fn delete_word_back_removes_word_and_gap() {
+        let mut i = input("one two  three", 14);
+        i.delete_word_back();
+        assert_eq!(i.buffer, "one two  ");
+        assert_eq!(i.cursor, 9);
+        i.delete_word_back();
+        assert_eq!(i.buffer, "one ");
+        i.delete_word_back();
+        assert_eq!(i.buffer, "");
+        i.delete_word_back(); // no-op at start
+        assert_eq!(i.buffer, "");
+    }
+
+    #[test]
+    fn kill_to_start_and_end() {
+        let mut i = input("héllo world", 6);
+        i.kill_to_end();
+        assert_eq!(i.buffer, "héllo ");
+        assert_eq!(i.cursor, 6);
+        i.cursor = 3;
+        i.kill_to_start();
+        assert_eq!(i.buffer, "lo ");
+        assert_eq!(i.cursor, 0);
+    }
+
+    #[test]
+    fn delete_char_under_cursor() {
+        let mut i = input("héllo", 1);
+        i.delete_char();
+        assert_eq!(i.buffer, "hllo");
+        assert_eq!(i.cursor, 1);
+        i.end();
+        i.delete_char(); // no-op at end
+        assert_eq!(i.buffer, "hllo");
+    }
+
+    #[test]
+    fn home_and_end() {
+        let mut i = input("abc", 1);
+        i.home();
+        assert_eq!(i.cursor, 0);
+        i.end();
+        assert_eq!(i.cursor, 3);
+    }
+
+    #[test]
+    fn body_delete_char_merges_next_line_at_eol() {
+        let mut b = BodyEditor::default();
+        for c in "ab".chars() {
+            b.insert(c);
+        }
+        b.newline();
+        for c in "cd".chars() {
+            b.insert(c);
+        }
+        b.line = 0;
+        b.lines[0].end();
+        b.delete_char();
+        assert_eq!(b.text(), "abcd");
+        assert_eq!(b.lines.len(), 1);
+    }
+
+    #[test]
+    fn wrap_lines_breaks_at_word_boundary() {
+        let lines = vec![input("aaa bbb ccc", 0)];
+        let rows = wrap_lines(&lines, 5);
+        // "aaa bbb ccc" at width 5 → "aaa " / "bbb " / "ccc"
+        assert_eq!(
+            rows,
+            vec![
+                VisualRow {
+                    line: 0,
+                    start: 0,
+                    end: 4
+                },
+                VisualRow {
+                    line: 0,
+                    start: 4,
+                    end: 8
+                },
+                VisualRow {
+                    line: 0,
+                    start: 8,
+                    end: 11
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn wrap_lines_hard_breaks_long_words_and_keeps_empty_lines() {
+        let lines = vec![input("abcdefghij", 0), input("", 0)];
+        let rows = wrap_lines(&lines, 4);
+        assert_eq!(rows.len(), 4); // 3 hard-broken rows + 1 empty row
+        assert_eq!(
+            rows[0],
+            VisualRow {
+                line: 0,
+                start: 0,
+                end: 4
+            }
+        );
+        assert_eq!(
+            rows[2],
+            VisualRow {
+                line: 0,
+                start: 8,
+                end: 10
+            }
+        );
+        assert_eq!(
+            rows[3],
+            VisualRow {
+                line: 1,
+                start: 0,
+                end: 0
+            }
+        );
+    }
+
+    #[test]
+    fn wrap_lines_exact_width_does_not_split() {
+        let lines = vec![input("abcd", 0)];
+        assert_eq!(wrap_lines(&lines, 4).len(), 1);
+    }
+
+    #[test]
+    fn cursor_row_maps_wrap_boundary_to_next_row() {
+        let lines = vec![input("aaa bbb", 0)];
+        let rows = wrap_lines(&lines, 5); // rows: "aaa " / "bbb"
+        assert_eq!(rows.len(), 2);
+        assert_eq!(cursor_row(&rows, 0, 2), (0, 2));
+        // Cursor at the boundary char index 4 belongs to the second row.
+        assert_eq!(cursor_row(&rows, 0, 4), (1, 0));
+        // End of the line stays on its final row.
+        assert_eq!(cursor_row(&rows, 0, 7), (1, 3));
+    }
+
+    #[test]
+    fn visual_up_down_walk_wrapped_rows() {
+        let mut b = BodyEditor::default();
+        for c in "aaa bbb ccc".chars() {
+            b.insert(c);
+        }
+        // width 5 → rows "aaa " / "bbb " / "ccc"; cursor at end (11) = row 2 col 3.
+        b.up_visual(5);
+        assert_eq!(b.lines[0].cursor, 7); // row 1 col 3 = char 4+3
+        b.up_visual(5);
+        assert_eq!(b.lines[0].cursor, 3); // row 0 col 3
+        b.up_visual(5); // no-op on first row
+        assert_eq!(b.lines[0].cursor, 3);
+        b.down_visual(5);
+        assert_eq!(b.lines[0].cursor, 7);
+        b.down_visual(5);
+        assert_eq!(b.lines[0].cursor, 11);
+        b.down_visual(5); // no-op on last row
+        assert_eq!(b.lines[0].cursor, 11);
+    }
+
+    #[test]
+    fn visual_down_crosses_logical_lines() {
+        let mut b = BodyEditor::default();
+        for c in "short".chars() {
+            b.insert(c);
+        }
+        b.newline();
+        for c in "aaaa bbbb".chars() {
+            b.insert(c);
+        }
+        b.line = 0;
+        b.lines[0].cursor = 5;
+        b.down_visual(6); // into line 1's first row "aaaa "
+        assert_eq!((b.line, b.lines[1].cursor), (1, 4)); // clamped to end-1 of non-final row
+        b.down_visual(6); // into "bbbb"
+        assert_eq!((b.line, b.lines[1].cursor), (1, 9));
+    }
+
     fn repo_label(name: &str) -> RepoLabel {
         RepoLabel {
             id: format!("L_{name}"),
@@ -2415,9 +2803,9 @@ mod tests {
 
         b.newline();
         b.insert('x');
-        b.up(); // cursor col clamps within line 0
+        b.up_visual(80); // wide enough that visual rows == logical lines
         assert_eq!(b.line, 0);
-        b.down();
+        b.down_visual(80);
         assert_eq!(b.line, 1);
         assert_eq!(b.text(), "hel\nxlo");
         assert_eq!(b.summary(), "hel (+1 more lines)");

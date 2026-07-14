@@ -261,3 +261,36 @@ Work driven by [pgmac-net/gh-issues-tui#30](https://github.com/pgmac-net/gh-issu
 - `cargo test` — 116 passed (4 new for options/label-set helpers).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - tmux-driven live session: `p` on a repo without priority labels → status message; on homelabia issue #114 → picker with `— clear —, low, medium, high, urgent`, current `priority:high` pre-highlighted, Esc cancels cleanly. (Also visually confirmed the #26 title colouring with the recoloured labels.)
+
+# Development log — multiline text input overhaul (2026-07-14)
+
+Work driven by [pgmac-net/gh-issues-tui#22](https://github.com/pgmac-net/gh-issues-tui/issues/22), delivered in PR #32 on branch `22-multiline-input`.
+
+## Process
+
+1. **Plan** agreed with four up-front clarifications (visual-row Up/Down, readline Ctrl+U, whitespace word boundaries, apply everywhere), posted to the ticket.
+2. **Implementation** — readline-style ops on `InputState` (word motion, word delete, kill to start/end, home/end, delete-under-cursor), `BodyEditor` delegation plus a pure word-wrap layout (`wrap_lines`/`cursor_row`/`VisualRow`) with visual-row Up/Down, shared popup-width helper, and a shared block-cursor renderer replacing the inserted `█` in both the bottom input line and the body popup.
+3. **Verification** — 22 new unit tests plus a live tmux session driving the release build.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Wrap type | soft/visual only — buffer never rewritten | Hard-wrapping would mangle the submitted markdown |
+| Wrap algorithm | break after last space in window; hard-break over-long words | Simple, predictable, testable; space stays on the first row |
+| Wrap-boundary cursor | belongs to the next visual row (except at line end) | Deterministic mapping; matches editor conventions |
+| Up/Down | visual rows via `wrap_lines` recomputed per keypress | Body text is small; no cache invalidation complexity |
+| Width source | `body_popup_width(frame width)` shared by ui + events | Renderer and key handler must agree on geometry |
+| Cursor rendering | `Modifier::REVERSED` on the char under the cursor | Ticket complaint: inserted `█` shifts text and hides the char; also fixes the bottom-line cursor being stuck at the end |
+| Word ops in body | line-local | Matches existing left/right; crossing lines wasn't asked for |
+| Ctrl+U | readline delete-to-start (was clear-all) | Per clarification; cursor-at-end still clears everything |
+
+## Diversions from plan
+
+None. (Also fixed in passing: the README sort-key list was missing `priority` from #28.)
+
+## Verification
+
+- `cargo test` — 140 passed (22 new).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- tmux live session: paragraph wraps at popup width across 3 rows; Ctrl+← hops words; Ctrl+W deleted "long " mid-paragraph with correct re-flow; Ctrl+A/E/K behave on the logical line; block cursor confirmed as `ESC[7m` reversed video sitting ON the character; single-line comment input shows the cursor mid-string after two Lefts (previously always drawn at the end).
