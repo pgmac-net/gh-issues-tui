@@ -116,7 +116,22 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `?` | help |
 | `q` | quit |
 
-Sort keys: updated, created, closed, state, assignee, author.
+Sort keys: updated, created, closed, state, assignee, author, priority.
+
+### Editing keys
+
+Every text input (search, comment, assignees, labels, title, org, the new-issue title and description) supports readline-style editing. The cursor is a block sitting **on** a character:
+
+| Key | Action |
+|-----|--------|
+| `←`/`→`, `Home`/`End` | move by char / to line start / to line end |
+| `Ctrl+←` / `Ctrl+→` | move left / right by word (whitespace-delimited) |
+| `Ctrl+A` / `Ctrl+E` | line start / line end |
+| `Ctrl+W` | delete the word before the cursor |
+| `Ctrl+U` / `Ctrl+K` | delete to line start / to line end |
+| `Ctrl+D` / `Delete` | delete the char under the cursor |
+
+In the multi-line description editor, text word-wraps at the popup width, `↑`/`↓` move by *visual* (wrapped) row, and `Delete` at the end of a line joins the next line on.
 
 ### Creating issues
 

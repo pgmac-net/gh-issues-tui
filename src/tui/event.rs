@@ -10,8 +10,8 @@ use crate::github::error::RATE_LIMIT_MSG_PREFIX;
 use crate::github::types::{Comment, FormOptions, IssueState, RepoIssues, RepoLabel};
 
 use super::app::{
-    App, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter, priority_label_set,
-    priority_set_options,
+    App, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter, body_popup_width,
+    priority_label_set, priority_set_options,
 };
 use super::theme::Theme;
 use super::ui;
@@ -535,19 +535,38 @@ fn handle_form_body_key(app: &mut App, key: KeyEvent) {
         app.mode = Mode::Normal;
         return;
     };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let wrap_width = body_wrap_width();
     match key.code {
         KeyCode::Esc => app.mode = Mode::IssueForm, // content kept
         KeyCode::Enter => form.body.newline(),
         KeyCode::Backspace => form.body.backspace(),
+        KeyCode::Delete => form.body.delete_char(),
+        KeyCode::Left if ctrl => form.body.word_left(),
+        KeyCode::Right if ctrl => form.body.word_right(),
         KeyCode::Left => form.body.left(),
         KeyCode::Right => form.body.right(),
-        KeyCode::Up => form.body.up(),
-        KeyCode::Down => form.body.down(),
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Up => form.body.up_visual(wrap_width),
+        KeyCode::Down => form.body.down_visual(wrap_width),
+        KeyCode::Home => form.body.home(),
+        KeyCode::End => form.body.end(),
+        KeyCode::Char('a') if ctrl => form.body.home(),
+        KeyCode::Char('e') if ctrl => form.body.end(),
+        KeyCode::Char('w') if ctrl => form.body.delete_word_back(),
+        KeyCode::Char('u') if ctrl => form.body.kill_to_start(),
+        KeyCode::Char('k') if ctrl => form.body.kill_to_end(),
+        KeyCode::Char('d') if ctrl => form.body.delete_char(),
+        KeyCode::Char(c) if !ctrl => {
             form.body.insert(c);
         }
         _ => {}
     }
+}
+
+/// The wrap width the body popup is currently rendered at.
+fn body_wrap_width() -> usize {
+    let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+    body_popup_width(cols) as usize
 }
 
 fn submit_issue_form(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
@@ -793,10 +812,26 @@ fn handle_input_key(
             submit_input(app, kind, value, client, tx);
         }
         KeyCode::Backspace => app.input.backspace(),
+        KeyCode::Delete => app.input.delete_char(),
+        KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.word_left(),
+        KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.word_right(),
         KeyCode::Left => app.input.left(),
         KeyCode::Right => app.input.right(),
+        KeyCode::Home => app.input.home(),
+        KeyCode::End => app.input.end(),
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.home(),
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.end(),
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.delete_word_back();
+        }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.start("");
+            app.input.kill_to_start();
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.kill_to_end();
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.delete_char();
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input.insert(c);
