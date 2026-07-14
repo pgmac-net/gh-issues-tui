@@ -49,6 +49,22 @@ impl Issue {
             .iter()
             .find(|l| l.name.to_lowercase().starts_with("priority:"))
     }
+
+    /// Sort rank from the priority label: low = 1, medium = 2, high = 3,
+    /// urgent = 4; no priority or an unknown value = 0.
+    pub fn priority_rank(&self) -> u8 {
+        let Some(label) = self.priority_label() else {
+            return 0;
+        };
+        let value = &label.name[label.name.find(':').map_or(0, |i| i + 1)..];
+        match value.to_lowercase().as_str() {
+            "low" => 1,
+            "medium" => 2,
+            "high" => 3,
+            "urgent" => 4,
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -196,5 +212,38 @@ mod tests {
     fn bare_priority_label_does_not_match() {
         let issue = issue_with_labels(vec![label("priority", "ff0000")]);
         assert!(issue.priority_label().is_none());
+    }
+
+    #[test]
+    fn priority_rank_maps_known_values() {
+        for (value, rank) in [("low", 1), ("medium", 2), ("high", 3), ("urgent", 4)] {
+            let issue = issue_with_labels(vec![label(&format!("priority:{value}"), "")]);
+            assert_eq!(issue.priority_rank(), rank, "value {value}");
+        }
+    }
+
+    #[test]
+    fn priority_rank_zero_without_priority() {
+        assert_eq!(issue_with_labels(vec![]).priority_rank(), 0);
+        assert_eq!(
+            issue_with_labels(vec![label("bug", "d73a4a")]).priority_rank(),
+            0
+        );
+    }
+
+    #[test]
+    fn priority_rank_zero_for_unknown_value() {
+        assert_eq!(
+            issue_with_labels(vec![label("priority:P1", "")]).priority_rank(),
+            0
+        );
+    }
+
+    #[test]
+    fn priority_rank_is_case_insensitive() {
+        assert_eq!(
+            issue_with_labels(vec![label("Priority:High", "")]).priority_rank(),
+            3
+        );
     }
 }

@@ -201,3 +201,32 @@ None — implemented as approved.
 
 - `cargo test` — 112 passed (5 new for `priority_label`).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+
+# Development log — sort by priority (2026-07-14)
+
+Work driven by [pgmac-net/gh-issues-tui#28](https://github.com/pgmac-net/gh-issues-tui/issues/28), delivered in PR #29 on branch `28-priority-sort`.
+
+## Process
+
+1. **Plan** drafted in plan mode with three clarifications resolved up front (direction toggle behaviour, unknown-value ranking, tie-breaking), approved, and posted to the ticket.
+2. **Implementation** — `Issue::priority_rank()` beside the existing `priority_label()`; `SortKey::Priority` variant slotted into the cycle before the wrap; comparator in `sort_issues` with a direction-independent tie-break.
+3. **Delivery** — PR referencing the ticket; also carries the `title_style` unit tests written while diagnosing the "invisible priority colours" report (root cause was ededed label colours from the Linear migration, fixed by recolouring the labels, no code change).
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Rank order | none/unknown 0 < low 1 < medium 2 < high 3 < urgent 4 | Matches org's four priority values; descending puts urgent first, unprioritised last |
+| Unknown values (`priority:P1`) | rank 0, same as no priority | Org only uses the four values; anything else is noise |
+| Direction | global `S` toggle, no special-casing | Consistent with every other sort key |
+| Tie-break | `updated_at` descending in both directions | Applied after the direction reverse so ties are always most-recent-first |
+| `next()` cycle position | after `author`, before wrapping to `updated` | Keeps existing muscle memory intact |
+
+## Diversions from plan
+
+None.
+
+## Verification
+
+- `cargo test` — 122 passed (10 new: 4 rank mapping/edge cases in `types.rs`, 4 sort/tie/cycle in `app.rs`, plus 2 `title_style` tests from the colour diagnosis).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
