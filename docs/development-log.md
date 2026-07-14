@@ -230,3 +230,34 @@ None.
 
 - `cargo test` — 122 passed (10 new: 4 rank mapping/edge cases in `types.rs`, 4 sort/tie/cycle in `app.rs`, plus 2 `title_style` tests from the colour diagnosis).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+
+# Development log — set priority via picker (2026-07-14)
+
+Work driven by [pgmac-net/gh-issues-tui#30](https://github.com/pgmac-net/gh-issues-tui/issues/30), delivered in PR #31 on branch `30-priority-picker`.
+
+## Process
+
+1. Requested by Paul mid-session while reviewing the priority sort work: `p` on the selected issue opens a picker of the repo's `priority:*` labels.
+2. **Implementation** — pure helpers in `app.rs` (`priority_set_options`, `priority_label_set`), a `Mode::PrioritySet` picker reusing the generic type-ahead machinery, `AppEvent::PriorityOptions` fetched via the existing `Client::repo_labels`, and the existing `set_labels` mutation via `with_issue`.
+3. **Verification** — unit tests plus a live tmux-driven session: no-priority-labels repo path, picker ordering, current-priority pre-highlight, Esc cancel.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Options source | fetch `repo_labels` on `p` | Setting requires the label to exist on the repo; loaded issue data only shows labels in use |
+| Option order | `—` (clear), low → urgent, unknown values last alphabetically | Matches Paul's stated ranking; clear is always first like other pickers |
+| Initial highlight | the issue's current priority | One `Enter` re-confirms; adjacent keys move one step |
+| Mutation | whole-set replace via existing `set_labels` | Battle-tested path (`l` key); new code only computes the name set (pure, unit-tested) |
+| Staleness | `priority_pick_issue` id guard on response arrival and on Enter | Selection can drift while options load; refetch can remove the issue |
+| Repo without `priority:*` labels | status message, no picker | Nothing pickable; popup would only offer `—` |
+
+## Diversions from plan
+
+- Live mutation was not exercised end-to-end: creating a scratch issue for the test was declined by the session's permission gate, and mutating a real issue's priority was not acceptable. The mutation path itself (`set_labels`) predates this change and is covered by existing usage; the new label-set computation is unit-tested.
+
+## Verification
+
+- `cargo test` — 116 passed (4 new for options/label-set helpers).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- tmux-driven live session: `p` on a repo without priority labels → status message; on homelabia issue #114 → picker with `— clear —, low, medium, high, urgent`, current `priority:high` pre-highlighted, Esc cancels cleanly. (Also visually confirmed the #26 title colouring with the recoloured labels.)

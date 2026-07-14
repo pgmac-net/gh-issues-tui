@@ -2,7 +2,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::github::RateLimitData;
 use crate::github::types::{
-    Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, RepoIssues,
+    Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, RepoIssues, RepoLabel,
+    priority_value, priority_value_rank,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +174,42 @@ impl Filters {
     }
 }
 
+/// Options for the set-priority picker: `—` (clear) first, then the repo's
+/// `priority:*` labels ordered low → urgent with unknown values last,
+/// alphabetical within a rank.
+pub fn priority_set_options(repo_labels: &[RepoLabel]) -> Vec<String> {
+    // Unknown priority values sort after the four known ranks.
+    let rank = |name: &str| {
+        priority_value(name)
+            .and_then(priority_value_rank)
+            .unwrap_or(5)
+    };
+    let mut prio: Vec<&str> = repo_labels
+        .iter()
+        .map(|l| l.name.as_str())
+        .filter(|n| priority_value(n).is_some())
+        .collect();
+    prio.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.cmp(b)));
+    let mut opts = vec!["\u{2014}".to_string()];
+    opts.extend(prio.into_iter().map(String::from));
+    opts
+}
+
+/// The issue's label names with any `priority:*` label replaced by `pick`,
+/// or removed when `pick` is `None`.
+pub fn priority_label_set(issue: &Issue, pick: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = issue
+        .labels
+        .iter()
+        .map(|l| l.name.clone())
+        .filter(|n| priority_value(n).is_none())
+        .collect();
+    if let Some(p) = pick {
+        names.push(p.to_string());
+    }
+    names
+}
+
 fn label_filter_matches(issue: &Issue, prefix: &str, filter: &str) -> bool {
     if filter.is_empty() {
         return true;
@@ -291,6 +328,8 @@ pub enum Mode {
     IssueFormMulti(usize),
     /// Multi-line editor for the new issue's body.
     IssueFormBody,
+    /// Single-select popup choosing a priority label for the selected issue.
+    PrioritySet,
     Help,
 }
 
@@ -711,6 +750,9 @@ pub struct App {
     pub multi_selected: std::collections::HashSet<usize>,
     /// The new-issue form, present while it is open.
     pub issue_form: Option<IssueForm>,
+    /// Issue id the set-priority picker was requested for; guards against
+    /// stale option responses and selection drift while options load.
+    pub priority_pick_issue: Option<String>,
     /// Cursor position for the calendar date picker.
     pub calendar_cursor: NaiveDate,
     pub loading: bool,
@@ -761,6 +803,7 @@ impl App {
             select_filter: String::new(),
             multi_selected: Default::default(),
             issue_form: None,
+            priority_pick_issue: None,
             calendar_cursor: Utc::now().date_naive(),
             loading: true,
             auto_refreshing: false,
@@ -1886,6 +1929,74 @@ mod tests {
         assert_eq!(input.buffer, "hélo");
         input.insert('x'); // cursor sits before the final 'o'
         assert_eq!(input.buffer, "hélxo");
+    }
+
+    fn repo_label(name: &str) -> RepoLabel {
+        RepoLabel {
+            id: format!("L_{name}"),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn priority_set_options_filters_sorts_and_prepends_clear() {
+        let labels = vec![
+            repo_label("bug"),
+            repo_label("priority:urgent"),
+            repo_label("priority:low"),
+            repo_label("priority:aardvark"),
+            repo_label("priority:high"),
+            repo_label("status:blocked"),
+        ];
+        assert_eq!(
+            priority_set_options(&labels),
+            vec![
+                "\u{2014}",
+                "priority:low",
+                "priority:high",
+                "priority:urgent",
+                "priority:aardvark",
+            ]
+        );
+    }
+
+    #[test]
+    fn priority_set_options_empty_repo_is_clear_only() {
+        assert_eq!(priority_set_options(&[repo_label("bug")]), vec!["\u{2014}"]);
+    }
+
+    #[test]
+    fn priority_label_set_replaces_existing_priority() {
+        let mut i = issue(1, "a", IssueState::Open);
+        i.labels = vec![
+            crate::github::types::Label {
+                name: "bug".into(),
+                color: "".into(),
+            },
+            crate::github::types::Label {
+                name: "Priority:Low".into(),
+                color: "".into(),
+            },
+        ];
+        assert_eq!(
+            priority_label_set(&i, Some("priority:high")),
+            vec!["bug", "priority:high"]
+        );
+        // None clears the priority and keeps everything else.
+        assert_eq!(priority_label_set(&i, None), vec!["bug"]);
+    }
+
+    #[test]
+    fn priority_label_set_adds_when_none_present() {
+        let mut i = issue(1, "a", IssueState::Open);
+        i.labels = vec![crate::github::types::Label {
+            name: "bug".into(),
+            color: "".into(),
+        }];
+        assert_eq!(
+            priority_label_set(&i, Some("priority:urgent")),
+            vec!["bug", "priority:urgent"]
+        );
     }
 
     #[test]

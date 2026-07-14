@@ -110,6 +110,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (comma-separated names, must exist on the repo) |
 | `t` | edit the title |
+| `p` | set the priority (picker of the repo's `priority:*` labels, `—` clears) |
 | `n` | create a new issue in the selected repo (opens the form) |
 | `r` | reload all data |
 | `?` | help |
@@ -128,6 +129,7 @@ To create the *first* issue in a repo that shows no issues, flip the `hide empty
 - Issues are fetched per-repository over the GraphQL API with cursor pagination, so organisations with more than 1000 issues are not truncated (the search API cap does not apply).
 - Only open issues are fetched at startup unless `--all` is given; switching the state filter to closed/all triggers a one-time refetch that includes closed issues.
 - Assignee and label edits replace the full set with what you type; comment/close/reopen/edit operations refresh the data on completion.
+- `p` fetches the repo's labels and offers the `priority:*` ones (ordered low → urgent, current priority pre-highlighted). Picking replaces any existing priority label and keeps the rest; `—` removes the priority. Repos with no `priority:*` labels report that in the status line instead of opening the picker.
 - In the filter editor, repo/assignee/author/priority/status open a picker built from the loaded data (first entry clears the filter) and date fields open a calendar; text remains free-input.
 - Repo groups with zero visible issues are hidden by default. The `hide empty repos` row in the filter editor toggles this in place (Enter flips yes/no): set to `no`, every repo appears — including repos with no issues at all and groups emptied by the current filters — as a `(0)` header. Clearing filters (`F` → `c`) and switching org reset the toggle to the `hide_empty_repos` config default. Archived repos and repos with issues disabled are never shown.
 - Every option picker (filter editor and new-issue form) supports type-ahead: just start typing to narrow the list (case-insensitive substring, shown as a `/ <text>` row). `Backspace` edits the filter, `Ctrl+U` clears it, `↑`/`↓` navigate the matches, `Enter` picks, `Esc` closes. Because typing filters, `j`/`k`/`q` don't navigate/close inside pickers.
