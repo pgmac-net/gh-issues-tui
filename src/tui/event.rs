@@ -35,6 +35,11 @@ pub enum AppEvent {
         issue_id: String,
         result: Result<Vec<RepoLabel>, String>,
     },
+    /// Repo labels fetched for the edit-labels picker.
+    LabelOptions {
+        issue_id: String,
+        result: Result<Vec<RepoLabel>, String>,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -165,6 +170,24 @@ fn spawn_priority_options(
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::PriorityOptions { issue_id, result });
+    });
+}
+
+fn spawn_label_options(
+    client: &Client,
+    org: String,
+    repo: String,
+    issue_id: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client
+            .repo_labels(&org, &repo)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::LabelOptions { issue_id, result });
     });
 }
 
@@ -312,6 +335,46 @@ fn handle_app_event(
                 }
             }
         }
+        AppEvent::LabelOptions { issue_id, result } => {
+            // Stale unless we are still in Normal mode waiting on this
+            // issue's options with the selection unmoved.
+            if app.mode != Mode::Normal
+                || app.label_pick_issue.as_deref() != Some(issue_id.as_str())
+                || app.selected_issue().is_none_or(|i| i.id != issue_id)
+            {
+                if app.label_pick_issue.as_deref() == Some(issue_id.as_str()) {
+                    app.label_pick_issue = None;
+                }
+                return;
+            }
+            match result {
+                Ok(labels) => {
+                    if labels.is_empty() {
+                        app.status = Some("no labels on this repo".into());
+                        app.label_pick_issue = None;
+                    } else {
+                        let options: Vec<String> = labels.iter().map(|l| l.name.clone()).collect();
+                        // Pre-check the issue's current labels.
+                        app.multi_selected = app
+                            .selected_issue()
+                            .expect("checked above")
+                            .labels
+                            .iter()
+                            .filter_map(|l| {
+                                options.iter().position(|o| o.eq_ignore_ascii_case(&l.name))
+                            })
+                            .collect();
+                        app.status = None;
+                        app.start_picker(options, 0);
+                        app.mode = Mode::LabelsSet;
+                    }
+                }
+                Err(e) => {
+                    app.status = Some(format!("labels failed: {e}"));
+                    app.label_pick_issue = None;
+                }
+            }
+        }
     }
 }
 
@@ -330,6 +393,7 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
         Mode::IssueFormBody => handle_form_body_key(app, key),
         Mode::CommentEditor => handle_comment_editor_key(app, key, client, tx),
         Mode::PrioritySet => handle_priority_set_key(app, key, client, tx),
+        Mode::LabelsSet => handle_labels_set_key(app, key, client, tx),
         Mode::Help => app.mode = Mode::Normal,
     }
 }
@@ -385,6 +449,57 @@ fn handle_priority_set_key(
                 "priority updated",
                 move |c, id| async move { c.set_labels(&id, &repo, &org, &names).await },
             );
+        }
+        _ => {}
+    }
+}
+
+fn handle_labels_set_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    if picker_common_key(app, key, false) {
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => {
+            app.label_pick_issue = None;
+            app.mode = Mode::Normal;
+        }
+        KeyCode::Char(' ') => {
+            if let Some(orig) = app.picker_selected_original()
+                && !app.multi_selected.remove(&orig)
+            {
+                app.multi_selected.insert(orig);
+            }
+        }
+        KeyCode::Enter => {
+            // The selection cannot move while the picker is open, but the
+            // issue can vanish under a refetch that landed before it opened.
+            let still_target = app
+                .selected_issue()
+                .is_some_and(|i| app.label_pick_issue.as_deref() == Some(i.id.as_str()));
+            let mut names: Vec<String> = app
+                .multi_selected
+                .iter()
+                .filter_map(|&i| app.select_options.get(i).cloned())
+                .collect();
+            names.sort_unstable();
+            app.label_pick_issue = None;
+            app.mode = Mode::Normal;
+            if !still_target {
+                app.status = Some("selection changed — labels not set".into());
+                return;
+            }
+            let (org, repo) = match app.selected_repo() {
+                Some(r) => (app.org.clone(), r.repo.clone()),
+                None => return,
+            };
+            with_issue(app, client, tx, "labels updated", move |c, id| async move {
+                c.set_labels(&id, &repo, &org, &names).await
+            });
         }
         _ => {}
     }
@@ -796,15 +911,14 @@ fn handle_normal_key(
             }
         }
         KeyCode::Char('l') => {
-            if let Some(issue) = app.selected_issue() {
-                let current = issue
-                    .labels
-                    .iter()
-                    .map(|l| l.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                app.input.start(&current);
-                app.mode = Mode::Input(InputKind::Labels);
+            let target = app
+                .selected_issue()
+                .map(|i| i.id.clone())
+                .zip(app.selected_repo().map(|r| r.repo.clone()));
+            if let Some((issue_id, repo)) = target {
+                app.label_pick_issue = Some(issue_id.clone());
+                app.status = Some("loading labels…".into());
+                spawn_label_options(client, app.org.clone(), repo, issue_id, tx);
             }
         }
         KeyCode::Char('t') => {
@@ -907,16 +1021,6 @@ fn submit_input(
                 "assignees updated",
                 move |c, id| async move { c.set_assignees(&id, &logins).await },
             );
-        }
-        InputKind::Labels => {
-            let names = split_csv(&value);
-            let (org, repo) = match app.selected_repo() {
-                Some(r) => (app.org.clone(), r.repo.clone()),
-                None => return,
-            };
-            with_issue(app, client, tx, "labels updated", move |c, id| async move {
-                c.set_labels(&id, &repo, &org, &names).await
-            });
         }
         InputKind::Title => {
             if value.trim().is_empty() {
@@ -1307,5 +1411,186 @@ mod tests {
 
         assert_eq!(app.filters.priority, vec!["high"]);
         assert_eq!(app.mode, Mode::FilterMenu);
+    }
+
+    fn test_client() -> Client {
+        Client::new("test-token".into()).unwrap()
+    }
+
+    /// Single-repo app with one issue carrying `labels`, selected.
+    fn app_with_issue(labels: &[&str]) -> (App, String) {
+        use crate::github::types::{Issue, Label};
+
+        let issue = Issue {
+            id: "I_1".into(),
+            number: 1,
+            title: "t".into(),
+            body: String::new(),
+            state: IssueState::Open,
+            url: "u".into(),
+            author: "a".into(),
+            assignees: vec![],
+            labels: labels
+                .iter()
+                .map(|n| Label {
+                    name: (*n).to_string(),
+                    color: String::new(),
+                })
+                .collect(),
+            comment_count: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            closed_at: None,
+        };
+        let id = issue.id.clone();
+        let mut app = App::new("org".into(), None, false, false);
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![issue],
+        }]);
+        app.selected = 1; // 0 = repo header, 1 = the issue
+        (app, id)
+    }
+
+    fn repo_label(id: &str, name: &str) -> RepoLabel {
+        RepoLabel {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn label_options_prechecks_current_labels_and_opens_picker() {
+        let (mut app, issue_id) = app_with_issue(&["bug", "priority:high"]);
+        app.label_pick_issue = Some(issue_id.clone());
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::LabelOptions {
+                issue_id,
+                result: Ok(vec![
+                    repo_label("L1", "bug"),
+                    repo_label("L2", "enhancement"),
+                    repo_label("L3", "priority:high"),
+                ]),
+            },
+            &client,
+            &tx,
+        );
+
+        assert_eq!(app.mode, Mode::LabelsSet);
+        assert_eq!(
+            app.select_options,
+            vec![
+                "bug".to_string(),
+                "enhancement".to_string(),
+                "priority:high".to_string()
+            ]
+        );
+        assert_eq!(app.multi_selected, [0, 2].into_iter().collect());
+    }
+
+    #[test]
+    fn label_options_stale_when_selection_moved_on() {
+        let (mut app, issue_id) = app_with_issue(&["bug"]);
+        // Options land after the user already moved off this issue.
+        app.label_pick_issue = Some(issue_id.clone());
+        app.selected = 0; // header row: selected_issue() is now None
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::LabelOptions {
+                issue_id,
+                result: Ok(vec![repo_label("L1", "bug")]),
+            },
+            &client,
+            &tx,
+        );
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.label_pick_issue.is_none());
+    }
+
+    #[test]
+    fn label_options_empty_repo_labels_sets_status() {
+        let (mut app, issue_id) = app_with_issue(&[]);
+        app.label_pick_issue = Some(issue_id.clone());
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::LabelOptions {
+                issue_id,
+                result: Ok(vec![]),
+            },
+            &client,
+            &tx,
+        );
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.label_pick_issue.is_none());
+        assert_eq!(app.status.as_deref(), Some("no labels on this repo"));
+    }
+
+    #[test]
+    fn labels_set_esc_discards_toggles() {
+        let (mut app, issue_id) = app_with_issue(&["bug"]);
+        app.label_pick_issue = Some(issue_id);
+        app.start_picker(vec!["bug".into(), "enhancement".into()], 0);
+        app.multi_selected = [0].into_iter().collect();
+        app.mode = Mode::LabelsSet;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_labels_set_key(&mut app, key(KeyCode::Char(' ')), &client, &tx); // toggle enhancement on
+        handle_labels_set_key(&mut app, key(KeyCode::Esc), &client, &tx);
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.label_pick_issue.is_none());
+    }
+
+    #[test]
+    fn labels_set_space_toggles_original_index_through_filter() {
+        let (mut app, issue_id) = app_with_issue(&[]);
+        app.label_pick_issue = Some(issue_id);
+        app.start_picker(vec!["alpha".into(), "beta".into(), "gamma".into()], 0);
+        app.mode = Mode::LabelsSet;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_labels_set_key(&mut app, key(KeyCode::Char('g')), &client, &tx); // filter → gamma only
+        handle_labels_set_key(&mut app, key(KeyCode::Char(' ')), &client, &tx); // toggle it
+
+        assert!(
+            app.multi_selected.contains(&2),
+            "toggle must hit gamma's original index, got {:?}",
+            app.multi_selected
+        );
+    }
+
+    #[test]
+    fn labels_set_enter_without_target_issue_reports_stale() {
+        let mut app = App::new("org".into(), None, false, false); // no data, no selected issue
+        app.label_pick_issue = Some("I_ghost".into());
+        app.start_picker(vec!["bug".into()], 0);
+        app.multi_selected = [0].into_iter().collect();
+        app.mode = Mode::LabelsSet;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_labels_set_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.label_pick_issue.is_none());
+        assert_eq!(
+            app.status.as_deref(),
+            Some("selection changed — labels not set")
+        );
     }
 }

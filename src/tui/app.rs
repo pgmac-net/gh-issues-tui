@@ -349,6 +349,8 @@ pub enum Mode {
     CommentEditor,
     /// Single-select popup choosing a priority label for the selected issue.
     PrioritySet,
+    /// Multi-select popup editing the full label set of the selected issue.
+    LabelsSet,
     Help,
 }
 
@@ -357,7 +359,6 @@ pub enum InputKind {
     Search,
     FilterField(usize),
     Assignees,
-    Labels,
     Title,
     /// Switch the org/owner being browsed.
     Org,
@@ -979,6 +980,9 @@ pub struct App {
     /// Issue id the set-priority picker was requested for; guards against
     /// stale option responses and selection drift while options load.
     pub priority_pick_issue: Option<String>,
+    /// Issue id the edit-labels picker was requested for; guards against
+    /// stale option responses and selection drift while options load.
+    pub label_pick_issue: Option<String>,
     /// Cursor position for the calendar date picker.
     pub calendar_cursor: NaiveDate,
     pub loading: bool,
@@ -1031,6 +1035,7 @@ impl App {
             issue_form: None,
             comment_editor: BodyEditor::default(),
             priority_pick_issue: None,
+            label_pick_issue: None,
             calendar_cursor: Utc::now().date_naive(),
             loading: true,
             auto_refreshing: false,

@@ -55,6 +55,7 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
         Mode::CommentEditor => draw_comment_editor_popup(f, app, t),
         Mode::Input(kind) => draw_input_popup(f, app, t, kind),
         Mode::PrioritySet => draw_priority_popup(f, app, t),
+        Mode::LabelsSet => draw_labels_popup(f, app, t),
         Mode::Help => draw_help(f, t),
         _ => {}
     }
@@ -326,7 +327,6 @@ fn input_prompt(kind: InputKind) -> &'static str {
         InputKind::Search => "search",
         InputKind::FilterField(idx) => FILTER_FIELDS[idx],
         InputKind::Assignees => "assignees (comma-separated logins)",
-        InputKind::Labels => "labels (comma-separated)",
         InputKind::Title => "title",
         InputKind::Org => "org/owner (Enter switches)",
         InputKind::FormTitle => "issue title (Enter sets)",
@@ -469,6 +469,18 @@ fn draw_priority_popup(f: &mut Frame, app: &App, t: &Theme) {
         Block::default()
             .borders(Borders::ALL)
             .title(" set priority (type to filter · Enter sets · Esc cancels) "),
+    );
+    f.render_widget(list, area);
+}
+
+fn draw_labels_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let items = picker_items(app, t, true, "clear");
+    let area = centered(f.area(), 50, picker_height(f, items.len()));
+    f.render_widget(Clear, area);
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" set labels (type to filter · Space toggles · Enter accepts · Esc cancels) "),
     );
     f.render_widget(list, area);
 }
