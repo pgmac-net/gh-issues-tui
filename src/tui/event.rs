@@ -321,6 +321,7 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
         Mode::Input(kind) => handle_input_key(app, key, kind, client, tx),
         Mode::FilterMenu => handle_filter_menu_key(app, key),
         Mode::SelectField(idx) => handle_select_field_key(app, key, idx),
+        Mode::SelectFieldMulti(idx) => handle_select_field_multi_key(app, key, idx),
         Mode::Calendar(idx) => handle_calendar_key(app, key, idx),
         Mode::ConfirmState => handle_confirm_key(app, key, client, tx),
         Mode::IssueForm => handle_issue_form_key(app, key, client, tx),
@@ -931,6 +932,21 @@ fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
             let idx = app.filter_menu_idx;
             if idx == super::app::FILTER_HIDE_EMPTY_IDX {
                 app.toggle_hide_empty();
+            } else if App::is_multi_select_field(idx) {
+                let options = app.compute_multi_options(idx);
+                let current = if idx == 4 {
+                    &app.filters.priority
+                } else {
+                    &app.filters.status
+                };
+                app.multi_selected = options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| current.iter().any(|c| c.eq_ignore_ascii_case(o)))
+                    .map(|(i, _)| i)
+                    .collect();
+                app.start_picker(options, 0);
+                app.mode = Mode::SelectFieldMulti(idx);
             } else if App::is_select_field(idx) {
                 let options = app.compute_select_options(idx);
                 let current = app.current_filter_value(idx);
@@ -972,6 +988,33 @@ fn handle_select_field_key(app: &mut App, key: KeyEvent, idx: usize) {
             None if app.select_options.is_empty() => app.mode = Mode::FilterMenu,
             None => {}
         },
+        _ => {}
+    }
+}
+
+fn handle_select_field_multi_key(app: &mut App, key: KeyEvent, idx: usize) {
+    if picker_common_key(app, key, false) {
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => app.mode = Mode::FilterMenu, // discard toggles
+        KeyCode::Char(' ') => {
+            if let Some(orig) = app.picker_selected_original()
+                && !app.multi_selected.remove(&orig)
+            {
+                app.multi_selected.insert(orig);
+            }
+        }
+        KeyCode::Enter => {
+            let mut picked: Vec<usize> = app.multi_selected.iter().copied().collect();
+            picked.sort();
+            let values: Vec<String> = picked
+                .into_iter()
+                .filter_map(|i| app.select_options.get(i).cloned())
+                .collect();
+            app.apply_multi_filter(idx, values);
+            app.mode = Mode::FilterMenu;
+        }
         _ => {}
     }
 }
@@ -1183,6 +1226,52 @@ mod tests {
         handle_select_field_key(&mut app, key(KeyCode::Char('b')), 1);
         handle_select_field_key(&mut app, key(KeyCode::Enter), 1);
         assert_eq!(app.filters.repo, "beta");
+        assert_eq!(app.mode, Mode::FilterMenu);
+    }
+
+    #[test]
+    fn multi_filter_picker_space_toggles_and_enter_applies() {
+        let mut app = App::new("org".into(), None, false, false);
+        app.start_picker(vec!["low".into(), "high".into(), "urgent".into()], 0);
+        app.mode = Mode::SelectFieldMulti(4);
+
+        handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 4); // low
+        handle_select_field_multi_key(&mut app, key(KeyCode::Down), 4);
+        handle_select_field_multi_key(&mut app, key(KeyCode::Down), 4);
+        handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 4); // urgent
+        handle_select_field_multi_key(&mut app, key(KeyCode::Enter), 4);
+
+        assert_eq!(app.filters.priority, vec!["low", "urgent"]);
+        assert_eq!(app.mode, Mode::FilterMenu);
+    }
+
+    #[test]
+    fn multi_filter_picker_empty_selection_clears_filter() {
+        let mut app = App::new("org".into(), None, false, false);
+        app.filters.status = vec!["blocked".into()];
+        app.start_picker(vec!["blocked".into(), "in-progress".into()], 0);
+        app.multi_selected = [0].into_iter().collect();
+        app.mode = Mode::SelectFieldMulti(5);
+
+        handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 5); // untoggle blocked
+        handle_select_field_multi_key(&mut app, key(KeyCode::Enter), 5);
+
+        assert!(app.filters.status.is_empty());
+        assert_eq!(app.mode, Mode::FilterMenu);
+    }
+
+    #[test]
+    fn multi_filter_picker_esc_discards_toggles() {
+        let mut app = App::new("org".into(), None, false, false);
+        app.filters.priority = vec!["high".into()];
+        app.start_picker(vec!["low".into(), "high".into()], 0);
+        app.multi_selected = [1].into_iter().collect();
+        app.mode = Mode::SelectFieldMulti(4);
+
+        handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 4); // toggle low on
+        handle_select_field_multi_key(&mut app, key(KeyCode::Esc), 4);
+
+        assert_eq!(app.filters.priority, vec!["high"]);
         assert_eq!(app.mode, Mode::FilterMenu);
     }
 }
