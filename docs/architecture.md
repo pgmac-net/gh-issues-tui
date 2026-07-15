@@ -33,7 +33,7 @@ Only open issues are fetched at startup (fast path). The first time the user cyc
 
 - **Row model**: the visible list is a flat `Vec<Row>` of `RepoHeader` and `Issue` entries, rebuilt (`rebuild_rows`) whenever data, filters, sort, or collapse state change. Selection is an index into this vector and is clamped on rebuild.
 - **Collapse state** is a `HashSet<String>` of repo names, so it survives reloads and re-sorts.
-- **Modes**: `Normal`, `Input(kind)` (single-line editor for search/filters/comment/assignees/labels/title), `FilterMenu`, `ConfirmState` (y/n for close/reopen), `Help`.
+- **Modes**: `Normal`, `Input(kind)` (single-line popup editor for search/filters/assignees/labels/title/org), `CommentEditor` / `IssueFormBody` (multi-line popup editors sharing the same `BodyEditor` key handling), `FilterMenu`, `ConfirmState` (y/n for close/reopen), `Help`.
 - **Async**: all GitHub calls run in `tokio::spawn`ed tasks that report back over an mpsc channel (`AppEvent`); the event loop `select!`s over keys and app events. The UI never blocks on the network.
 - **Consistency**: mutations trigger a full refetch on completion rather than optimistic patching — simpler, and correct by construction.
 

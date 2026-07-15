@@ -345,6 +345,8 @@ pub enum Mode {
     IssueFormMulti(usize),
     /// Multi-line editor for the new issue's body.
     IssueFormBody,
+    /// Multi-line editor for adding a comment to the selected issue.
+    CommentEditor,
     /// Single-select popup choosing a priority label for the selected issue.
     PrioritySet,
     Help,
@@ -354,7 +356,6 @@ pub enum Mode {
 pub enum InputKind {
     Search,
     FilterField(usize),
-    Comment,
     Assignees,
     Labels,
     Title,
@@ -855,6 +856,23 @@ pub fn body_popup_width(frame_width: u16) -> u16 {
     BODY_POPUP_WIDTH.min(frame_width).saturating_sub(2)
 }
 
+/// The single-line input popup's outer width; inner width mirrors
+/// `body_popup_width`'s clamp-minus-borders pattern.
+pub const INPUT_POPUP_WIDTH: u16 = 60;
+
+pub fn input_popup_width(frame_width: u16) -> u16 {
+    INPUT_POPUP_WIDTH.min(frame_width).saturating_sub(2)
+}
+
+/// The char index to start displaying from so a single-line input's cursor
+/// always stays within a `width`-wide window. Stateless: recomputed from
+/// `cursor` and `width` each frame, so the window only moves when the
+/// cursor's position relative to the current window requires it.
+pub fn input_scroll_skip(cursor: usize, width: usize) -> usize {
+    let width = width.max(1);
+    cursor.saturating_sub(width.saturating_sub(1))
+}
+
 /// One visual row of the word-wrapped body: a char range of a logical line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisualRow {
@@ -955,6 +973,9 @@ pub struct App {
     pub multi_selected: std::collections::HashSet<usize>,
     /// The new-issue form, present while it is open.
     pub issue_form: Option<IssueForm>,
+    /// Multi-line editor backing `Mode::CommentEditor`; reset each time the
+    /// editor opens or closes.
+    pub comment_editor: BodyEditor,
     /// Issue id the set-priority picker was requested for; guards against
     /// stale option responses and selection drift while options load.
     pub priority_pick_issue: Option<String>,
@@ -1008,6 +1029,7 @@ impl App {
             select_filter: String::new(),
             multi_selected: Default::default(),
             issue_form: None,
+            comment_editor: BodyEditor::default(),
             priority_pick_issue: None,
             calendar_cursor: Utc::now().date_naive(),
             loading: true,
@@ -2178,6 +2200,18 @@ mod tests {
     }
 
     #[test]
+    fn input_scroll_skip_keeps_cursor_in_window() {
+        // Cursor within the first window: no scroll.
+        assert_eq!(input_scroll_skip(0, 10), 0);
+        assert_eq!(input_scroll_skip(9, 10), 0);
+        // Cursor past the window: skip advances to keep it on the last column.
+        assert_eq!(input_scroll_skip(10, 10), 1);
+        assert_eq!(input_scroll_skip(25, 10), 16);
+        // Zero width is treated as one column wide.
+        assert_eq!(input_scroll_skip(5, 0), 5);
+    }
+
+    #[test]
     fn input_state_edits_utf8_safely() {
         let mut input = InputState::default();
         input.start("héllo");
@@ -3119,6 +3153,7 @@ mod tests {
             Mode::IssueFormSelect(4),
             Mode::IssueFormMulti(2),
             Mode::IssueFormBody,
+            Mode::CommentEditor,
         ] {
             app.mode = mode;
             assert!(!app.should_auto_refresh(), "{mode:?} must block refresh");
