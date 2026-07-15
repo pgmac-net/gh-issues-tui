@@ -35,7 +35,8 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
 
     match app.mode {
         Mode::FilterMenu => draw_filter_menu(f, app, t),
-        Mode::SelectField(idx) => draw_select_popup(f, app, t, idx),
+        Mode::SelectField(idx) => draw_select_popup(f, app, t, idx, false),
+        Mode::SelectFieldMulti(idx) => draw_select_popup(f, app, t, idx, true),
         Mode::Calendar(idx) => draw_calendar_popup(f, app, t, idx),
         Mode::IssueForm => draw_issue_form(f, app, t),
         Mode::IssueFormSelect(idx) => {
@@ -444,14 +445,21 @@ fn picker_height(f: &Frame, rows: usize) -> u16 {
     (rows.max(1) as u16 + 2).min(f.area().height)
 }
 
-fn draw_select_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
+fn draw_select_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize, multi: bool) {
     let field_name = FILTER_FIELDS[idx];
-    let items = picker_items(app, t, false, "clear");
+    let items = picker_items(app, t, multi, "clear");
     let area = centered(f.area(), 50, picker_height(f, items.len()));
     f.render_widget(Clear, area);
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
-        " select {field_name} (type to filter · Enter picks · Esc cancels) "
-    )));
+    let hint = if multi {
+        "type filters · Space toggles · Enter accepts"
+    } else {
+        "type to filter · Enter picks · Esc cancels"
+    };
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" select {field_name} ({hint}) ")),
+    );
     f.render_widget(list, area);
 }
 

@@ -60,10 +60,12 @@ pub struct Filters {
     pub repo: String,
     pub assignee: String,
     pub author: String,
-    /// Matches a `priority:<value>` label (bare value or full label name).
-    pub priority: String,
-    /// Matches a `status:<value>` label (bare value or full label name).
-    pub status: String,
+    /// Matches any of these `priority:<value>` labels (bare values or full
+    /// label names); empty means no filter.
+    pub priority: Vec<String>,
+    /// Matches any of these `status:<value>` labels (bare values or full
+    /// label names); empty means no filter.
+    pub status: Vec<String>,
     pub created_after: Option<NaiveDate>,
     pub created_before: Option<NaiveDate>,
     pub updated_after: Option<NaiveDate>,
@@ -83,8 +85,8 @@ impl Default for Filters {
             repo: String::new(),
             assignee: String::new(),
             author: String::new(),
-            priority: String::new(),
-            status: String::new(),
+            priority: Vec::new(),
+            status: Vec::new(),
             created_after: None,
             created_before: None,
             updated_after: None,
@@ -210,15 +212,28 @@ pub fn priority_label_set(issue: &Issue, pick: Option<&str>) -> Vec<String> {
     names
 }
 
-fn label_filter_matches(issue: &Issue, prefix: &str, filter: &str) -> bool {
-    if filter.is_empty() {
+/// Comma-separated text → filter values (trimmed, empties dropped). The
+/// free-text path into the priority/status filters.
+fn parse_filter_list(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn label_filter_matches(issue: &Issue, prefix: &str, filters: &[String]) -> bool {
+    if filters.is_empty() {
         return true;
     }
-    let expected = format!("{prefix}:{filter}");
-    issue
-        .labels
-        .iter()
-        .any(|l| l.name.eq_ignore_ascii_case(filter) || l.name.eq_ignore_ascii_case(&expected))
+    filters.iter().any(|filter| {
+        let expected = format!("{prefix}:{filter}");
+        issue
+            .labels
+            .iter()
+            .any(|l| l.name.eq_ignore_ascii_case(filter) || l.name.eq_ignore_ascii_case(&expected))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,6 +331,8 @@ pub enum Mode {
     FilterMenu,
     /// Picking from a list of values for a filter field.
     SelectField(usize),
+    /// Multi-select picker (Space toggles) for a filter field.
+    SelectFieldMulti(usize),
     /// Calendar date picker.
     Calendar(usize),
     /// y/n confirmation for close/reopen.
@@ -1372,8 +1389,8 @@ impl App {
                     1 => self.filters.repo = v,
                     2 => self.filters.assignee = v,
                     3 => self.filters.author = v,
-                    4 => self.filters.priority = v,
-                    5 => self.filters.status = v,
+                    4 => self.filters.priority = parse_filter_list(&v),
+                    5 => self.filters.status = parse_filter_list(&v),
                     6 => self.filters.created_after = parse_date(&v),
                     7 => self.filters.created_before = parse_date(&v),
                     8 => self.filters.updated_after = parse_date(&v),
@@ -1390,6 +1407,18 @@ impl App {
         self.expand_single_visible();
     }
 
+    /// Commit a multi-select filter field (priority, status) and recompute
+    /// the visible rows. An empty `values` clears the filter.
+    pub fn apply_multi_filter(&mut self, idx: usize, values: Vec<String>) {
+        match idx {
+            4 => self.filters.priority = values,
+            5 => self.filters.status = values,
+            _ => return,
+        }
+        self.rebuild_rows();
+        self.expand_single_visible();
+    }
+
     pub fn current_filter_value(&self, idx: usize) -> String {
         let d = |o: Option<NaiveDate>| o.map(|d| d.to_string()).unwrap_or_default();
         match idx {
@@ -1397,8 +1426,8 @@ impl App {
             1 => self.filters.repo.clone(),
             2 => self.filters.assignee.clone(),
             3 => self.filters.author.clone(),
-            4 => self.filters.priority.clone(),
-            5 => self.filters.status.clone(),
+            4 => self.filters.priority.join(", "),
+            5 => self.filters.status.join(", "),
             6 => d(self.filters.created_after),
             7 => d(self.filters.created_before),
             8 => d(self.filters.updated_after),
@@ -1437,7 +1466,7 @@ impl App {
     }
 
     /// Build the list of options shown when the user presses Enter on a
-    /// select-style filter field (repo, assignee, author, priority, status).
+    /// select-style filter field (repo, assignee, author).
     /// The first entry is always `"—"` which means "no filter".
     pub fn compute_select_options(&self, idx: usize) -> Vec<String> {
         let mut opts: Vec<String> = match idx {
@@ -1464,12 +1493,27 @@ impl App {
                 v.dedup();
                 v
             }
-            4 => self.label_values("priority"),
-            5 => self.label_values("status"),
             _ => vec![],
         };
         opts.insert(0, "\u{2014}".to_string());
         opts
+    }
+
+    /// Options for a multi-select filter field (priority, status). No "—"
+    /// row — clearing is deselecting everything. Priority values are
+    /// ordered low → urgent with unknown values last (like the set-priority
+    /// picker); status values stay alphabetical.
+    pub fn compute_multi_options(&self, idx: usize) -> Vec<String> {
+        match idx {
+            4 => {
+                let rank = |v: &str| priority_value_rank(v).unwrap_or(5);
+                let mut v = self.label_values("priority");
+                v.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.cmp(b)));
+                v
+            }
+            5 => self.label_values("status"),
+            _ => vec![],
+        }
     }
 
     /// Distinct sorted values of `<prefix>:<value>` labels across all issues.
@@ -1493,10 +1537,16 @@ impl App {
         v
     }
 
-    /// Returns `true` when the field at `idx` should show a selectable list
-    /// instead of a free-text input.
+    /// Returns `true` when the field at `idx` should show a single-select
+    /// list instead of a free-text input.
     pub fn is_select_field(idx: usize) -> bool {
-        matches!(idx, 1..=5)
+        matches!(idx, 1..=3)
+    }
+
+    /// Returns `true` when the field at `idx` should show a multi-select
+    /// list (priority, status — several values OR together).
+    pub fn is_multi_select_field(idx: usize) -> bool {
+        matches!(idx, 4 | 5)
     }
 
     /// Prepares the calendar cursor from the current filter value or today.
@@ -2109,6 +2159,25 @@ mod tests {
     }
 
     #[test]
+    fn filter_input_priority_parses_comma_list() {
+        let mut app = two_repo_app();
+        app.apply_filter_input(InputKind::FilterField(4), "high, urgent, ,");
+        assert_eq!(app.filters.priority, vec!["high", "urgent"]);
+        assert_eq!(app.current_filter_value(4), "high, urgent");
+    }
+
+    #[test]
+    fn apply_multi_filter_sets_and_clears() {
+        let mut app = two_repo_app();
+        app.apply_multi_filter(5, vec!["blocked".into(), "in-progress".into()]);
+        assert_eq!(app.filters.status, vec!["blocked", "in-progress"]);
+        assert!(app.filters.is_active());
+        app.apply_multi_filter(5, Vec::new());
+        assert!(app.filters.status.is_empty());
+        assert!(!app.filters.is_active());
+    }
+
+    #[test]
     fn input_state_edits_utf8_safely() {
         let mut input = InputState::default();
         input.start("héllo");
@@ -2387,6 +2456,11 @@ mod tests {
         );
     }
 
+    /// Filter values for `label_filter_matches` tests.
+    fn fv(vals: &[&str]) -> Vec<String> {
+        vals.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn label_filter_matches_bare_value() {
         let mut issue = issue(1, "a", IssueState::Open);
@@ -2394,14 +2468,41 @@ mod tests {
             name: "priority:high".into(),
             color: "".into(),
         }];
-        assert!(super::label_filter_matches(&issue, "priority", "high"));
         assert!(super::label_filter_matches(
             &issue,
             "priority",
-            "priority:high"
+            &fv(&["high"])
         ));
-        assert!(!super::label_filter_matches(&issue, "priority", "low"));
-        assert!(super::label_filter_matches(&issue, "priority", ""));
+        assert!(super::label_filter_matches(
+            &issue,
+            "priority",
+            &fv(&["priority:high"])
+        ));
+        assert!(!super::label_filter_matches(
+            &issue,
+            "priority",
+            &fv(&["low"])
+        ));
+        assert!(super::label_filter_matches(&issue, "priority", &[]));
+    }
+
+    #[test]
+    fn label_filter_matches_any_of_several_values() {
+        let mut issue = issue(4, "d", IssueState::Open);
+        issue.labels = vec![crate::github::types::Label {
+            name: "priority:urgent".into(),
+            color: "".into(),
+        }];
+        assert!(super::label_filter_matches(
+            &issue,
+            "priority",
+            &fv(&["high", "urgent"])
+        ));
+        assert!(!super::label_filter_matches(
+            &issue,
+            "priority",
+            &fv(&["high", "medium"])
+        ));
     }
 
     #[test]
@@ -2414,14 +2515,18 @@ mod tests {
         assert!(super::label_filter_matches(
             &issue,
             "status",
-            "needs-review"
+            &fv(&["needs-review"])
         ));
         assert!(super::label_filter_matches(
             &issue,
             "status",
-            "status:needs-review"
+            &fv(&["status:needs-review"])
         ));
-        assert!(!super::label_filter_matches(&issue, "status", "blocked"));
+        assert!(!super::label_filter_matches(
+            &issue,
+            "status",
+            &fv(&["blocked"])
+        ));
     }
 
     #[test]
@@ -2431,8 +2536,16 @@ mod tests {
             name: "Priority:High".into(),
             color: "".into(),
         }];
-        assert!(super::label_filter_matches(&issue, "priority", "high"));
-        assert!(super::label_filter_matches(&issue, "priority", "HIGH"));
+        assert!(super::label_filter_matches(
+            &issue,
+            "priority",
+            &fv(&["high"])
+        ));
+        assert!(super::label_filter_matches(
+            &issue,
+            "priority",
+            &fv(&["HIGH"])
+        ));
     }
 
     #[test]
@@ -2498,11 +2611,30 @@ mod tests {
             repo_url: "u".into(),
             issues: vec![a, b],
         }]);
-        let opts = app.compute_select_options(4);
-        assert_eq!(opts[0], "\u{2014}");
-        assert!(opts.contains(&"high".to_string()));
-        assert!(opts.contains(&"low".to_string()));
-        assert_eq!(opts.len(), 3);
+        // Multi-select options: no "—" row, rank-ordered low → urgent.
+        let opts = app.compute_multi_options(4);
+        assert_eq!(opts, vec!["low".to_string(), "high".to_string()]);
+    }
+
+    #[test]
+    fn compute_priority_options_rank_order_unknown_last() {
+        let mut a = issue(1, "a", IssueState::Open);
+        a.labels = ["priority:urgent", "priority:medium", "priority:P1"]
+            .iter()
+            .map(|n| crate::github::types::Label {
+                name: n.to_string(),
+                color: "".into(),
+            })
+            .collect();
+        let app = app_with(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![a],
+        }]);
+        assert_eq!(
+            app.compute_multi_options(4),
+            vec!["medium".to_string(), "urgent".to_string(), "P1".to_string()]
+        );
     }
 
     #[test]
@@ -2517,17 +2649,14 @@ mod tests {
             repo_url: "u".into(),
             issues: vec![a],
         }]);
-        let opts = app.compute_select_options(5);
-        assert_eq!(opts[0], "\u{2014}");
-        assert!(opts.contains(&"needs-review".to_string()));
-        assert_eq!(opts.len(), 2);
+        let opts = app.compute_multi_options(5);
+        assert_eq!(opts, vec!["needs-review".to_string()]);
     }
 
     #[test]
-    fn compute_select_options_empty_when_no_label_match() {
+    fn compute_multi_options_empty_when_no_label_match() {
         let app = two_repo_app();
-        let opts = app.compute_select_options(4);
-        assert_eq!(opts, vec!["\u{2014}".to_string()]);
+        assert!(app.compute_multi_options(4).is_empty());
     }
 
     #[test]
@@ -2564,8 +2693,8 @@ mod tests {
             repo_url: "u".into(),
             issues: vec![a],
         }]);
-        let opts = app.compute_select_options(4);
-        assert_eq!(opts, vec!["\u{2014}".to_string(), "High".to_string()]);
+        let opts = app.compute_multi_options(4);
+        assert_eq!(opts, vec!["High".to_string()]);
     }
 
     #[test]
@@ -2574,9 +2703,13 @@ mod tests {
         assert!(App::is_select_field(1)); // repo
         assert!(App::is_select_field(2)); // assignee
         assert!(App::is_select_field(3)); // author
-        assert!(App::is_select_field(4)); // priority
-        assert!(App::is_select_field(5)); // status
+        assert!(!App::is_select_field(4)); // priority is multi now
+        assert!(!App::is_select_field(5)); // status is multi now
         assert!(!App::is_select_field(6)); // created after
+        assert!(!App::is_multi_select_field(3)); // author
+        assert!(App::is_multi_select_field(4)); // priority
+        assert!(App::is_multi_select_field(5)); // status
+        assert!(!App::is_multi_select_field(6)); // created after
     }
 
     #[test]
