@@ -323,3 +323,35 @@ None — implemented as approved.
 
 - `cargo test` (148 passing), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — all clean.
 - Live pty-driven session against the real `pgmac-net` org: opened the comment popup on a real issue, typed two lines via `Enter`, discarded with `Esc` (status: "comment discarded", no mutation sent); opened the title popup with a value longer than the box and confirmed the horizontal scroll kept the cursor visible, then discarded with `Esc`.
+
+# Development log — edit-labels picker for existing issues (2026-07-16)
+
+Work driven by [pgmac-net/gh-issues-tui#37](https://github.com/pgmac-net/gh-issues-tui/issues/37), delivered in PR #40 on branch `37-label-picker-existing-issue`.
+
+## Process
+
+1. **Plan approval** — implementation plan posted to the ticket and approved before any code, rated STANDARD (implemented on Opus after the user declined the Sonnet switch prompt; noted in the ticket).
+2. **Code inspection** — traced the old `l` key path (`Mode::Input(InputKind::Labels)`, free-text comma-separated, `split_csv`) and the existing multi-select picker infra already shared by the new-issue form's labels field and the filter editor's priority/status pickers (`start_picker`/`select_options`/`multi_selected`/`picker_common_key`/`picker_items`).
+3. **Implementation** — modelled directly on the existing single-select `p` (set priority) flow for an existing issue: new `Mode::LabelsSet`, `App::label_pick_issue: Option<String>` staleness guard, `AppEvent::LabelOptions`, `spawn_label_options`, `handle_labels_set_key`. Removed `InputKind::Labels` and its `submit_input` arm entirely.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| New mode | `Mode::LabelsSet`, mirrors `Mode::PrioritySet` | Same generic picker widget, just `multi=true`; keeps the two existing-issue pickers structurally parallel |
+| Options source | fetch `repo_labels` on `l` | Same reasoning as the priority picker — a label must exist on the repo to be settable |
+| Pre-check | issue's current labels matched case-insensitively into `multi_selected` before `start_picker` | Same pattern the new-issue form already uses when reopening a multi-select field |
+| Mutation | whole-set replace via existing `set_labels` | Same call the old free-text flow used; only the source of the name list changed |
+| `InputKind::Labels` | removed entirely | Dead once `l` no longer opens a text input; no other caller |
+| No labels on repo | status message, no picker | Nothing pickable — matches the priority picker's empty-repo behaviour |
+
+## Diversions from plan
+
+- Implemented on Opus instead of the Sonnet tier the plan recorded — user declined the mid-task model switch prompt.
+- Manual smoke test (press `l` on a real issue, confirm pre-checked/toggle/commit against `gh issue view`) was left undone in the PR checklist — no interactive terminal session against a live repo was exercised this session. Covered instead by unit tests on the new picker mechanics.
+
+## Verification
+
+- `cargo test` — 154 passed (6 new).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- `README.md`, `docs/architecture.md`, and `CLAUDE.md` updated to describe the picker behaviour in place of the old free-text description.
