@@ -10,8 +10,8 @@ use crate::github::error::RATE_LIMIT_MSG_PREFIX;
 use crate::github::types::{Comment, FormOptions, IssueState, RepoIssues, RepoLabel};
 
 use super::app::{
-    App, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter, body_popup_width,
-    priority_label_set, priority_set_options,
+    App, BodyEditor, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter,
+    body_popup_width, priority_label_set, priority_set_options,
 };
 use super::theme::Theme;
 use super::ui;
@@ -328,6 +328,7 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
         Mode::IssueFormSelect(idx) => handle_form_select_key(app, key, idx),
         Mode::IssueFormMulti(idx) => handle_form_multi_key(app, key, idx),
         Mode::IssueFormBody => handle_form_body_key(app, key),
+        Mode::CommentEditor => handle_comment_editor_key(app, key, client, tx),
         Mode::PrioritySet => handle_priority_set_key(app, key, client, tx),
         Mode::Help => app.mode = Mode::Normal,
     }
@@ -531,37 +532,79 @@ fn handle_form_multi_key(app: &mut App, key: KeyEvent, idx: usize) {
     }
 }
 
+/// Keys shared by every multi-line `BodyEditor`: readline-style editing plus
+/// visual-row up/down. Enter and Esc are each caller's own since they mean
+/// different things per mode (newline vs. keep/discard). Returns whether the
+/// key was consumed.
+fn apply_body_editor_key(body: &mut BodyEditor, key: KeyEvent, wrap_width: usize) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => body.newline(),
+        KeyCode::Backspace => body.backspace(),
+        KeyCode::Delete => body.delete_char(),
+        KeyCode::Left if ctrl => body.word_left(),
+        KeyCode::Right if ctrl => body.word_right(),
+        KeyCode::Left => body.left(),
+        KeyCode::Right => body.right(),
+        KeyCode::Up => body.up_visual(wrap_width),
+        KeyCode::Down => body.down_visual(wrap_width),
+        KeyCode::Home => body.home(),
+        KeyCode::End => body.end(),
+        KeyCode::Char('a') if ctrl => body.home(),
+        KeyCode::Char('e') if ctrl => body.end(),
+        KeyCode::Char('w') if ctrl => body.delete_word_back(),
+        KeyCode::Char('u') if ctrl => body.kill_to_start(),
+        KeyCode::Char('k') if ctrl => body.kill_to_end(),
+        KeyCode::Char('d') if ctrl => body.delete_char(),
+        KeyCode::Char(c) if !ctrl => body.insert(c),
+        _ => return false,
+    }
+    true
+}
+
 fn handle_form_body_key(app: &mut App, key: KeyEvent) {
     let Some(form) = &mut app.issue_form else {
         app.mode = Mode::Normal;
         return;
     };
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let wrap_width = body_wrap_width();
-    match key.code {
-        KeyCode::Esc => app.mode = Mode::IssueForm, // content kept
-        KeyCode::Enter => form.body.newline(),
-        KeyCode::Backspace => form.body.backspace(),
-        KeyCode::Delete => form.body.delete_char(),
-        KeyCode::Left if ctrl => form.body.word_left(),
-        KeyCode::Right if ctrl => form.body.word_right(),
-        KeyCode::Left => form.body.left(),
-        KeyCode::Right => form.body.right(),
-        KeyCode::Up => form.body.up_visual(wrap_width),
-        KeyCode::Down => form.body.down_visual(wrap_width),
-        KeyCode::Home => form.body.home(),
-        KeyCode::End => form.body.end(),
-        KeyCode::Char('a') if ctrl => form.body.home(),
-        KeyCode::Char('e') if ctrl => form.body.end(),
-        KeyCode::Char('w') if ctrl => form.body.delete_word_back(),
-        KeyCode::Char('u') if ctrl => form.body.kill_to_start(),
-        KeyCode::Char('k') if ctrl => form.body.kill_to_end(),
-        KeyCode::Char('d') if ctrl => form.body.delete_char(),
-        KeyCode::Char(c) if !ctrl => {
-            form.body.insert(c);
-        }
-        _ => {}
+    if key.code == KeyCode::Esc {
+        app.mode = Mode::IssueForm; // content kept
+        return;
     }
+    apply_body_editor_key(&mut form.body, key, body_wrap_width());
+}
+
+fn handle_comment_editor_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc => {
+            app.comment_editor = BodyEditor::default();
+            app.mode = Mode::Normal;
+            app.status = Some("comment discarded".into());
+        }
+        KeyCode::Char('s') if ctrl => submit_comment(app, client, tx),
+        _ => {
+            apply_body_editor_key(&mut app.comment_editor, key, body_wrap_width());
+        }
+    }
+}
+
+fn submit_comment(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let value = app.comment_editor.text();
+    app.comment_editor = BodyEditor::default();
+    app.mode = Mode::Normal;
+    if value.trim().is_empty() {
+        app.status = Some("empty comment discarded".into());
+        return;
+    }
+    with_issue(app, client, tx, "comment added", move |c, id| async move {
+        c.add_comment(&id, &value).await
+    });
 }
 
 /// The wrap width the body popup is currently rendered at.
@@ -736,8 +779,8 @@ fn handle_normal_key(
         // mutations
         KeyCode::Char('c') => {
             if app.selected_issue().is_some() {
-                app.input.start("");
-                app.mode = Mode::Input(InputKind::Comment);
+                app.comment_editor = BodyEditor::default();
+                app.mode = Mode::CommentEditor;
             }
         }
         KeyCode::Char('x') => {
@@ -854,15 +897,6 @@ fn submit_input(
             if matches!(kind, InputKind::FilterField(_)) {
                 app.mode = Mode::FilterMenu;
             }
-        }
-        InputKind::Comment => {
-            if value.trim().is_empty() {
-                app.status = Some("empty comment discarded".into());
-                return;
-            }
-            with_issue(app, client, tx, "comment added", move |c, id| async move {
-                c.add_comment(&id, &value).await
-            });
         }
         InputKind::Assignees => {
             let logins = split_csv(&value);

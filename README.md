@@ -105,7 +105,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `F` | filter editor (repo, assignee, author, priority, status, created/updated/closed date bounds) |
 | `s` / `S` | cycle sort key / toggle direction |
 | `w` | switch org/owner (free-text; resets filters and view state) |
-| `c` | add a comment |
+| `c` | add a comment (multi-line editor; `Ctrl+S` submits, `Esc` discards) |
 | `x` | close or reopen the issue (asks y/n) |
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (comma-separated names, must exist on the repo) |
@@ -120,7 +120,7 @@ Sort keys: updated, created, closed, state, assignee, author, priority.
 
 ### Editing keys
 
-Every text input (search, comment, assignees, labels, title, org, the new-issue title and description) supports readline-style editing. The cursor is a block sitting **on** a character:
+Every text input (search, filters, assignees, labels, title, org, the new-issue title, and the comment/description editors) opens as a small popup box and supports readline-style editing. The cursor is a block sitting **on** a character:
 
 | Key | Action |
 |-----|--------|
@@ -131,7 +131,9 @@ Every text input (search, comment, assignees, labels, title, org, the new-issue 
 | `Ctrl+U` / `Ctrl+K` | delete to line start / to line end |
 | `Ctrl+D` / `Delete` | delete the char under the cursor |
 
-In the multi-line description editor, text word-wraps at the popup width, `↑`/`↓` move by *visual* (wrapped) row, and `Delete` at the end of a line joins the next line on.
+Single-line popups (search, filters, assignees, labels, title, org, new-issue title) scroll horizontally to keep the cursor visible when the value is wider than the box; `Enter` submits, `Esc` cancels.
+
+In the multi-line comment and description editors, text word-wraps at the popup width, `↑`/`↓` move by *visual* (wrapped) row, `Enter` inserts a newline, and `Delete` at the end of a line joins the next line on. The comment editor submits on `Ctrl+S` (`Esc` discards); the new-issue description keeps its text on `Esc` and returns to the form.
 
 ### Creating issues
 
