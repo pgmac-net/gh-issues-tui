@@ -294,3 +294,32 @@ None. (Also fixed in passing: the README sort-key list was missing `priority` fr
 - `cargo test` — 140 passed (22 new).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - tmux live session: paragraph wraps at popup width across 3 rows; Ctrl+← hops words; Ctrl+W deleted "long " mid-paragraph with correct re-flow; Ctrl+A/E/K behave on the logical line; block cursor confirmed as `ESC[7m` reversed video sitting ON the character; single-line comment input shows the cursor mid-string after two Lefts (previously always drawn at the end).
+
+# Development log — comment/input popups (2026-07-16)
+
+Work driven by [pgmac-net/gh-issues-tui#36](https://github.com/pgmac-net/gh-issues-tui/issues/36), delivered in PR #38 on branch `36-comment-multiline-input`.
+
+## Process
+
+1. **Plan approval** — implementation plan posted to the ticket and approved before any code, rated STANDARD (implemented on Sonnet 5).
+2. **Code inspection** — traced the existing `Mode::Input(InputKind)` single-line path (`app.rs`/`event.rs`/`ui.rs`) and the `Mode::IssueFormBody` multi-line `BodyEditor` used for the new-issue description, to reuse the latter's word-wrap/cursor/visual-row logic for comments rather than building a second editor.
+3. **Implementation** — new `Mode::CommentEditor` + `App::comment_editor: BodyEditor`; extracted the readline/visual-row key handling shared by the comment and description editors into `apply_body_editor_key` in `event.rs`; moved every `Mode::Input(kind)` render from the bottom status line into a centered popup with a new stateless horizontal-scroll helper (`input_scroll_skip`).
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Comment submit key | `Ctrl+S` | `Ctrl+Enter` isn't reliably distinguishable from plain `Enter` across terminals; `Enter` stays "insert newline" for consistency with the description editor |
+| Comment editor widget | Reuse `BodyEditor` + `apply_body_editor_key` | Avoids a second multi-line implementation; new-issue description and comments now share one code path |
+| Single-line input rendering | Centered popup (same visual language as the multi-line popups) instead of the bottom status line | Bottom line is one row — too little room to show cursor position clearly on longer values; consistent look across all text entry |
+| Long single-line values | Stateless horizontal scroll (`input_scroll_skip(cursor, width)`, recomputed each frame) | No extra scroll-offset state to keep in sync with cursor moves; window always derives directly from `(cursor, width)` |
+| `InputKind::Comment` | Removed | Comments no longer go through the generic single-line `Input` mode at all |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- `cargo test` (148 passing), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — all clean.
+- Live pty-driven session against the real `pgmac-net` org: opened the comment popup on a real issue, typed two lines via `Enter`, discarded with `Esc` (status: "comment discarded", no mutation sent); opened the title popup with a value longer than the box and confirmed the horizontal scroll kept the cursor visible, then discarded with `Esc`.
