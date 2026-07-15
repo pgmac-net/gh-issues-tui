@@ -108,7 +108,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `c` | add a comment (multi-line editor; `Ctrl+S` submits, `Esc` discards) |
 | `x` | close or reopen the issue (asks y/n) |
 | `a` | edit assignees (comma-separated logins) |
-| `l` | edit labels (comma-separated names, must exist on the repo) |
+| `l` | edit labels (picker of the repo's labels, current labels pre-checked) |
 | `t` | edit the title |
 | `p` | set the priority (picker of the repo's `priority:*` labels, `—` clears) |
 | `n` | create a new issue in the selected repo (opens the form) |
@@ -120,7 +120,7 @@ Sort keys: updated, created, closed, state, assignee, author, priority.
 
 ### Editing keys
 
-Every text input (search, filters, assignees, labels, title, org, the new-issue title, and the comment/description editors) opens as a small popup box and supports readline-style editing. The cursor is a block sitting **on** a character:
+Every text input (search, filters, assignees, title, org, the new-issue title, and the comment/description editors) opens as a small popup box and supports readline-style editing. The cursor is a block sitting **on** a character:
 
 | Key | Action |
 |-----|--------|
@@ -131,7 +131,7 @@ Every text input (search, filters, assignees, labels, title, org, the new-issue 
 | `Ctrl+U` / `Ctrl+K` | delete to line start / to line end |
 | `Ctrl+D` / `Delete` | delete the char under the cursor |
 
-Single-line popups (search, filters, assignees, labels, title, org, new-issue title) scroll horizontally to keep the cursor visible when the value is wider than the box; `Enter` submits, `Esc` cancels.
+Single-line popups (search, filters, assignees, title, org, new-issue title) scroll horizontally to keep the cursor visible when the value is wider than the box; `Enter` submits, `Esc` cancels.
 
 In the multi-line comment and description editors, text word-wraps at the popup width, `↑`/`↓` move by *visual* (wrapped) row, `Enter` inserts a newline, and `Delete` at the end of a line joins the next line on. The comment editor submits on `Ctrl+S` (`Esc` discards); the new-issue description keeps its text on `Esc` and returns to the form.
 
@@ -145,8 +145,9 @@ To create the *first* issue in a repo that shows no issues, flip the `hide empty
 
 - Issues are fetched per-repository over the GraphQL API with cursor pagination, so organisations with more than 1000 issues are not truncated (the search API cap does not apply).
 - Only open issues are fetched at startup unless `--all` is given; switching the state filter to closed/all triggers a one-time refetch that includes closed issues.
-- Assignee and label edits replace the full set with what you type; comment/close/reopen/edit operations refresh the data on completion.
+- Assignee edits replace the full set with what you type; label edits replace the full set with what's checked in the picker; comment/close/reopen/edit operations refresh the data on completion.
 - `p` fetches the repo's labels and offers the `priority:*` ones (ordered low → urgent, current priority pre-highlighted). Picking replaces any existing priority label and keeps the rest; `—` removes the priority. Repos with no `priority:*` labels report that in the status line instead of opening the picker.
+- `l` fetches the repo's labels and offers all of them as a multi-select (Space toggles, Enter accepts), with the issue's current labels pre-checked. Accepting replaces the issue's full label set with the checked ones. Repos with no labels report that in the status line instead of opening the picker.
 - In the filter editor, repo/assignee/author open a single-select picker built from the loaded data (first entry clears the filter); priority/status open a multi-select picker (Space toggles, Enter accepts, deselecting everything clears the filter — priority options ordered low → urgent); date fields open a calendar; text remains free-input.
 - Repo groups with zero visible issues are hidden by default. The `hide empty repos` row in the filter editor toggles this in place (Enter flips yes/no): set to `no`, every repo appears — including repos with no issues at all and groups emptied by the current filters — as a `(0)` header. Clearing filters (`F` → `c`) and switching org reset the toggle to the `hide_empty_repos` config default. Archived repos and repos with issues disabled are never shown.
 - Every option picker (filter editor and new-issue form) supports type-ahead: just start typing to narrow the list (case-insensitive substring, shown as a `/ <text>` row). `Backspace` edits the filter, `Ctrl+U` clears it, `↑`/`↓` navigate the matches, `Enter` picks, `Esc` closes. Because typing filters, `j`/`k`/`q` don't navigate/close inside pickers.
