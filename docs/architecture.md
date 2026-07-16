@@ -35,7 +35,7 @@ Only open issues are fetched at startup (fast path). The first time the user cyc
 - **Collapse state** is a `HashSet<String>` of repo names, so it survives reloads and re-sorts.
 - **Modes**: `Normal`, `Input(kind)` (single-line popup editor for search/filters/assignees/title/org), `CommentEditor` / `IssueFormBody` (multi-line popup editors sharing the same `BodyEditor` key handling), `PrioritySet` / `LabelsSet` (picker popups editing an existing issue's priority / label set, fed by `repo_labels`), `FilterMenu`, `ConfirmState` (y/n for close/reopen), `Help`.
 - **Async**: all GitHub calls run in `tokio::spawn`ed tasks that report back over an mpsc channel (`AppEvent`); the event loop `select!`s over keys and app events. The UI never blocks on the network.
-- **Consistency**: mutations trigger a full refetch on completion rather than optimistic patching — simpler, and correct by construction.
+- **Consistency**: mutations trigger a full refetch on completion rather than optimistic patching — simpler, and correct by construction. When the detail pane is open, the same completion also refetches the open issue's comment thread, so a just-added comment appears without navigating away and back.
 
 ## Mutations
 

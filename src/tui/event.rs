@@ -226,6 +226,15 @@ fn nav(
     }
 }
 
+/// The issue id whose comment thread should be refetched after a mutation
+/// completes, when the detail pane is open and showing an issue.
+fn comments_refresh_target(app: &App) -> Option<String> {
+    if !app.detail_open {
+        return None;
+    }
+    app.selected_issue().map(|i| i.id.clone())
+}
+
 fn handle_app_event(
     app: &mut App,
     msg: AppEvent,
@@ -277,6 +286,9 @@ fn handle_app_event(
             if should_fetch {
                 app.loading = true;
                 spawn_fetch(client, app, tx);
+                if let Some(id) = comments_refresh_target(app) {
+                    spawn_comments(client, id, tx);
+                }
             } else {
                 app.rate_limit_error = Some("rate limited — refetch skipped until reset".into());
             }
@@ -1592,5 +1604,27 @@ mod tests {
             app.status.as_deref(),
             Some("selection changed — labels not set")
         );
+    }
+
+    #[test]
+    fn comments_refresh_target_is_selected_issue_when_pane_open() {
+        let (mut app, issue_id) = app_with_issue(&[]);
+        app.detail_open = true;
+        assert_eq!(comments_refresh_target(&app), Some(issue_id));
+    }
+
+    #[test]
+    fn comments_refresh_target_none_when_pane_closed() {
+        let (mut app, _issue_id) = app_with_issue(&[]);
+        app.detail_open = false;
+        assert_eq!(comments_refresh_target(&app), None);
+    }
+
+    #[test]
+    fn comments_refresh_target_none_on_repo_header() {
+        let (mut app, _issue_id) = app_with_issue(&[]);
+        app.detail_open = true;
+        app.selected = 0; // repo header row
+        assert_eq!(comments_refresh_target(&app), None);
     }
 }
