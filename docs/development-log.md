@@ -355,3 +355,33 @@ Work driven by [pgmac-net/gh-issues-tui#37](https://github.com/pgmac-net/gh-issu
 - `cargo test` — 154 passed (6 new).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - `README.md`, `docs/architecture.md`, and `CLAUDE.md` updated to describe the picker behaviour in place of the old free-text description.
+
+# Development log — refresh comment thread after adding a comment (2026-07-16)
+
+Work driven by [pgmac-net/gh-issues-tui#39](https://github.com/pgmac-net/gh-issues-tui/issues/39), delivered in PR #42 on branch `39-refresh-comments-after-add`.
+
+## Process
+
+1. **Plan approval** — implementation plan posted to the ticket and approved before any code, rated STANDARD (implemented on Sonnet 5).
+2. **Code inspection** — traced the mutation-consistency model: `MutationDone` triggers a full org refetch (issue metadata, comment counts) unconditionally, but the detail pane's rendered comment thread (`detail_comments`) was only refetched by `nav()` on selection change — a just-added comment stayed invisible until the user navigated away and back.
+3. **Implementation** — pure helper `comments_refresh_target(&App) -> Option<String>` (pane open + issue selected → its id), called from the `MutationDone` handler alongside the existing `spawn_fetch`, inside the same rate-limit gate.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Scope | all mutations, not just comment-adds | Matches the repo's "full refetch, simple consistency" philosophy; one extra call per user mutation, only while the pane is open |
+| Loading state | no `detail_comments = None` reset before refetch | Avoids flashing "loading comments…"; pane keeps showing the current thread until the fresh one lands |
+| Staleness | reused the existing `Comments` handler's selection-id guard | Already covers ordering races; no new guard needed |
+| Scroll position | left untouched, no auto-scroll-to-bottom | Wrapped-line count only exists in the renderer; computing "bottom" would duplicate render logic — out of scope |
+| Auto-refresh ticker | not touched | Same staleness exists there (external comments landing while the pane is open) but outside the ticket's scope; flagged as a possible follow-up |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- `cargo test` — 157 passed (3 new).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- Live smoke test: tmux-driven session against the release build and the real `pgmac-net` org. Created scratch issue #41, opened its detail pane ("no comments"), typed a comment via `c`, submitted with `Ctrl+S` — the comment appeared in the pane immediately, visible even while the list refetch was still showing "loading…" in the header, confirming the comments refetch fired independently of the list refetch. Scratch issue deleted afterward.
