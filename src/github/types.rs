@@ -160,6 +160,150 @@ impl RateLimitData {
     }
 }
 
+/// A reference to a pull request, parsed from a `github.com/{owner}/{repo}/pull/{N}`
+/// link — owner/repo always come from the URL itself, never inferred.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PrRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+}
+
+impl PrRef {
+    pub fn label(&self) -> String {
+        format!("{}/{}#{}", self.owner, self.repo, self.number)
+    }
+}
+
+/// Scan `text` for explicit `github.com/{owner}/{repo}/pull/{N}` links.
+/// Deliberately does not match bare `#N` shorthand — in an issues tool that's
+/// ambiguous between an issue and a PR. Dedupes, preserving first-seen order.
+pub fn parse_pr_links(text: &str) -> Vec<PrRef> {
+    const MARKER: &str = "github.com/";
+    let mut out: Vec<PrRef> = Vec::new();
+
+    let mut search_from = 0;
+    while let Some(rel) = text[search_from..].find(MARKER) {
+        let start = search_from + rel + MARKER.len();
+        search_from = start;
+        let rest = &text[start..];
+        let mut parts = rest.splitn(4, '/');
+        let (Some(owner), Some(repo), Some("pull"), Some(after_pull)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let digits: String = after_pull
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        let Ok(number) = digits.parse::<u64>() else {
+            continue;
+        };
+        let pr = PrRef {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            number,
+        };
+        if !out.contains(&pr) {
+            out.push(pr);
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Closed,
+    Merged,
+}
+
+impl std::fmt::Display for PrState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrState::Open => write!(f, "open"),
+            PrState::Closed => write!(f, "closed"),
+            PrState::Merged => write!(f, "merged"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReviewDecision {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
+impl std::fmt::Display for ReviewDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReviewDecision::Approved => write!(f, "approved"),
+            ReviewDecision::ChangesRequested => write!(f, "changes requested"),
+            ReviewDecision::ReviewRequired => write!(f, "review required"),
+        }
+    }
+}
+
+/// Latest review state per reviewer, plus GitHub's overall `reviewDecision`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewSummary {
+    pub decision: Option<ReviewDecision>,
+    pub approved: u32,
+    pub changes_requested: u32,
+    pub commented: u32,
+}
+
+/// One check run or legacy commit status, as shown under a PR's checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckContextInfo {
+    pub name: String,
+    /// Raw GitHub conclusion/state string (e.g. `SUCCESS`, `FAILURE`, `PENDING`).
+    pub conclusion: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckRollup {
+    /// Overall rollup state, when GitHub reports one.
+    pub state: Option<String>,
+    pub contexts: Vec<CheckContextInfo>,
+}
+
+/// One Actions workflow run, either attached to the PR's head commit or to a
+/// recent commit on the repo's default branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunInfo {
+    pub workflow: String,
+    pub run_number: u64,
+    pub event: String,
+    pub conclusion: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Everything the PR-summary popup needs, fetched in one GraphQL query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrSummary {
+    pub pr: PrRef,
+    pub title: String,
+    pub body: String,
+    pub state: PrState,
+    pub is_draft: bool,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub comment_count: u64,
+    pub review_thread_count: u64,
+    pub reviews: ReviewSummary,
+    pub checks: CheckRollup,
+    pub pr_runs: Vec<WorkflowRunInfo>,
+    pub default_branch_name: String,
+    pub default_branch_runs: Vec<WorkflowRunInfo>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +415,58 @@ mod tests {
             issue_with_labels(vec![label("Priority:High", "")]).priority_rank(),
             3
         );
+    }
+
+    fn pr(owner: &str, repo: &str, number: u64) -> PrRef {
+        PrRef {
+            owner: owner.into(),
+            repo: repo.into(),
+            number,
+        }
+    }
+
+    #[test]
+    fn parse_pr_links_full_url() {
+        let text = "fixed by https://github.com/pgmac-net/gh-issues-tui/pull/72 thanks";
+        assert_eq!(
+            parse_pr_links(text),
+            vec![pr("pgmac-net", "gh-issues-tui", 72)]
+        );
+    }
+
+    #[test]
+    fn parse_pr_links_multiple_preserves_order() {
+        let text = "see https://github.com/o/r/pull/1 and https://github.com/o/r2/pull/2";
+        assert_eq!(
+            parse_pr_links(text),
+            vec![pr("o", "r", 1), pr("o", "r2", 2)]
+        );
+    }
+
+    #[test]
+    fn parse_pr_links_dedupes() {
+        let text = "https://github.com/o/r/pull/5 mentioned again: github.com/o/r/pull/5";
+        assert_eq!(parse_pr_links(text), vec![pr("o", "r", 5)]);
+    }
+
+    #[test]
+    fn parse_pr_links_trailing_path_and_query() {
+        let text = "https://github.com/o/r/pull/9/files?diff=split and (github.com/o/r/pull/10)";
+        assert_eq!(
+            parse_pr_links(text),
+            vec![pr("o", "r", 9), pr("o", "r", 10)]
+        );
+    }
+
+    #[test]
+    fn parse_pr_links_ignores_non_pull_github_urls() {
+        let text = "https://github.com/o/r/issues/3 and https://github.com/o/r/commit/abc123";
+        assert!(parse_pr_links(text).is_empty());
+    }
+
+    #[test]
+    fn parse_pr_links_ignores_bare_hash_shorthand() {
+        let text = "closes #45, see also PR #72";
+        assert!(parse_pr_links(text).is_empty());
     }
 }

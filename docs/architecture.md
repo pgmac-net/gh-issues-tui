@@ -33,7 +33,7 @@ Only open issues are fetched at startup (fast path). The first time the user cyc
 
 - **Row model**: the visible list is a flat `Vec<Row>` of `RepoHeader` and `Issue` entries, rebuilt (`rebuild_rows`) whenever data, filters, sort, or collapse state change. Selection is an index into this vector and is clamped on rebuild.
 - **Collapse state** is a `HashSet<String>` of repo names, so it survives reloads and re-sorts.
-- **Modes**: `Normal`, `Input(kind)` (single-line popup editor for search/filters/assignees/title/org), `CommentEditor` / `IssueFormBody` (multi-line popup editors sharing the same `BodyEditor` key handling), `PrioritySet` / `LabelsSet` (picker popups editing an existing issue's priority / label set, fed by `repo_labels`), `FilterMenu`, `ConfirmState` (y/n for close/reopen), `Help`.
+- **Modes**: `Normal`, `Input(kind)` (single-line popup editor for search/filters/assignees/title/org), `CommentEditor` / `IssueFormBody` (multi-line popup editors sharing the same `BodyEditor` key handling), `PrioritySet` / `LabelsSet` (picker popups editing an existing issue's priority / label set, fed by `repo_labels`), `PrPicker` / `PrSummary` (`P` in the detail pane — picker over PR links found in the issue body/comments, then a summary popup fed by `Client::pull_request`), `FilterMenu`, `ConfirmState` (y/n for close/reopen), `Help`.
 - **Async**: all GitHub calls run in `tokio::spawn`ed tasks that report back over an mpsc channel (`AppEvent`); the event loop `select!`s over keys and app events. The UI never blocks on the network.
 - **Consistency**: mutations trigger a full refetch on completion rather than optimistic patching — simpler, and correct by construction. When the detail pane is open, the same completion also refetches the open issue's comment thread, so a just-added comment appears without navigating away and back.
 
@@ -49,6 +49,12 @@ Only open issues are fetched at startup (fast path). The first time the user cyc
 
 Assignee/label edits are whole-set replacements. Assignees use a comma-separated text input pre-filled with the current set. Labels use a multi-select picker (same mechanics as the new-issue form's labels field) fed by `repository.labels`, pre-checked with the issue's current labels — Enter submits the checked set as the new full label set.
 
+## Linked PR summaries
+
+`P` in the detail pane scans the selected issue's body and loaded comment thread for explicit `github.com/{owner}/{repo}/pull/{N}` links (`parse_pr_links` in `types.rs`) — bare `#N` is deliberately not matched, since in an issues tool it's ambiguous between an issue and a PR. Zero links reports a status message; one link fetches the summary directly; several open `Mode::PrPicker` first (reusing the filter-editor's picker machinery).
+
+`Client::pull_request` fetches everything in one GraphQL query: title/body/state/draft, base/head refs, diffstat, `reviewDecision` plus the review list (deduped to each reviewer's latest state), comment/review-thread counts, the head commit's `statusCheckRollup` (the `CheckRun`/`StatusContext` union flattened into one DTO via `__typename`), the head commit's `checkSuites` (the PR's own Actions runs), and `defaultBranchRef`'s recent commits' `checkSuites` (the "merge to main" runs). `App::pr_target` guards the async response against a stale PR (the popup closed or retargeted before it landed) — the same pattern as `priority_pick_issue`/`label_pick_issue`.
+
 ## Security decisions
 
 - Tokens never touch the config file; resolution is flag → env → `gh` CLI.
@@ -59,6 +65,6 @@ Assignee/label edits are whole-set replacements. Assignees use a comma-separated
 
 ## Testing
 
-Pure logic lives in `tui/app.rs` and is covered by unit tests: filtering (state/text/repo/assignee/author/date bounds), sorting, grouping/collapse row building, selection clamping, UTF-8-safe input editing, and date parsing. `github/client.rs` tests cover response DTO parsing (including deleted-author → `ghost`) and pagination shapes. `github/auth.rs` tests the token chain with injected closures.
+Pure logic lives in `tui/app.rs` and is covered by unit tests: filtering (state/text/repo/assignee/author/date bounds), sorting, grouping/collapse row building, selection clamping, UTF-8-safe input editing, date parsing, and PR-link collection/picker/stale-drop state. `github/client.rs` tests cover response DTO parsing (including deleted-author → `ghost`, pagination shapes, and `PrSummary` deserialisation across the `CheckRun`/`StatusContext` union and an empty rollup). `github/types.rs` tests cover `parse_pr_links` (full URLs, dedup, trailing path/query, non-PR GitHub URLs, and rejecting bare `#N`). `github/auth.rs` tests the token chain with injected closures.
 
 End-to-end verification for the initial release was done against the live `pgmac-net` org: initial load (106 issues / 18 repos), and a scripted keystroke session that added a comment to and closed a scratch issue through the TUI.
