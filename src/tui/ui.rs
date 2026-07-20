@@ -56,6 +56,8 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
         Mode::Input(kind) => draw_input_popup(f, app, t, kind),
         Mode::PrioritySet => draw_priority_popup(f, app, t),
         Mode::LabelsSet => draw_labels_popup(f, app, t),
+        Mode::PrPicker => draw_pr_picker_popup(f, app, t),
+        Mode::PrSummary => draw_pr_summary_popup(f, app, t),
         Mode::Help => draw_help(f, t),
         _ => {}
     }
@@ -165,7 +167,7 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
-        .title(" issue (Tab switch · j/k scroll · Esc close) ");
+        .title(" issue (Tab switch · j/k scroll · P for linked PR · Esc close) ");
     let Some(issue) = app.selected_issue() else {
         // Live follow landed on a repo header (or an empty list).
         f.render_widget(
@@ -485,6 +487,156 @@ fn draw_labels_popup(f: &mut Frame, app: &App, t: &Theme) {
     f.render_widget(list, area);
 }
 
+fn draw_pr_picker_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let items = picker_items(app, t, false, "clear");
+    let area = centered(f.area(), 60, picker_height(f, items.len()));
+    f.render_widget(Clear, area);
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" linked PRs (type to filter · Enter picks · Esc cancels) "),
+    );
+    f.render_widget(list, area);
+}
+
+/// Symbol + colour for a GitHub check/status conclusion string.
+fn conclusion_style(conclusion: Option<&str>, t: &Theme) -> (&'static str, Color) {
+    match conclusion.unwrap_or("PENDING") {
+        "SUCCESS" => ("✔", t.open),
+        "FAILURE" | "ERROR" | "TIMED_OUT" | "STARTUP_FAILURE" => ("✘", t.error),
+        "CANCELLED" | "SKIPPED" | "NEUTRAL" | "STALE" => ("-", t.dim),
+        _ => ("…", t.warning),
+    }
+}
+
+fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let area = centered(f.area(), 76, (f.area().height * 3 / 4).max(12));
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.accent))
+        .title(" PR summary (j/k scroll · Esc close) ");
+
+    let lines: Vec<Line> = match &app.pr_summary {
+        None => vec![Line::styled(
+            "loading PR summary…",
+            Style::default().fg(t.dim),
+        )],
+        Some(Err(e)) => vec![Line::styled(
+            format!("failed: {e}"),
+            Style::default().fg(t.error),
+        )],
+        Some(Ok(s)) => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled(format!("{} ", s.pr.label()), Style::default().fg(t.dim)),
+                    Span::styled(
+                        s.title.clone(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if s.is_draft {
+                            "draft ".to_string()
+                        } else {
+                            format!("{} ", s.state)
+                        },
+                        Style::default().fg(match s.state {
+                            crate::github::types::PrState::Merged => t.assignee,
+                            crate::github::types::PrState::Open => t.open,
+                            crate::github::types::PrState::Closed => t.closed,
+                        }),
+                    ),
+                    Span::styled(
+                        format!(
+                            "{} ← {}   +{}/-{} · {} files",
+                            s.base_ref, s.head_ref, s.additions, s.deletions, s.changed_files
+                        ),
+                        Style::default().fg(t.dim),
+                    ),
+                ]),
+                Line::default(),
+            ];
+
+            for l in s.body.lines() {
+                lines.push(Line::raw(l.to_string()));
+            }
+            lines.push(Line::default());
+
+            let review_line = match s.reviews.decision {
+                Some(d) => format!("{d}"),
+                None => "no reviews yet".to_string(),
+            };
+            lines.push(Line::from(vec![
+                Span::styled("reviews: ", Style::default().fg(t.accent)),
+                Span::raw(format!(
+                    "{review_line} · {} approved, {} changes requested, {} commented",
+                    s.reviews.approved, s.reviews.changes_requested, s.reviews.commented
+                )),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("comments: ", Style::default().fg(t.accent)),
+                Span::raw(format!(
+                    "{} · {} review threads",
+                    s.comment_count, s.review_thread_count
+                )),
+            ]));
+            lines.push(Line::default());
+
+            lines.push(Line::from(vec![
+                Span::styled("checks: ", Style::default().fg(t.accent)),
+                Span::raw(s.checks.state.clone().unwrap_or_else(|| "none".into())),
+            ]));
+            for c in &s.checks.contexts {
+                let (sym, color) = conclusion_style(Some(c.conclusion.as_str()), t);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {sym} "), Style::default().fg(color)),
+                    Span::raw(c.name.clone()),
+                ]));
+            }
+
+            if !s.pr_runs.is_empty() {
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    "PR workflow runs:",
+                    Style::default().fg(t.accent),
+                ));
+                for r in &s.pr_runs {
+                    let (sym, color) = conclusion_style(r.conclusion.as_deref(), t);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {sym} "), Style::default().fg(color)),
+                        Span::raw(format!("{} #{} ({})", r.workflow, r.run_number, r.event)),
+                    ]));
+                }
+            }
+
+            if !s.default_branch_runs.is_empty() {
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    format!("── default branch ({}) ──", s.default_branch_name),
+                    Style::default().fg(t.accent),
+                ));
+                for r in &s.default_branch_runs {
+                    let (sym, color) = conclusion_style(r.conclusion.as_deref(), t);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {sym} "), Style::default().fg(color)),
+                        Span::raw(format!("{} #{} ({})", r.workflow, r.run_number, r.event)),
+                    ]));
+                }
+            }
+
+            lines
+        }
+    };
+
+    let para = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.pr_scroll, 0));
+    f.render_widget(para, area);
+}
+
 fn draw_issue_form(f: &mut Frame, app: &App, t: &Theme) {
     let Some(form) = &app.issue_form else { return };
     let area = centered(f.area(), 70, ISSUE_FORM_FIELDS.len() as u16 + 4);
@@ -766,6 +918,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("l", "edit labels"),
         ("t", "edit title"),
         ("p", "set priority"),
+        ("P", "summarise linked PR (in detail pane)"),
         ("n", "new issue"),
         ("r", "reload"),
         ("q", "back / quit"),

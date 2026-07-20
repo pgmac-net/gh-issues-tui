@@ -119,6 +119,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `l` | edit labels (picker of the repo's labels, current labels pre-checked) |
 | `t` | edit the title |
 | `p` | set the priority (picker of the repo's `priority:*` labels, `—` clears) |
+| `P` | summarise a linked PR (detail pane only; picker if several links are found) |
 | `n` | create a new issue in the selected repo (opens the form) |
 | `r` | reload all data |
 | `?` | help |
@@ -148,6 +149,10 @@ In the multi-line comment and description editors, text word-wraps at the popup 
 `n` opens a New-Issue form for the selected repo (from its header or any of its issue rows), modelled on GitHub's New Issue page: **title**, **description** (multi-line editor: Enter inserts a newline, Esc keeps the text and returns to the form), **assignees** and **labels** (multi-select pickers — Space toggles, Enter accepts), and **type**, **priority**, **project**, **milestone** (single-select pickers, `—` clears). Picker options load per repo when the form opens: assignable users, repo labels, issue types (where the org has them), the repo's Projects (V2), and open milestones. Priority follows the `priority:<value>` label convention — the chosen label is added to the issue's labels. `Enter` on `[ Create issue ]` submits; the status line reports `created #N` and the list refetches. `Esc` cancels the form.
 
 To create the *first* issue in a repo that shows no issues, flip the `hide empty repos` filter to `no` (`F` → last row → Enter) — the repo's `(0)` header appears and `n` works on it.
+
+### Linked PR summaries
+
+With the detail pane open, `P` scans the issue's body and its loaded comment thread for `github.com/<owner>/<repo>/pull/<N>` links (bare `#N` shorthand is deliberately not matched — it's ambiguous between an issue and a PR). One link opens its summary directly; several open a picker to choose. The summary popup shows the PR's title/description, state (open/closed/merged/draft), base←head branches and diffstat, review status (GitHub's overall decision plus per-reviewer approve/changes-requested/comment counts), issue-comment and review-thread counts, the head commit's checks, the PR's own Actions runs, and recent Actions runs on the repo's default branch (the "merge to main" runs). `j`/`k` scroll it; `Esc`/`q` closes back to the detail pane.
 
 ## Notes
 

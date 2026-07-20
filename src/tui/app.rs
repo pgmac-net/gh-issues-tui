@@ -2,8 +2,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::github::RateLimitData;
 use crate::github::types::{
-    Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, RepoIssues, RepoLabel,
-    priority_value, priority_value_rank,
+    Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, PrRef, PrSummary, RepoIssues,
+    RepoLabel, parse_pr_links, priority_value, priority_value_rank,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,6 +351,11 @@ pub enum Mode {
     PrioritySet,
     /// Multi-select popup editing the full label set of the selected issue.
     LabelsSet,
+    /// Picker choosing which linked PR to summarise, when more than one link
+    /// was found.
+    PrPicker,
+    /// Popup showing a linked PR's summary.
+    PrSummary,
     Help,
 }
 
@@ -1000,6 +1005,14 @@ pub struct App {
     pub rate_limit_error: Option<String>,
     pub detail_comments: Option<Vec<Comment>>,
     pub detail_scroll: u16,
+    /// Candidate PR links, populated when more than one is found (`Mode::PrPicker`).
+    pub pr_links: Vec<PrRef>,
+    /// The PR currently being fetched or shown; guards against a stale
+    /// `PrSummary` response landing after the target moved on.
+    pub pr_target: Option<PrRef>,
+    /// `None` while the summary fetch for `pr_target` is in flight.
+    pub pr_summary: Option<Result<PrSummary, String>>,
+    pub pr_scroll: u16,
     pub should_quit: bool,
 }
 
@@ -1050,6 +1063,10 @@ impl App {
             rate_limit_error: None,
             detail_comments: None,
             detail_scroll: 0,
+            pr_links: Vec::new(),
+            pr_target: None,
+            pr_summary: None,
+            pr_scroll: 0,
             should_quit: false,
         }
     }
@@ -1230,6 +1247,7 @@ impl App {
         self.detail_open = false;
         self.detail_comments = None;
         self.detail_scroll = 0;
+        self.clear_pr_state();
         self.loading = true;
     }
 
@@ -1239,6 +1257,7 @@ impl App {
         self.focus = Focus::Detail;
         self.detail_scroll = 0;
         self.detail_comments = None;
+        self.clear_pr_state();
     }
 
     /// `→` on an issue row: move focus into the detail pane, opening the
@@ -1260,6 +1279,70 @@ impl App {
     pub fn close_detail(&mut self) {
         self.detail_open = false;
         self.focus = Focus::List;
+        self.clear_pr_state();
+    }
+
+    fn clear_pr_state(&mut self) {
+        self.pr_links.clear();
+        self.pr_target = None;
+        self.pr_summary = None;
+        self.pr_scroll = 0;
+    }
+
+    /// PR links referenced by the selected issue's body and its loaded
+    /// comment thread, body first then comments in display order.
+    pub fn collect_pr_links(&self) -> Vec<PrRef> {
+        let mut text = String::new();
+        if let Some(issue) = self.selected_issue() {
+            text.push_str(&issue.body);
+            text.push('\n');
+        }
+        if let Some(comments) = &self.detail_comments {
+            for c in comments {
+                text.push_str(&c.body);
+                text.push('\n');
+            }
+        }
+        parse_pr_links(&text)
+    }
+
+    /// Open the summary popup for a single PR; the caller spawns the fetch.
+    pub fn open_pr_summary(&mut self, pr: PrRef) {
+        self.pr_target = Some(pr);
+        self.pr_summary = None;
+        self.pr_scroll = 0;
+        self.mode = Mode::PrSummary;
+    }
+
+    /// Open a picker over several candidate PR links.
+    pub fn open_pr_picker(&mut self, links: Vec<PrRef>) {
+        self.select_options = links.iter().map(PrRef::label).collect();
+        self.select_idx = 0;
+        self.select_filter.clear();
+        self.pr_links = links;
+        self.mode = Mode::PrPicker;
+    }
+
+    /// Deliver a PR summary fetch. Dropped if `pr` is no longer the target
+    /// (the popup was closed or retargeted before the response landed).
+    pub fn set_pr_summary(&mut self, pr: &PrRef, result: Result<PrSummary, String>) {
+        if self.pr_target.as_ref() == Some(pr) {
+            self.pr_summary = Some(result);
+        }
+    }
+
+    /// Close the PR summary popup, back to the detail pane.
+    pub fn close_pr_summary(&mut self) {
+        self.pr_target = None;
+        self.pr_summary = None;
+        self.pr_scroll = 0;
+        self.mode = Mode::Normal;
+    }
+
+    /// Close the PR picker without selecting anything.
+    pub fn close_pr_picker(&mut self) {
+        self.pr_links.clear();
+        self.mode = Mode::Normal;
     }
 
     /// Tab / Shift+Tab: move focus to the other pane. With two panes the
@@ -3275,5 +3358,132 @@ mod tests {
         assert!(app.should_auto_refresh());
         app.mode = Mode::Normal;
         assert!(app.should_auto_refresh());
+    }
+
+    fn sample_pr_summary(pr: PrRef) -> PrSummary {
+        PrSummary {
+            pr,
+            title: "t".into(),
+            body: String::new(),
+            state: crate::github::types::PrState::Open,
+            is_draft: false,
+            base_ref: "main".into(),
+            head_ref: "feature".into(),
+            additions: 0,
+            deletions: 0,
+            changed_files: 0,
+            comment_count: 0,
+            review_thread_count: 0,
+            reviews: Default::default(),
+            checks: Default::default(),
+            pr_runs: vec![],
+            default_branch_name: "main".into(),
+            default_branch_runs: vec![],
+        }
+    }
+
+    #[test]
+    fn collect_pr_links_scans_body_then_comments_in_order() {
+        let mut app = two_repo_app();
+        app.selected = 1; // first issue in alpha
+        {
+            let issue = &mut app.repos[0].issues[0];
+            issue.body = "see https://github.com/o/r/pull/1".into();
+        }
+        app.detail_comments = Some(vec![Comment {
+            author: "x".into(),
+            created_at: Utc::now(),
+            body: "also https://github.com/o/r2/pull/2".into(),
+        }]);
+        let links = app.collect_pr_links();
+        assert_eq!(
+            links,
+            vec![
+                PrRef {
+                    owner: "o".into(),
+                    repo: "r".into(),
+                    number: 1
+                },
+                PrRef {
+                    owner: "o".into(),
+                    repo: "r2".into(),
+                    number: 2
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn open_pr_summary_sets_target_and_loading_state() {
+        let mut app = two_repo_app();
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 1,
+        };
+        app.open_pr_summary(pr.clone());
+        assert_eq!(app.mode, Mode::PrSummary);
+        assert_eq!(app.pr_target, Some(pr));
+        assert!(app.pr_summary.is_none());
+    }
+
+    #[test]
+    fn open_pr_picker_populates_options_from_links() {
+        let mut app = two_repo_app();
+        let links = vec![
+            PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 1,
+            },
+            PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 2,
+            },
+        ];
+        app.open_pr_picker(links);
+        assert_eq!(app.mode, Mode::PrPicker);
+        assert_eq!(app.select_options, vec!["o/r#1", "o/r#2"]);
+    }
+
+    #[test]
+    fn set_pr_summary_applies_only_to_current_target() {
+        let mut app = two_repo_app();
+        let pr1 = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 1,
+        };
+        let pr2 = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 2,
+        };
+        app.open_pr_summary(pr1.clone());
+        // A response for a different PR (the popup retargeted before this
+        // landed) must not overwrite the current summary.
+        app.set_pr_summary(&pr2, Ok(sample_pr_summary(pr2.clone())));
+        assert!(app.pr_summary.is_none());
+
+        app.set_pr_summary(&pr1, Ok(sample_pr_summary(pr1.clone())));
+        assert!(app.pr_summary.is_some());
+    }
+
+    #[test]
+    fn close_detail_clears_pr_state() {
+        let mut app = two_repo_app();
+        app.selected = 1;
+        app.open_detail();
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 1,
+        };
+        app.open_pr_summary(pr.clone());
+        app.set_pr_summary(&pr.clone(), Ok(sample_pr_summary(pr)));
+        app.close_detail();
+        assert!(app.pr_target.is_none());
+        assert!(app.pr_summary.is_none());
     }
 }

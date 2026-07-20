@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 
 use crate::github::Client;
 use crate::github::error::RATE_LIMIT_MSG_PREFIX;
-use crate::github::types::{Comment, FormOptions, IssueState, RepoIssues, RepoLabel};
+use crate::github::types::{
+    Comment, FormOptions, IssueState, PrRef, PrSummary, RepoIssues, RepoLabel,
+};
 
 use super::app::{
     App, BodyEditor, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter,
@@ -39,6 +41,11 @@ pub enum AppEvent {
     LabelOptions {
         issue_id: String,
         result: Result<Vec<RepoLabel>, String>,
+    },
+    /// A linked PR's summary, fetched for the PR-summary popup.
+    PrSummary {
+        pr: PrRef,
+        result: Box<Result<PrSummary, String>>,
     },
 }
 
@@ -206,6 +213,18 @@ fn spawn_comments(client: &Client, issue_id: String, tx: &mpsc::UnboundedSender<
     tokio::spawn(async move {
         let result = client.comments(&issue_id).await.map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::Comments { issue_id, result });
+    });
+}
+
+fn spawn_pr_summary(client: &Client, pr: PrRef, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.pull_request(&pr).await.map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::PrSummary {
+            pr,
+            result: Box::new(result),
+        });
     });
 }
 
@@ -396,6 +415,12 @@ fn handle_app_event(
                 }
             }
         }
+        AppEvent::PrSummary { pr, result } => {
+            if let Err(e) = result.as_ref() {
+                app.status = Some(format!("PR summary failed: {e}"));
+            }
+            app.set_pr_summary(&pr, *result);
+        }
     }
 }
 
@@ -415,7 +440,46 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
         Mode::CommentEditor => handle_comment_editor_key(app, key, client, tx),
         Mode::PrioritySet => handle_priority_set_key(app, key, client, tx),
         Mode::LabelsSet => handle_labels_set_key(app, key, client, tx),
+        Mode::PrPicker => handle_pr_picker_key(app, key, client, tx),
+        Mode::PrSummary => handle_pr_summary_key(app, key),
         Mode::Help => app.mode = Mode::Normal,
+    }
+}
+
+fn handle_pr_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Client,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    if picker_common_key(app, key, true) {
+        return;
+    }
+    match key.code {
+        KeyCode::Esc => app.close_pr_picker(),
+        KeyCode::Enter => match app.picker_selected_original() {
+            Some(orig) => {
+                let pr = app.pr_links[orig].clone();
+                app.open_pr_summary(pr.clone());
+                spawn_pr_summary(client, pr, tx);
+            }
+            None if app.select_options.is_empty() => app.close_pr_picker(),
+            None => {}
+        },
+        _ => {}
+    }
+}
+
+fn handle_pr_summary_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_pr_summary(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.pr_scroll = app.pr_scroll.saturating_add(1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.pr_scroll = app.pr_scroll.saturating_sub(1);
+        }
+        _ => {}
     }
 }
 
@@ -995,6 +1059,18 @@ fn handle_normal_key(
             if let Some(repo) = app.selected_repo().map(|r| r.repo.clone()) {
                 app.open_issue_form(repo.clone());
                 spawn_form_options(client, app.org.clone(), repo, tx);
+            }
+        }
+        KeyCode::Char('P') if app.detail_open => {
+            let links = app.collect_pr_links();
+            match links.len() {
+                0 => app.status = Some("no PR links found".into()),
+                1 => {
+                    let pr = links.into_iter().next().expect("checked len == 1");
+                    app.open_pr_summary(pr.clone());
+                    spawn_pr_summary(client, pr, tx);
+                }
+                _ => app.open_pr_picker(links),
             }
         }
         _ => {}

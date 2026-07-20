@@ -5,8 +5,9 @@ use serde_json::{Value, json};
 
 use super::error::{GithubError, RATE_LIMIT_MSG_PREFIX, Result};
 use super::types::{
-    Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
-    RepoIssues, RepoLabel,
+    CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueState, Label,
+    NewIssueParams, PrRef, PrState, PrSummary, RateLimitData, RepoIssues, RepoLabel,
+    ReviewDecision, ReviewSummary, WorkflowRunInfo,
 };
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
@@ -430,6 +431,26 @@ impl Client {
             .await?;
         parse_at(&data, &["repository", "labels", "nodes"])
     }
+
+    /// Fetch a summary of a linked pull request: title/description, state,
+    /// review status, checks, the PR's own Actions runs, and recent runs on
+    /// the repo's default branch (the "merge to main" runs).
+    pub async fn pull_request(&self, pr: &PrRef) -> Result<PrSummary> {
+        let data = self
+            .graphql(
+                PR_SUMMARY_QUERY,
+                json!({ "owner": pr.owner, "name": pr.repo, "number": pr.number }),
+            )
+            .await?;
+        if data.get("repository").is_some_and(Value::is_null) {
+            return Err(GithubError::Shape(format!(
+                "no such repository {}/{}",
+                pr.owner, pr.repo
+            )));
+        }
+        let repo: PrRepoResponse = parse_at(&data, &["repository"])?;
+        map_pr_summary(pr.clone(), repo)
+    }
 }
 
 /// True when a GraphQL `errors` array contains a RATE_LIMITED entry.
@@ -651,6 +672,344 @@ query($id: ID!) {
   }
 }";
 
+const PR_SUMMARY_QUERY: &str = "
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      title
+      body
+      state
+      isDraft
+      baseRefName
+      headRefName
+      additions
+      deletions
+      changedFiles
+      comments { totalCount }
+      reviewThreads { totalCount }
+      reviewDecision
+      reviews(last: 100) { nodes { state author { login } } }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              state
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun { name conclusion }
+                  ... on StatusContext { context state }
+                }
+              }
+            }
+            checkSuites(first: 10) { nodes { ...CheckSuiteFields } }
+          }
+        }
+      }
+    }
+    defaultBranchRef {
+      name
+      target {
+        ... on Commit {
+          history(first: 5) {
+            nodes { checkSuites(first: 10) { nodes { ...CheckSuiteFields } } }
+          }
+        }
+      }
+    }
+  }
+}
+fragment CheckSuiteFields on CheckSuite {
+  conclusion
+  createdAt
+  workflowRun { runNumber event workflow { name } }
+}";
+
+// ---- pull_request response DTOs ----
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrRepoResponse {
+    pull_request: Option<PullRequestNode>,
+    default_branch_ref: Option<DefaultBranchRefNode>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum PrStateRaw {
+    Open,
+    Closed,
+    Merged,
+}
+
+impl From<PrStateRaw> for PrState {
+    fn from(s: PrStateRaw) -> Self {
+        match s {
+            PrStateRaw::Open => PrState::Open,
+            PrStateRaw::Closed => PrState::Closed,
+            PrStateRaw::Merged => PrState::Merged,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestNode {
+    title: String,
+    #[serde(default)]
+    body: String,
+    state: PrStateRaw,
+    is_draft: bool,
+    base_ref_name: String,
+    head_ref_name: String,
+    additions: u64,
+    deletions: u64,
+    changed_files: u64,
+    comments: CountNode,
+    review_threads: CountNode,
+    review_decision: Option<ReviewDecision>,
+    reviews: ReviewsConn,
+    commits: PrCommitsConn,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ReviewStateRaw {
+    Pending,
+    Commented,
+    Approved,
+    ChangesRequested,
+    Dismissed,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewsConn {
+    nodes: Vec<ReviewNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewNode {
+    state: ReviewStateRaw,
+    author: Option<ActorNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrCommitsConn {
+    nodes: Vec<PrCommitWrapper>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrCommitWrapper {
+    commit: PrCommitNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrCommitNode {
+    status_check_rollup: Option<StatusCheckRollupNode>,
+    check_suites: Option<CheckSuitesConn>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusCheckRollupNode {
+    state: Option<String>,
+    contexts: ContextsConn,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextsConn {
+    nodes: Vec<ContextNode>,
+}
+
+/// The `CheckRun` / `StatusContext` GraphQL union, flattened into one
+/// deserialize target — only the fields for the resolved `__typename` are set.
+#[derive(Debug, Deserialize)]
+struct ContextNode {
+    #[serde(rename = "__typename")]
+    typename: String,
+    name: Option<String>,
+    conclusion: Option<String>,
+    context: Option<String>,
+    state: Option<String>,
+}
+
+impl ContextNode {
+    fn into_info(self) -> Option<CheckContextInfo> {
+        match self.typename.as_str() {
+            "CheckRun" => Some(CheckContextInfo {
+                name: self.name.unwrap_or_default(),
+                conclusion: self.conclusion.unwrap_or_else(|| "PENDING".into()),
+            }),
+            "StatusContext" => Some(CheckContextInfo {
+                name: self.context.unwrap_or_default(),
+                conclusion: self.state.unwrap_or_default(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckSuitesConn {
+    nodes: Vec<CheckSuiteNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckSuiteNode {
+    conclusion: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    workflow_run: Option<WorkflowRunNode>,
+}
+
+impl CheckSuiteNode {
+    fn into_run_info(self) -> Option<WorkflowRunInfo> {
+        let wr = self.workflow_run?;
+        Some(WorkflowRunInfo {
+            workflow: wr.workflow.name,
+            run_number: wr.run_number,
+            event: wr.event,
+            conclusion: self.conclusion,
+            created_at: self.created_at,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowRunNode {
+    run_number: u64,
+    event: String,
+    workflow: WorkflowNameNode,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowNameNode {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DefaultBranchRefNode {
+    name: String,
+    target: Option<TargetNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TargetNode {
+    history: Option<HistoryConn>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryConn {
+    nodes: Vec<HistoryCommitNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryCommitNode {
+    check_suites: Option<CheckSuitesConn>,
+}
+
+/// Latest review state per author (a reviewer can submit more than one
+/// review; only their most recent one counts), plus GitHub's own rollup.
+fn summarize_reviews(nodes: Vec<ReviewNode>, decision: Option<ReviewDecision>) -> ReviewSummary {
+    use std::collections::HashMap;
+    let mut latest: HashMap<String, ReviewStateRaw> = HashMap::new();
+    for n in nodes {
+        let login = n.author.map(|a| a.login).unwrap_or_else(|| "ghost".into());
+        latest.insert(login, n.state);
+    }
+    let mut summary = ReviewSummary {
+        decision,
+        ..Default::default()
+    };
+    for state in latest.values() {
+        match state {
+            ReviewStateRaw::Approved => summary.approved += 1,
+            ReviewStateRaw::ChangesRequested => summary.changes_requested += 1,
+            ReviewStateRaw::Commented => summary.commented += 1,
+            ReviewStateRaw::Pending | ReviewStateRaw::Dismissed => {}
+        }
+    }
+    summary
+}
+
+fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
+    let node = data
+        .pull_request
+        .ok_or_else(|| GithubError::Shape(format!("no such PR {}", pr.label())))?;
+
+    let (checks, pr_runs) = match node.commits.nodes.into_iter().next() {
+        Some(PrCommitWrapper { commit }) => {
+            let checks = commit
+                .status_check_rollup
+                .map(|r| CheckRollup {
+                    state: r.state,
+                    contexts: r
+                        .contexts
+                        .nodes
+                        .into_iter()
+                        .filter_map(ContextNode::into_info)
+                        .collect(),
+                })
+                .unwrap_or_default();
+            let runs = commit
+                .check_suites
+                .map(|cs| {
+                    cs.nodes
+                        .into_iter()
+                        .filter_map(CheckSuiteNode::into_run_info)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (checks, runs)
+        }
+        None => (CheckRollup::default(), Vec::new()),
+    };
+
+    let (default_branch_name, default_branch_runs) = match data.default_branch_ref {
+        Some(dbr) => {
+            let runs = dbr
+                .target
+                .and_then(|t| t.history)
+                .map(|h| {
+                    h.nodes
+                        .into_iter()
+                        .filter_map(|n| n.check_suites)
+                        .flat_map(|cs| cs.nodes.into_iter())
+                        .filter_map(CheckSuiteNode::into_run_info)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (dbr.name, runs)
+        }
+        None => (String::new(), Vec::new()),
+    };
+
+    Ok(PrSummary {
+        title: node.title,
+        body: node.body,
+        state: node.state.into(),
+        is_draft: node.is_draft,
+        base_ref: node.base_ref_name,
+        head_ref: node.head_ref_name,
+        additions: node.additions,
+        deletions: node.deletions,
+        changed_files: node.changed_files,
+        comment_count: node.comments.total_count,
+        review_thread_count: node.review_threads.total_count,
+        reviews: summarize_reviews(node.reviews.nodes, node.review_decision),
+        checks,
+        pr_runs,
+        default_branch_name,
+        default_branch_runs,
+        pr,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,5 +1100,148 @@ mod tests {
         // Without OWNER affiliation a user login also lists repos they merely
         // collaborate on or reach via org membership.
         assert!(ORG_ISSUES_QUERY.contains("ownerAffiliations: OWNER"));
+    }
+
+    fn sample_pr_ref() -> PrRef {
+        PrRef {
+            owner: "pgmac-net".into(),
+            repo: "gh-issues-tui".into(),
+            number: 72,
+        }
+    }
+
+    #[test]
+    fn pr_summary_parses_mixed_check_union_and_reviews() {
+        let raw = serde_json::json!({
+            "pullRequest": {
+                "title": "Add PR summary",
+                "body": "closes #45",
+                "state": "OPEN",
+                "isDraft": false,
+                "baseRefName": "main",
+                "headRefName": "45-pr-link-summary",
+                "additions": 120,
+                "deletions": 8,
+                "changedFiles": 5,
+                "comments": {"totalCount": 3},
+                "reviewThreads": {"totalCount": 1},
+                "reviewDecision": "APPROVED",
+                "reviews": {
+                    "nodes": [
+                        {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
+                        {"state": "APPROVED", "author": {"login": "alice"}},
+                        {"state": "COMMENTED", "author": {"login": "bob"}}
+                    ]
+                },
+                "commits": {
+                    "nodes": [{
+                        "commit": {
+                            "statusCheckRollup": {
+                                "state": "SUCCESS",
+                                "contexts": {
+                                    "nodes": [
+                                        {"__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS", "context": null, "state": null},
+                                        {"__typename": "StatusContext", "name": null, "conclusion": null, "context": "legacy-ci", "state": "SUCCESS"}
+                                    ]
+                                }
+                            },
+                            "checkSuites": {
+                                "nodes": [{
+                                    "conclusion": "SUCCESS",
+                                    "createdAt": "2026-07-20T00:00:00Z",
+                                    "workflowRun": {"runNumber": 42, "event": "pull_request", "workflow": {"name": "ci.yml"}}
+                                }]
+                            }
+                        }
+                    }]
+                }
+            },
+            "defaultBranchRef": {
+                "name": "main",
+                "target": {
+                    "history": {
+                        "nodes": [{
+                            "checkSuites": {
+                                "nodes": [{
+                                    "conclusion": "SUCCESS",
+                                    "createdAt": "2026-07-19T00:00:00Z",
+                                    "workflowRun": {"runNumber": 128, "event": "push", "workflow": {"name": "release.yml"}}
+                                }]
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        let summary = map_pr_summary(sample_pr_ref(), repo).unwrap();
+
+        assert_eq!(summary.state, PrState::Open);
+        assert!(!summary.is_draft);
+        assert_eq!(summary.additions, 120);
+        // alice's later APPROVED review overrides her earlier CHANGES_REQUESTED.
+        assert_eq!(summary.reviews.approved, 1);
+        assert_eq!(summary.reviews.changes_requested, 0);
+        assert_eq!(summary.reviews.commented, 1);
+        assert_eq!(summary.reviews.decision, Some(ReviewDecision::Approved));
+
+        let checks = &summary.checks;
+        assert_eq!(checks.state.as_deref(), Some("SUCCESS"));
+        assert_eq!(checks.contexts.len(), 2);
+        assert_eq!(checks.contexts[0].name, "ci");
+        assert_eq!(checks.contexts[1].name, "legacy-ci");
+
+        assert_eq!(summary.pr_runs.len(), 1);
+        assert_eq!(summary.pr_runs[0].workflow, "ci.yml");
+        assert_eq!(summary.default_branch_name, "main");
+        assert_eq!(summary.default_branch_runs.len(), 1);
+        assert_eq!(summary.default_branch_runs[0].workflow, "release.yml");
+    }
+
+    #[test]
+    fn pr_summary_handles_empty_rollup_and_no_default_branch() {
+        let raw = serde_json::json!({
+            "pullRequest": {
+                "title": "Draft PR",
+                "body": "",
+                "state": "OPEN",
+                "isDraft": true,
+                "baseRefName": "main",
+                "headRefName": "feature",
+                "additions": 0,
+                "deletions": 0,
+                "changedFiles": 0,
+                "comments": {"totalCount": 0},
+                "reviewThreads": {"totalCount": 0},
+                "reviewDecision": null,
+                "reviews": {"nodes": []},
+                "commits": {"nodes": []}
+            },
+            "defaultBranchRef": null
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        let summary = map_pr_summary(sample_pr_ref(), repo).unwrap();
+
+        assert!(summary.is_draft);
+        assert!(summary.checks.contexts.is_empty());
+        assert!(summary.checks.state.is_none());
+        assert!(summary.pr_runs.is_empty());
+        assert!(summary.default_branch_runs.is_empty());
+        assert_eq!(summary.default_branch_name, "");
+        assert_eq!(summary.reviews.decision, None);
+    }
+
+    #[test]
+    fn pr_summary_query_requests_key_fields() {
+        for field in [
+            "reviewDecision",
+            "statusCheckRollup",
+            "checkSuites",
+            "defaultBranchRef",
+            "CheckRun",
+            "StatusContext",
+        ] {
+            assert!(PR_SUMMARY_QUERY.contains(field), "missing {field}");
+        }
     }
 }
