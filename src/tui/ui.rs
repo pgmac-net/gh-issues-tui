@@ -754,6 +754,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("Tab", "switch pane (Shift+Tab reverse)"),
         ("Esc / q", "close detail pane"),
         ("o / O", "open issue / repo in browser"),
+        ("y", "copy issue ref to clipboard"),
         ("/", "text search"),
         ("f", "cycle state filter (open/closed/all)"),
         ("F", "filter editor (pickers + calendar)"),

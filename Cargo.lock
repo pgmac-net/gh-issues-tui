@@ -839,6 +839,7 @@ name = "gh-issues"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "crossterm 0.29.0",

@@ -51,6 +51,7 @@ pub async fn run(
     default_collapsed: bool,
     refresh_interval: u64,
     hide_empty_repos: bool,
+    copy_format: String,
     theme: Theme,
 ) -> Result<()> {
     let terminal = ratatui::init();
@@ -63,6 +64,7 @@ pub async fn run(
         default_collapsed,
         refresh_interval,
         hide_empty_repos,
+        copy_format,
         theme,
     )
     .await;
@@ -80,9 +82,16 @@ async fn event_loop(
     default_collapsed: bool,
     refresh_interval: u64,
     hide_empty_repos: bool,
+    copy_format: String,
     theme: Theme,
 ) -> Result<()> {
-    let mut app = App::new(org, initial_repo, include_closed, default_collapsed);
+    let mut app = App::new(
+        org,
+        initial_repo,
+        include_closed,
+        default_collapsed,
+        copy_format,
+    );
     app.set_hide_empty_default(hide_empty_repos);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
@@ -764,6 +773,27 @@ fn submit_issue_form(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<
     });
 }
 
+/// Copy `text` to the system clipboard via an OSC 52 escape sequence
+/// written straight to stdout. Terminal emulators intercept and consume
+/// the sequence rather than displaying it, so this is safe to interleave
+/// with ratatui's rendering. Works over SSH; requires terminal OSC 52
+/// support. Transparently wrapped for tmux passthrough when `$TMUX` is set.
+fn osc52_copy(text: &str) -> std::io::Result<()> {
+    use base64::Engine;
+    use std::io::Write;
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    let seq = format!("\x1b]52;c;{encoded}\x07");
+    let seq = if std::env::var_os("TMUX").is_some() {
+        format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
+    } else {
+        seq
+    };
+    let mut stdout = std::io::stdout();
+    stdout.write_all(seq.as_bytes())?;
+    stdout.flush()
+}
+
 fn handle_normal_key(
     app: &mut App,
     key: KeyEvent,
@@ -881,6 +911,16 @@ fn handle_normal_key(
                 match open::that(&url) {
                     Ok(()) => app.status = Some(format!("opened {url}")),
                     Err(e) => app.status = Some(format!("open failed: {e}")),
+                }
+            }
+        }
+        // copy short reference to clipboard (via OSC 52 — works over SSH,
+        // no system clipboard dependency)
+        KeyCode::Char('y') => {
+            if let Some(r) = app.selected_short_ref() {
+                match osc52_copy(&r) {
+                    Ok(()) => app.status = Some(format!("copied {r}")),
+                    Err(e) => app.status = Some(format!("copy failed: {e}")),
                 }
             }
         }
@@ -1312,7 +1352,13 @@ mod tests {
     }
 
     fn picker_test_app() -> App {
-        let mut app = App::new("org".into(), None, false, false);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.start_picker(vec!["alpha".into(), "beta".into(), "gamma".into()], 0);
         app
     }
@@ -1381,7 +1427,13 @@ mod tests {
 
     #[test]
     fn multi_filter_picker_space_toggles_and_enter_applies() {
-        let mut app = App::new("org".into(), None, false, false);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.start_picker(vec!["low".into(), "high".into(), "urgent".into()], 0);
         app.mode = Mode::SelectFieldMulti(4);
 
@@ -1397,7 +1449,13 @@ mod tests {
 
     #[test]
     fn multi_filter_picker_empty_selection_clears_filter() {
-        let mut app = App::new("org".into(), None, false, false);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.filters.status = vec!["blocked".into()];
         app.start_picker(vec!["blocked".into(), "in-progress".into()], 0);
         app.multi_selected = [0].into_iter().collect();
@@ -1412,7 +1470,13 @@ mod tests {
 
     #[test]
     fn multi_filter_picker_esc_discards_toggles() {
-        let mut app = App::new("org".into(), None, false, false);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.filters.priority = vec!["high".into()];
         app.start_picker(vec!["low".into(), "high".into()], 0);
         app.multi_selected = [1].into_iter().collect();
@@ -1455,7 +1519,13 @@ mod tests {
             closed_at: None,
         };
         let id = issue.id.clone();
-        let mut app = App::new("org".into(), None, false, false);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(vec![RepoIssues {
             repo: "r".into(),
             repo_url: "u".into(),
@@ -1588,7 +1658,13 @@ mod tests {
 
     #[test]
     fn labels_set_enter_without_target_issue_reports_stale() {
-        let mut app = App::new("org".into(), None, false, false); // no data, no selected issue
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        ); // no data, no selected issue
         app.label_pick_issue = Some("I_ghost".into());
         app.start_picker(vec!["bug".into()], 0);
         app.multi_selected = [0].into_iter().collect();

@@ -385,3 +385,34 @@ None — implemented as approved.
 - `cargo test` — 157 passed (3 new).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - Live smoke test: tmux-driven session against the release build and the real `pgmac-net` org. Created scratch issue #41, opened its detail pane ("no comments"), typed a comment via `c`, submitted with `Ctrl+S` — the comment appeared in the pane immediately, visible even while the list refetch was still showing "loading…" in the header, confirming the comments refetch fired independently of the list refetch. Scratch issue deleted afterward.
+
+# Development log — copy short URL to clipboard (2026-07-20)
+
+Work driven by [pgmac-net/gh-issues-tui#46](https://github.com/pgmac-net/gh-issues-tui/issues/46), on branch `46-copy-short-url`.
+
+## Process
+
+1. **Plan approval** — implementation plan posted to the ticket and approved before any code, rated STANDARD (implemented on Sonnet 5).
+2. **Code inspection** — traced how a selected issue's owner/repo/number are already available (`App::org`, `RepoIssues::repo`, `Issue::number`), and how the existing `status: Option<String>` field drives the footer toast used by every other mutating key (`o`, `c`, `x`, ...).
+3. **Clipboard mechanism reconsidered mid-implementation** — the plan (posted before reading `CLAUDE.md`) picked `arboard` for system-clipboard access. Once implementation started, the repo's own architecture doc surfaced: "No system dependencies beyond a Rust toolchain — TLS is rustls, no clipboard/keyring." `arboard` also silently fails over headless SSH, the primary way this TUI gets used against the homelab's repos. Flagged to the user immediately; switched to an OSC 52 terminal escape sequence instead — zero new system deps, and it works over SSH (with tmux passthrough handled explicitly, since tmux does not forward OSC 52 by default).
+4. **Implementation** — `App::selected_short_ref()` renders `copy_format` against the selected issue; `y` in normal mode calls it and writes the OSC 52 sequence straight to stdout, interleaved safely with ratatui's rendering since terminals consume the escape without displaying it.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Clipboard mechanism | OSC 52 escape sequence, not a clipboard crate | Repo's stated "no clipboard/keyring" invariant + must work over SSH (see Process #3) |
+| Key | `y` | Free in normal mode; conventional "yank" pairing with the existing `o` (open in browser) |
+| Reference format | `{owner}/{repo}#{number}`, default `pgmac-net/gh-issues-tui#46` | Matches the ticket's example format (with the real org substituted for the ticket's shorthand `pgmac/`); pastes directly into `gh` and Claude Code |
+| Configurability | new `copy_format` string in `config.toml`, `{owner}`/`{repo}`/`{number}` placeholders | Matches the ticket's explicit ask; simple string substitution, no new parser |
+| tmux | explicit `\ePtmux;...\e\\` passthrough wrap when `$TMUX` is set | tmux does not forward raw OSC 52 to the outer terminal without the wrapper; this TUI is routinely run inside tmux |
+
+## Diversions from plan
+
+- Clipboard mechanism changed from `arboard` (as planned and posted to the ticket) to OSC 52, discovered to conflict with `CLAUDE.md`'s stated architecture invariant partway through implementation. Flagged to the user, who chose OSC 52. `CLAUDE.md` and `docs/architecture.md` updated to describe the OSC 52 approach.
+
+## Verification
+
+- `cargo test` — 162 passed (6 new: 2 config, 3 `selected_short_ref`, existing suite untouched otherwise).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- Manual smoke test of `y` against a live terminal session left for the PR review step.

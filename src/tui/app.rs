@@ -949,6 +949,9 @@ pub struct App {
     /// Config: default for the hide-empty-repos filter; restored on
     /// filter clear and org switch.
     pub hide_empty_default: bool,
+    /// Template for the short reference `y` copies to the clipboard.
+    /// Supports `{owner}`, `{repo}`, `{number}` placeholders.
+    pub copy_format: String,
     /// Visible rows derived from repos + filters + sort + collapsed.
     pub rows: Vec<Row>,
     pub selected: usize,
@@ -1006,6 +1009,7 @@ impl App {
         initial_repo: Option<String>,
         include_closed: bool,
         default_collapsed: bool,
+        copy_format: String,
     ) -> Self {
         Self {
             org,
@@ -1014,6 +1018,7 @@ impl App {
             seen_repos: Default::default(),
             default_collapsed,
             hide_empty_default: true,
+            copy_format,
             rows: Vec::new(),
             selected: 0,
             state_filter: StateFilter::Open,
@@ -1320,6 +1325,20 @@ impl App {
         }
     }
 
+    /// Short reference for the selected issue, rendered from
+    /// `copy_format` (`{owner}`, `{repo}`, `{number}`). `None` when no
+    /// issue is selected (e.g. a repo header row).
+    pub fn selected_short_ref(&self) -> Option<String> {
+        let issue = self.selected_issue()?;
+        let repo = self.selected_repo()?;
+        Some(
+            self.copy_format
+                .replace("{owner}", &self.org)
+                .replace("{repo}", &repo.repo)
+                .replace("{number}", &issue.number.to_string()),
+        )
+    }
+
     pub fn toggle_collapse(&mut self) {
         if let Some(repo) = self.selected_repo().map(|r| r.repo.clone()) {
             if !self.collapsed.remove(&repo) {
@@ -1616,7 +1635,13 @@ mod tests {
     }
 
     fn app_with(repos: Vec<RepoIssues>) -> App {
-        let mut app = App::new("org".into(), None, false, false);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(repos);
         app
     }
@@ -1659,7 +1684,13 @@ mod tests {
 
     #[test]
     fn default_collapsed_starts_all_groups_folded() {
-        let mut app = App::new("org".into(), None, false, true);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            true,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(vec![
             RepoIssues {
                 repo: "alpha".into(),
@@ -1692,7 +1723,13 @@ mod tests {
                 },
             ]
         };
-        let mut app = App::new("org".into(), None, false, true);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            true,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(repos());
         assert_eq!(app.visible_issue_count(), 0);
 
@@ -1716,7 +1753,13 @@ mod tests {
             repo_url: "u".into(),
             issues: vec![issue(2, "b", IssueState::Open)],
         };
-        let mut app = App::new("org".into(), None, false, true);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            true,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(vec![alpha.clone()]);
         assert!(!app.collapsed.contains("alpha")); // single group auto-expands
 
@@ -1728,7 +1771,13 @@ mod tests {
 
     #[test]
     fn default_collapsed_single_repo_starts_expanded() {
-        let mut app = App::new("org".into(), None, false, true);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            true,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(vec![RepoIssues {
             repo: "solo".into(),
             repo_url: "u".into(),
@@ -1740,7 +1789,13 @@ mod tests {
 
     #[test]
     fn default_collapsed_expands_only_repo_matching_initial_filter() {
-        let mut app = App::new("org".into(), Some("beta".into()), false, true);
+        let mut app = App::new(
+            "org".into(),
+            Some("beta".into()),
+            false,
+            true,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(vec![
             RepoIssues {
                 repo: "alpha".into(),
@@ -1774,7 +1829,13 @@ mod tests {
                 issues: vec![issue(1, "a", IssueState::Open)],
             }]
         };
-        let mut app = App::new("org".into(), None, false, true);
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            true,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(repos());
         assert_eq!(app.visible_issue_count(), 1); // auto-expanded
 
@@ -1936,7 +1997,13 @@ mod tests {
 
     #[test]
     fn initial_repo_filter_applies_on_first_load() {
-        let mut app = App::new("org".into(), Some("beta".into()), false, false);
+        let mut app = App::new(
+            "org".into(),
+            Some("beta".into()),
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
         app.set_data(vec![
             RepoIssues {
                 repo: "alpha".into(),
@@ -2174,6 +2241,28 @@ mod tests {
         assert!(app.selected_issue().is_none());
         app.selected = 1;
         assert_eq!(app.selected_issue().unwrap().number, 2); // sorted updated desc
+    }
+
+    #[test]
+    fn selected_short_ref_none_on_header() {
+        let mut app = two_repo_app();
+        app.selected = 0;
+        assert!(app.selected_short_ref().is_none());
+    }
+
+    #[test]
+    fn selected_short_ref_default_format() {
+        let mut app = two_repo_app();
+        app.selected = 1; // "alpha" issue #2
+        assert_eq!(app.selected_short_ref().unwrap(), "org/alpha#2");
+    }
+
+    #[test]
+    fn selected_short_ref_custom_format() {
+        let mut app = two_repo_app();
+        app.selected = 1;
+        app.copy_format = "{repo}#{number} ({owner})".into();
+        assert_eq!(app.selected_short_ref().unwrap(), "alpha#2 (org)");
     }
 
     #[test]
