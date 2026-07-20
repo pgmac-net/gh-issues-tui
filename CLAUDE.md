@@ -14,7 +14,7 @@ cargo fmt                      # format in place
 cargo fmt --check              # format check (used in CI)
 ```
 
-No system dependencies beyond a Rust toolchain — TLS is rustls, no clipboard/keyring.
+No system dependencies beyond a Rust toolchain — TLS is rustls, no keyring. Clipboard copy (`y`) uses the OSC 52 terminal escape sequence, not a system clipboard library, to keep this true and to work over SSH.
 
 ## Architecture
 
@@ -22,7 +22,7 @@ Three top-level modules wired together in `src/main.rs`:
 
 | Module | Purpose |
 |--------|---------|
-| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`, `refresh_interval`, `hide_empty_repos`, `color_profile` + `[color_profiles.*]`). |
+| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`, `refresh_interval`, `hide_empty_repos`, `copy_format`, `color_profile` + `[color_profiles.*]`). |
 | `cwd_repo` | Detects the cwd's `origin` GitHub remote (`(owner, repo)`), best-effort via `git remote get-url origin`. |
 | `github` | Async GitHub GraphQL v4 client + token resolution. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |

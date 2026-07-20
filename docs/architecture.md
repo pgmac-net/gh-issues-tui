@@ -9,7 +9,7 @@ Built for [pgmac-net/homelabia#128](https://github.com/pgmac-net/homelabia/issue
 ```
 src/
 ├── main.rs          CLI (clap), panic hook, wiring
-├── config.rs        ~/.config/gh-issues/config.toml (default_org)
+├── config.rs        ~/.config/gh-issues/config.toml (default_org, copy_format, ...)
 ├── github/
 │   ├── auth.rs      token chain: --token → GITHUB_TOKEN → GH_TOKEN → gh auth token
 │   ├── client.rs    GraphQL v4 client: org-wide fetch + mutations
@@ -54,6 +54,7 @@ Assignee/label edits are whole-set replacements. Assignees use a comma-separated
 - Tokens never touch the config file; resolution is flag → env → `gh` CLI.
 - The `Authorization` header is marked sensitive in reqwest (excluded from debug logs).
 - TLS is rustls (no OpenSSL system dependency).
+- Clipboard copy (`y`) is implemented via the OSC 52 terminal escape sequence written to stdout, not a system clipboard crate — keeps the "no system dependencies beyond a Rust toolchain" invariant and works over SSH (tmux passthrough handled).
 - In the release workflow, `github.ref_name` is passed via `env:` rather than interpolated into the script.
 
 ## Testing

@@ -54,13 +54,20 @@ default_org = "my-org"
 default_collapsed = false   # start with repo groups expanded (default: true)
 refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
+copy_format = "{owner}/{repo}#{number}"   # `y` clipboard format (default shown)
 ```
 
 With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
 
+`copy_format` controls what `y` puts on the clipboard, with `{owner}`, `{repo}`, and `{number}` placeholders substituted from the selected issue. The default (`{owner}/{repo}#{number}`) is the short form GitHub tools and Claude Code understand.
+
 ### Auto-refresh
 
 The issue list refetches from GitHub every `refresh_interval` seconds (default 5 minutes) so new and updated issues appear without pressing `r`. The `--refresh <SECS>` flag overrides the config value; `0` disables it. A background refresh keeps your selection on the same issue and skips a beat while a fetch is already running, the API is rate-limited, or you are mid-edit (typing in an input, a menu, or a confirmation).
+
+### Clipboard
+
+`y` copies the selected issue's short reference via an [OSC 52](https://www.reddit.com/r/vim/comments/k1ydpn/a_guide_on_how_to_copy_text_from_anywhere/) terminal escape sequence rather than talking to a system clipboard library, so it works the same locally and over SSH (tmux passthrough is handled automatically). It needs a terminal emulator with OSC 52 support — true of most modern terminals (iTerm2, Alacritty, Kitty, WezTerm, Windows Terminal) — and, if you're not local, an SSH client/terminal combination that lets OSC 52 through.
 
 ### Colour profiles
 
@@ -100,6 +107,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `Tab` / `Shift+Tab` | switch focus between the list and detail panes |
 | `Esc` / `q` | close the detail pane (from either pane) |
 | `o` / `O` | open issue / repo in the browser |
+| `y` | copy the selected issue's short reference (`owner/repo#number`) to the clipboard, via OSC 52 |
 | `/` | free-text search (title, body, `#number`) |
 | `f` | cycle state filter: open → closed → all |
 | `F` | filter editor (repo, assignee, author, priority, status, created/updated/closed date bounds) |

@@ -35,6 +35,11 @@ pub struct Config {
     #[serde(default)]
     pub color_profile: Option<String>,
 
+    /// Template for the short reference copied to the clipboard with `y`.
+    /// Supports `{owner}`, `{repo}`, `{number}` placeholders.
+    #[serde(default = "copy_format_default")]
+    pub copy_format: String,
+
     /// User-defined colour profiles: `[color_profiles.<name>]` tables whose
     /// entries override individual UI colours (see `theme::ColorProfile`).
     #[serde(default, skip_serializing)]
@@ -53,6 +58,10 @@ fn hide_empty_repos_default() -> bool {
     true
 }
 
+fn copy_format_default() -> String {
+    "{owner}/{repo}#{number}".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -61,6 +70,7 @@ impl Default for Config {
             refresh_interval: refresh_interval_default(),
             hide_empty_repos: true,
             color_profile: None,
+            copy_format: copy_format_default(),
             color_profiles: HashMap::new(),
         }
     }
@@ -171,6 +181,24 @@ mod tests {
 
         std::fs::write(&path, "hide_empty_repos = false\n").unwrap();
         assert!(!Config::load_from(&path).unwrap().hide_empty_repos);
+    }
+
+    #[test]
+    fn copy_format_defaults_to_owner_repo_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_org = \"pgmac-net\"\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.copy_format, "{owner}/{repo}#{number}");
+    }
+
+    #[test]
+    fn parses_copy_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "copy_format = \"{repo}#{number}\"\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.copy_format, "{repo}#{number}");
     }
 
     #[test]
