@@ -114,7 +114,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `s` / `S` | cycle sort key / toggle direction |
 | `w` | switch org/owner (free-text; resets filters and view state) |
 | `c` | add a comment: opens the detail pane (if closed) and its inline editor section (`Ctrl+S` submits, `Esc` discards) |
-| `x` | close or reopen the issue (asks y/n) |
+| `x` | close or reopen the issue (confirmation popup: `←`/`→`/`Tab` moves focus, `Enter` picks, or `y`/`n`/`Esc` shortcuts) |
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (picker of the repo's labels, current labels pre-checked) |
 | `t` | edit the title |

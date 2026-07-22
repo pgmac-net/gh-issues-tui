@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use crate::github::types::Issue;
 
 use super::app::{
-    App, BODY_POPUP_WIDTH, CommentFocus, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH,
+    App, BODY_POPUP_WIDTH, CommentFocus, ConfirmChoice, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH,
     ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row, body_popup_width,
     comment_pane_width, cursor_row, input_popup_width, input_scroll_skip, wrap_lines,
 };
@@ -57,6 +57,7 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
         Mode::LabelsSet => draw_labels_popup(f, app, t),
         Mode::PrPicker => draw_pr_picker_popup(f, app, t),
         Mode::PrSummary => draw_pr_summary_popup(f, app, t),
+        Mode::ConfirmState => draw_confirm_popup(f, app, t),
         Mode::Help => draw_help(f, t),
         _ => {}
     }
@@ -343,31 +344,66 @@ fn input_prompt(kind: InputKind) -> &'static str {
 }
 
 fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    match app.mode {
-        Mode::ConfirmState => {
-            let action = app
-                .selected_issue()
-                .map(|i| match i.state {
-                    crate::github::types::IssueState::Open => "close",
-                    crate::github::types::IssueState::Closed => "reopen",
-                })
-                .unwrap_or("toggle");
-            f.render_widget(
-                Paragraph::new(Line::styled(
-                    format!(" {action} this issue? y/n"),
-                    Style::default().fg(t.warning),
-                )),
-                area,
-            );
+    let msg = app.status.clone().unwrap_or_default();
+    f.render_widget(
+        Paragraph::new(Line::styled(format!(" {msg}"), Style::default().fg(t.dim))),
+        area,
+    );
+}
+
+/// Centered close/reopen confirmation popup (`Mode::ConfirmState`), with a
+/// `[ Yes ]  [ No ]` button row reusing the reversed-video focused-button
+/// style from the inline comment editor.
+fn draw_confirm_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let action = app
+        .selected_issue()
+        .map(|i| match i.state {
+            crate::github::types::IssueState::Open => "close",
+            crate::github::types::IssueState::Closed => "reopen",
+        })
+        .unwrap_or("toggle");
+    let message = match app.selected_issue() {
+        Some(i) => format!("{action} issue #{}?", i.number),
+        None => format!("{action} this issue?"),
+    };
+
+    let width = (message.len() as u16 + 4).max(24);
+    let area = centered(f.area(), width, 4);
+    f.render_widget(Clear, area);
+
+    const YES: &str = "[ Yes ]";
+    const NO: &str = "[ No ]";
+    let gap = "  ";
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let total = YES.len() + gap.len() + NO.len();
+    let pad = " ".repeat(inner_width.saturating_sub(total) / 2);
+
+    let button_style = |focused: bool| {
+        if focused {
+            Style::default()
+                .fg(t.accent)
+                .add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
         }
-        _ => {
-            let msg = app.status.clone().unwrap_or_default();
-            f.render_widget(
-                Paragraph::new(Line::styled(format!(" {msg}"), Style::default().fg(t.dim))),
-                area,
-            );
-        }
-    }
+    };
+    let buttons = Line::from(vec![
+        Span::raw(pad),
+        Span::styled(YES, button_style(app.confirm_choice == ConfirmChoice::Yes)),
+        Span::raw(gap),
+        Span::styled(NO, button_style(app.confirm_choice == ConfirmChoice::No)),
+    ]);
+
+    let para = Paragraph::new(vec![
+        Line::styled(message, Style::default().fg(t.warning)),
+        buttons,
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {action} issue ")),
+    );
+    f.render_widget(para, area);
 }
 
 fn draw_filter_menu(f: &mut Frame, app: &App, t: &Theme) {
@@ -1054,5 +1090,95 @@ mod tests {
             color: "d73a4a".into(),
         }]);
         assert_eq!(title_style(&i, &Theme::default()).fg, None);
+    }
+
+    /// Single-repo app with one issue in `state`, selected, `Mode::ConfirmState`.
+    fn confirm_app(state: IssueState) -> App {
+        use crate::github::types::RepoIssues;
+
+        let mut i = issue(vec![]);
+        i.state = state;
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
+        app.state_filter = crate::tui::app::StateFilter::All;
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![i],
+        }]);
+        app.selected = 1; // 0 = repo header, 1 = the issue
+        app.mode = super::Mode::ConfirmState;
+        app
+    }
+
+    fn render_confirm_buffer(app: &App) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw_confirm_popup(f, app, &Theme::default()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn rendered_confirm_popup(app: &App) -> String {
+        render_confirm_buffer(app)
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    /// True if the cell at the start of `needle`'s first match is drawn
+    /// reversed-video (the focused-button style).
+    fn is_reversed_at(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        let width = buf.area().width;
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let byte_idx = content.find(needle).expect("needle not found in buffer");
+        let cell_idx = content[..byte_idx].chars().count();
+        let x = (cell_idx as u16) % width;
+        let y = (cell_idx as u16) / width;
+        buf[(x, y)]
+            .modifier
+            .contains(ratatui::style::Modifier::REVERSED)
+    }
+
+    #[test]
+    fn confirm_popup_prompts_close_for_open_issue() {
+        let app = confirm_app(IssueState::Open);
+        let text = rendered_confirm_popup(&app);
+        assert!(text.contains("close issue"), "got: {text}");
+        assert!(text.contains("#114"), "got: {text}");
+        assert!(text.contains("Yes"), "got: {text}");
+        assert!(text.contains("No"), "got: {text}");
+    }
+
+    #[test]
+    fn confirm_popup_prompts_reopen_for_closed_issue() {
+        let app = confirm_app(IssueState::Closed);
+        let text = rendered_confirm_popup(&app);
+        assert!(text.contains("reopen issue"), "got: {text}");
+    }
+
+    #[test]
+    fn confirm_popup_highlights_focused_button() {
+        let mut app = confirm_app(IssueState::Open);
+
+        app.confirm_choice = super::ConfirmChoice::Yes;
+        let buf = render_confirm_buffer(&app);
+        assert!(is_reversed_at(&buf, "Yes"));
+        assert!(!is_reversed_at(&buf, "No"));
+
+        app.confirm_choice = super::ConfirmChoice::No;
+        let buf = render_confirm_buffer(&app);
+        assert!(!is_reversed_at(&buf, "Yes"));
+        assert!(is_reversed_at(&buf, "No"));
     }
 }

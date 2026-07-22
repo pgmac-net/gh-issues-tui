@@ -12,8 +12,9 @@ use crate::github::types::{
 };
 
 use super::app::{
-    App, BodyEditor, CommentFocus, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode,
-    StateFilter, body_popup_width, comment_pane_width, priority_label_set, priority_set_options,
+    App, BodyEditor, CommentFocus, ConfirmChoice, Focus, ISSUE_FORM_CREATE_ROW, InputKind,
+    IssueForm, Mode, StateFilter, body_popup_width, comment_pane_width, priority_label_set,
+    priority_set_options,
 };
 use super::theme::Theme;
 use super::ui;
@@ -1050,6 +1051,7 @@ fn handle_normal_key(
         }
         KeyCode::Char('x') => {
             if app.selected_issue().is_some() {
+                app.confirm_choice = ConfirmChoice::No;
                 app.mode = Mode::ConfirmState;
             }
         }
@@ -1391,11 +1393,33 @@ fn handle_confirm_key(
     client: &Client,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    app.mode = Mode::Normal;
-    if key.code != KeyCode::Char('y') {
-        app.status = Some("cancelled".into());
-        return;
+    match key.code {
+        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Char('h') | KeyCode::Char('l') => {
+            app.confirm_choice = match app.confirm_choice {
+                ConfirmChoice::Yes => ConfirmChoice::No,
+                ConfirmChoice::No => ConfirmChoice::Yes,
+            };
+        }
+        KeyCode::Char('y') => confirm_toggle_state(app, client, tx),
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.mode = Mode::Normal;
+            app.status = Some("cancelled".into());
+        }
+        KeyCode::Enter => match app.confirm_choice {
+            ConfirmChoice::Yes => confirm_toggle_state(app, client, tx),
+            ConfirmChoice::No => {
+                app.mode = Mode::Normal;
+                app.status = Some("cancelled".into());
+            }
+        },
+        _ => {}
     }
+}
+
+/// Applies the close/reopen mutation and returns to `Mode::Normal`. Shared
+/// by the `y` shortcut and Enter-on-Yes in `handle_confirm_key`.
+fn confirm_toggle_state(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+    app.mode = Mode::Normal;
     let target = match app.selected_issue() {
         Some(i) => match i.state {
             IssueState::Open => IssueState::Closed,
@@ -1887,5 +1911,86 @@ mod tests {
 
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.comment_editor.text(), "");
+    }
+
+    fn confirm_test_app() -> (App, Client, mpsc::UnboundedSender<AppEvent>) {
+        let (mut app, _issue_id) = app_with_issue(&[]);
+        app.mode = Mode::ConfirmState;
+        app.confirm_choice = ConfirmChoice::No;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        (app, client, tx)
+    }
+
+    #[test]
+    fn confirm_arrow_and_tab_toggle_focus() {
+        let (mut app, client, tx) = confirm_test_app();
+
+        handle_confirm_key(&mut app, key(KeyCode::Right), &client, &tx);
+        assert_eq!(app.confirm_choice, ConfirmChoice::Yes);
+        assert_eq!(
+            app.mode,
+            Mode::ConfirmState,
+            "toggling focus must not close the popup"
+        );
+
+        handle_confirm_key(&mut app, key(KeyCode::Left), &client, &tx);
+        assert_eq!(app.confirm_choice, ConfirmChoice::No);
+
+        handle_confirm_key(&mut app, key(KeyCode::Tab), &client, &tx);
+        assert_eq!(app.confirm_choice, ConfirmChoice::Yes);
+
+        handle_confirm_key(&mut app, key(KeyCode::Char('h')), &client, &tx);
+        assert_eq!(app.confirm_choice, ConfirmChoice::No);
+
+        handle_confirm_key(&mut app, key(KeyCode::Char('l')), &client, &tx);
+        assert_eq!(app.confirm_choice, ConfirmChoice::Yes);
+    }
+
+    #[test]
+    fn confirm_enter_on_no_cancels_without_mutating() {
+        let (mut app, client, tx) = confirm_test_app();
+        let original_state = app.selected_issue().unwrap().state;
+
+        handle_confirm_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.status.as_deref(), Some("cancelled"));
+        assert_eq!(app.selected_issue().unwrap().state, original_state);
+    }
+
+    #[tokio::test]
+    async fn confirm_enter_on_yes_triggers_mutation() {
+        let (mut app, client, tx) = confirm_test_app();
+        app.confirm_choice = ConfirmChoice::Yes;
+
+        handle_confirm_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.status.as_deref(), Some("working…"));
+    }
+
+    #[tokio::test]
+    async fn confirm_y_shortcut_triggers_mutation_regardless_of_focus() {
+        let (mut app, client, tx) = confirm_test_app();
+        assert_eq!(app.confirm_choice, ConfirmChoice::No);
+
+        handle_confirm_key(&mut app, key(KeyCode::Char('y')), &client, &tx);
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.status.as_deref(), Some("working…"));
+    }
+
+    #[test]
+    fn confirm_n_and_esc_shortcuts_cancel_regardless_of_focus() {
+        for code in [KeyCode::Char('n'), KeyCode::Esc] {
+            let (mut app, client, tx) = confirm_test_app();
+            app.confirm_choice = ConfirmChoice::Yes;
+
+            handle_confirm_key(&mut app, key(code), &client, &tx);
+
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!(app.status.as_deref(), Some("cancelled"));
+        }
     }
 }
