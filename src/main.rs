@@ -1,6 +1,7 @@
 mod config;
 mod cwd_repo;
 mod github;
+mod provider;
 mod tui;
 
 use anyhow::Result;
@@ -17,6 +18,11 @@ struct Cli {
     /// GitHub token. Falls back to GITHUB_TOKEN, GH_TOKEN, then `gh auth token`.
     #[arg(long)]
     token: Option<String>,
+
+    /// Issue backend to use. Falls back to `provider` in the config file,
+    /// then "github".
+    #[arg(long)]
+    provider: Option<String>,
 
     /// Include closed issues in the initial fetch.
     #[arg(long)]
@@ -67,8 +73,12 @@ async fn main() -> Result<()> {
     };
 
     let theme = cfg.resolve_theme()?;
-    let token = github::auth::resolve_token(cli.token)?;
-    let client = github::Client::new(token)?;
+    // Precedence: --provider flag → config `provider` → "github".
+    let provider_name = cli
+        .provider
+        .or_else(|| cfg.provider.clone())
+        .unwrap_or_else(|| "github".into());
+    let client = provider::build(&provider_name, cli.token)?;
 
     install_panic_hook();
     tui::run(

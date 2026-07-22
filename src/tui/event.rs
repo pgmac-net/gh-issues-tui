@@ -5,9 +5,9 @@ use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
-use crate::github::Client;
-use crate::github::error::RATE_LIMIT_MSG_PREFIX;
-use crate::github::types::{
+use crate::provider::Provider;
+use crate::provider::error::RATE_LIMIT_MSG_PREFIX;
+use crate::provider::types::{
     Comment, FormOptions, IssueState, PrRef, PrSummary, RepoIssues, RepoLabel,
 };
 
@@ -52,7 +52,7 @@ pub enum AppEvent {
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    client: Client,
+    client: Provider,
     org: String,
     initial_repo: Option<String>,
     include_closed: bool,
@@ -83,7 +83,7 @@ pub async fn run(
 #[allow(clippy::too_many_arguments)]
 async fn event_loop(
     mut terminal: DefaultTerminal,
-    client: Client,
+    client: Provider,
     org: String,
     initial_repo: Option<String>,
     include_closed: bool,
@@ -141,7 +141,7 @@ async fn event_loop(
     }
 }
 
-fn spawn_fetch(client: &Client, app: &App, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn spawn_fetch(client: &Provider, app: &App, tx: &mpsc::UnboundedSender<AppEvent>) {
     let client = client.clone();
     let org = app.org.clone();
     let include_closed = app.include_closed;
@@ -156,7 +156,7 @@ fn spawn_fetch(client: &Client, app: &App, tx: &mpsc::UnboundedSender<AppEvent>)
 }
 
 fn spawn_form_options(
-    client: &Client,
+    client: &Provider,
     org: String,
     repo: String,
     tx: &mpsc::UnboundedSender<AppEvent>,
@@ -173,7 +173,7 @@ fn spawn_form_options(
 }
 
 fn spawn_priority_options(
-    client: &Client,
+    client: &Provider,
     org: String,
     repo: String,
     issue_id: String,
@@ -191,7 +191,7 @@ fn spawn_priority_options(
 }
 
 fn spawn_label_options(
-    client: &Client,
+    client: &Provider,
     org: String,
     repo: String,
     issue_id: String,
@@ -208,7 +208,7 @@ fn spawn_label_options(
     });
 }
 
-fn spawn_comments(client: &Client, issue_id: String, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn spawn_comments(client: &Provider, issue_id: String, tx: &mpsc::UnboundedSender<AppEvent>) {
     let client = client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
@@ -217,7 +217,7 @@ fn spawn_comments(client: &Client, issue_id: String, tx: &mpsc::UnboundedSender<
     });
 }
 
-fn spawn_pr_summary(client: &Client, pr: PrRef, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn spawn_pr_summary(client: &Provider, pr: PrRef, tx: &mpsc::UnboundedSender<AppEvent>) {
     let client = client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
@@ -235,7 +235,7 @@ fn spawn_pr_summary(client: &Client, pr: PrRef, tx: &mpsc::UnboundedSender<AppEv
 /// `handle_app_event`). Landing on a repo header just clears the pane.
 fn nav(
     app: &mut App,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
     action: impl FnOnce(&mut App),
 ) {
@@ -267,7 +267,7 @@ fn comments_refresh_target(app: &App) -> Option<String> {
 fn handle_app_event(
     app: &mut App,
     msg: AppEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     // Pull rate limit state from client after any API interaction.
@@ -425,7 +425,12 @@ fn handle_app_event(
     }
 }
 
-fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn handle_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Provider,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
     match app.mode {
         Mode::Normal => handle_normal_key(app, key, client, tx),
         Mode::Input(kind) => handle_input_key(app, key, kind, client, tx),
@@ -450,7 +455,7 @@ fn handle_key(app: &mut App, key: KeyEvent, client: &Client, tx: &mpsc::Unbounde
 fn handle_pr_picker_key(
     app: &mut App,
     key: KeyEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     if picker_common_key(app, key, true) {
@@ -487,7 +492,7 @@ fn handle_pr_summary_key(app: &mut App, key: KeyEvent) {
 fn handle_priority_set_key(
     app: &mut App,
     key: KeyEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     if picker_common_key(app, key, true) {
@@ -543,7 +548,7 @@ fn handle_priority_set_key(
 fn handle_labels_set_key(
     app: &mut App,
     key: KeyEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     if picker_common_key(app, key, false) {
@@ -594,7 +599,7 @@ fn handle_labels_set_key(
 fn handle_issue_form_key(
     app: &mut App,
     key: KeyEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let Some(form) = &mut app.issue_form else {
@@ -778,7 +783,7 @@ fn handle_form_body_key(app: &mut App, key: KeyEvent) {
 fn handle_comment_editor_key(
     app: &mut App,
     key: KeyEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -823,7 +828,7 @@ fn prev_comment_focus(focus: CommentFocus) -> CommentFocus {
     }
 }
 
-fn submit_comment(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn submit_comment(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<AppEvent>) {
     let value = app.comment_editor.text();
     app.comment_editor = BodyEditor::default();
     app.comment_focus = CommentFocus::Editor;
@@ -849,7 +854,7 @@ fn comment_wrap_width() -> usize {
     comment_pane_width(cols) as usize
 }
 
-fn submit_issue_form(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn submit_issue_form(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(form) = &app.issue_form else { return };
     if form.options.is_none() {
         app.status = Some("still loading repo options — try again in a moment".into());
@@ -897,7 +902,7 @@ fn osc52_copy(text: &str) -> std::io::Result<()> {
 fn handle_normal_key(
     app: &mut App,
     key: KeyEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     match key.code {
@@ -1098,6 +1103,10 @@ fn handle_normal_key(
             }
         }
         KeyCode::Char('P') if app.detail_open => {
+            if !client.supports_pr_summary() {
+                app.status = Some("PR summaries not supported by this provider".into());
+                return;
+            }
             let links = app.collect_pr_links();
             match links.len() {
                 0 => app.status = Some("no PR links found".into()),
@@ -1117,7 +1126,7 @@ fn handle_input_key(
     app: &mut App,
     key: KeyEvent,
     kind: InputKind,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     match key.code {
@@ -1166,7 +1175,7 @@ fn submit_input(
     app: &mut App,
     kind: InputKind,
     value: String,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     match kind {
@@ -1390,7 +1399,7 @@ fn handle_calendar_key(app: &mut App, key: KeyEvent, idx: usize) {
 fn handle_confirm_key(
     app: &mut App,
     key: KeyEvent,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     match key.code {
@@ -1418,7 +1427,7 @@ fn handle_confirm_key(
 
 /// Applies the close/reopen mutation and returns to `Mode::Normal`. Shared
 /// by the `y` shortcut and Enter-on-Yes in `handle_confirm_key`.
-fn confirm_toggle_state(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
+fn confirm_toggle_state(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<AppEvent>) {
     app.mode = Mode::Normal;
     let target = match app.selected_issue() {
         Some(i) => match i.state {
@@ -1439,13 +1448,13 @@ fn confirm_toggle_state(app: &mut App, client: &Client, tx: &mpsc::UnboundedSend
 /// Spawn a mutation against the selected issue; reports done/failed via `tx`.
 fn with_issue<F, Fut>(
     app: &mut App,
-    client: &Client,
+    client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
     done_msg: &'static str,
     op: F,
 ) where
-    F: FnOnce(Client, String) -> Fut + Send + 'static,
-    Fut: Future<Output = crate::github::error::Result<()>> + Send,
+    F: FnOnce(Provider, String) -> Fut + Send + 'static,
+    Fut: Future<Output = crate::provider::error::Result<()>> + Send,
 {
     let Some(issue) = app.selected_issue() else {
         return;
@@ -1623,13 +1632,13 @@ mod tests {
         assert_eq!(app.mode, Mode::FilterMenu);
     }
 
-    fn test_client() -> Client {
-        Client::new("test-token".into()).unwrap()
+    fn test_client() -> Provider {
+        std::sync::Arc::new(crate::github::Client::new("test-token".into()).unwrap())
     }
 
     /// Single-repo app with one issue carrying `labels`, selected.
     fn app_with_issue(labels: &[&str]) -> (App, String) {
-        use crate::github::types::{Issue, Label};
+        use crate::provider::types::{Issue, Label};
 
         let issue = Issue {
             id: "I_1".into(),
@@ -1913,7 +1922,7 @@ mod tests {
         assert_eq!(app.comment_editor.text(), "");
     }
 
-    fn confirm_test_app() -> (App, Client, mpsc::UnboundedSender<AppEvent>) {
+    fn confirm_test_app() -> (App, Provider, mpsc::UnboundedSender<AppEvent>) {
         let (mut app, _issue_id) = app_with_issue(&[]);
         app.mode = Mode::ConfirmState;
         app.confirm_choice = ConfirmChoice::No;

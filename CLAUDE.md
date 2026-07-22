@@ -22,19 +22,29 @@ Three top-level modules wired together in `src/main.rs`:
 
 | Module | Purpose |
 |--------|---------|
-| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `default_collapsed`, `refresh_interval`, `hide_empty_repos`, `copy_format`, `color_profile` + `[color_profiles.*]`). |
+| `config` | TOML config (`~/.config/gh-issues/config.toml`: `default_org`, `provider`, `default_collapsed`, `refresh_interval`, `hide_empty_repos`, `copy_format`, `color_profile` + `[color_profiles.*]`). |
 | `cwd_repo` | Detects the cwd's `origin` GitHub remote (`(owner, repo)`), best-effort via `git remote get-url origin`. |
-| `github` | Async GitHub GraphQL v4 client + token resolution. |
-| `tui` | Terminal UI (ratatui + crossterm). Owns the event loop. |
+| `provider` | Backend-neutral layer: `IssueProvider` trait, domain types, `ProviderError`, name → provider factory. |
+| `github` | Async GitHub GraphQL v4 client + token resolution; implements `IssueProvider`. |
+| `tui` | Terminal UI (ratatui + crossterm). Owns the event loop; talks only to `Provider` (`Arc<dyn IssueProvider>`). |
 
 Startup org resolution in `main.rs`: `--org` flag → cwd git remote (owner, plus the repo name as the initial repo filter) → `default_org`. The detected repo filter is applied with `--org` only when the remote owner matches the flag.
+
+Startup provider resolution in `main.rs`: `--provider` flag → `provider` config key → `"github"`. `provider::build` maps the name to a boxed provider and resolves its credentials; unknown names error with the supported list (`provider::SUPPORTED`).
+
+### provider/
+
+- `mod.rs` — `IssueProvider` trait (`async_trait`, so it's usable as `Arc<dyn IssueProvider>` — the `Provider` alias the event loop clones into spawned tasks). Core methods are required; capability methods default to `Err(ProviderError::Unsupported)` paired with a `supports_*` probe (today: `pull_request` / `supports_pr_summary`) — the UI checks the probe and shows a status message instead of calling a doomed fetch. New backends (Linear #24, Jira #25) = new trait impl + factory arm in `build`.
+- `types.rs` — backend-neutral domain types (`Issue`, `RepoIssues`, `Comment`, `IssueState`, `PrRef`, `PrSummary`, `FormOptions`, `NewIssueParams`, `RateLimitData`). `Issue.id` is an opaque string (GitHub: GraphQL node id). `parse_pr_links` scans text for explicit `github.com/{owner}/{repo}/pull/{N}` links — deliberately not bare `#N` shorthand, which is ambiguous between an issue and a PR in an issues tool. Types stay here even when only one backend can fetch them (`PrSummary`): the data is neutral, the fetch is a capability.
+- `error.rs` — `ProviderError` (`Http`/`Api`/`Shape`/`RateLimited`/`ResourceLimited`/`Unsupported`) + `RATE_LIMIT_MSG_PREFIX` (the event loop classifies stringified task errors by this prefix).
 
 ### github/
 
 - `auth.rs` — `resolve_token`: `--token` flag → `GITHUB_TOKEN` → `GH_TOKEN` → `gh auth token`. Injectable closures make the chain unit-testable.
 - `client.rs` — `Client` (cheaply cloneable, one `reqwest::Client`). `org_issues` walks `repositoryOwner.repositories` (works for both organisations and user accounts) with cursor pagination and follows nested per-repo issue pagination — deliberately NOT the search API, which caps at 1000 results. Mutations: `add_comment`, `set_state`, `update_title`, `set_assignees` (resolves logins → node ids), `set_labels` (resolves names → label ids via `repo_labels`). `pull_request` fetches a `PrSummary` in one query: title/state/diffstat, review status, checks on the head commit, the PR's own Actions runs, and recent runs on the repo's default branch (the `CheckRun`/`StatusContext` GraphQL union is flattened into one `ContextNode` DTO keyed off `__typename`).
-- **Adaptive page-size backoff.** A query whose combined repo/issue page size trips GitHub's GraphQL complexity budget returns `GithubError::ResourceLimited` instead of a raw error dump (detected by GraphQL error `type` or a "Resource limits" message). `Client::graphql_with_backoff` retries the same cursor with halved `PageSizes` (`REPOS_PAGE`/`ISSUES_PAGE` down to `MIN_REPOS_PAGE`/`MIN_ISSUES_PAGE`) — cursors are opaque positions, so shrinking `first` mid-fetch is valid and the full dataset still arrives, just across more requests. `org_issues` shares one `PageSizes` across its whole run (never grows back) so a fetch that trips the limit once starts small for the rest of the org. Other GraphQL errors now join each entry's `message` field instead of dumping the errors array as JSON.
-- `types.rs` — domain types (`Issue`, `RepoIssues`, `Comment`, `IssueState`, `PrRef`, `PrSummary`). GraphQL response DTOs live privately in `client.rs`. `parse_pr_links` scans text for explicit `github.com/{owner}/{repo}/pull/{N}` links — deliberately not bare `#N` shorthand, which is ambiguous between an issue and a PR in an issues tool.
+- The `impl IssueProvider for Client` block at the bottom of `client.rs` is thin delegation — inherent methods win name resolution inside the impl, so each trait method calls the real implementation. GitHub opts into the PR-summary capability (`supports_pr_summary` → `true`).
+- **Adaptive page-size backoff.** A query whose combined repo/issue page size trips GitHub's GraphQL complexity budget returns `ProviderError::ResourceLimited` instead of a raw error dump (detected by GraphQL error `type` or a "Resource limits" message). `Client::graphql_with_backoff` retries the same cursor with halved `PageSizes` (`REPOS_PAGE`/`ISSUES_PAGE` down to `MIN_REPOS_PAGE`/`MIN_ISSUES_PAGE`) — cursors are opaque positions, so shrinking `first` mid-fetch is valid and the full dataset still arrives, just across more requests. `org_issues` shares one `PageSizes` across its whole run (never grows back) so a fetch that trips the limit once starts small for the rest of the org. Other GraphQL errors now join each entry's `message` field instead of dumping the errors array as JSON.
+- GraphQL response DTOs live privately in `client.rs`; the domain types they map into live in `provider/types.rs`.
 
 ### tui/
 

@@ -14,6 +14,11 @@ pub struct Config {
     /// Organisation used when `--org` is not given.
     pub default_org: Option<String>,
 
+    /// Issue backend used when `--provider` is not given. Unset → "github".
+    /// See `provider::SUPPORTED` for valid names.
+    #[serde(default)]
+    pub provider: Option<String>,
+
     /// Start with all repo groups collapsed (the default). They can still
     /// be expanded normally (Space / `]`), and a view showing a single
     /// repo group starts expanded regardless.
@@ -66,6 +71,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             default_org: None,
+            provider: None,
             default_collapsed: true,
             refresh_interval: refresh_interval_default(),
             hide_empty_repos: true,

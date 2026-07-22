@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::error::{GithubError, RATE_LIMIT_MSG_PREFIX, Result};
-use super::types::{
+use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result};
+use crate::provider::types::{
     CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueState, Label,
     NewIssueParams, PrRef, PrState, PrSummary, RateLimitData, RepoIssues, RepoLabel,
     ReviewDecision, ReviewSummary, WorkflowRunInfo,
@@ -126,7 +126,7 @@ impl Client {
             if let Some(ref data) = *rl
                 && data.remaining == 0
             {
-                return Err(GithubError::RateLimited(self.rate_limit_message(data)));
+                return Err(ProviderError::RateLimited(self.rate_limit_message(data)));
             }
         }
 
@@ -143,16 +143,16 @@ impl Client {
                     Some(ref data) => self.rate_limit_message(data),
                     None => format!("{RATE_LIMIT_MSG_PREFIX} (GraphQL)"),
                 };
-                return Err(GithubError::RateLimited(msg));
+                return Err(ProviderError::RateLimited(msg));
             }
             if errors_contain_resource_limited(errors) {
-                return Err(GithubError::ResourceLimited(join_error_messages(errors)));
+                return Err(ProviderError::ResourceLimited(join_error_messages(errors)));
             }
-            return Err(GithubError::GraphQl(join_error_messages(errors)));
+            return Err(ProviderError::Api(join_error_messages(errors)));
         }
         body.get("data")
             .cloned()
-            .ok_or_else(|| GithubError::Shape("missing data".into()))
+            .ok_or_else(|| ProviderError::Shape("missing data".into()))
     }
 
     /// Runs a GraphQL query built by `make_vars` from the current page
@@ -168,9 +168,9 @@ impl Client {
     ) -> Result<Value> {
         loop {
             match self.graphql(query, make_vars(sizes)).await {
-                Err(GithubError::ResourceLimited(msg)) => {
+                Err(ProviderError::ResourceLimited(msg)) => {
                     if !sizes.shrink() {
-                        return Err(GithubError::ResourceLimited(msg));
+                        return Err(ProviderError::ResourceLimited(msg));
                     }
                 }
                 other => return other,
@@ -215,7 +215,7 @@ impl Client {
 
             // An unknown login yields `"repositoryOwner": null`, not an error.
             if data.get("repositoryOwner").is_some_and(Value::is_null) {
-                return Err(GithubError::Shape(format!("no such org or user: {org}")));
+                return Err(ProviderError::Shape(format!("no such org or user: {org}")));
             }
             let repos: RepositoriesConn = parse_at(&data, &["repositoryOwner", "repositories"])?;
             for repo in repos.nodes {
@@ -274,14 +274,14 @@ impl Client {
         let nodes = data
             .pointer("/node/comments/nodes")
             .and_then(Value::as_array)
-            .ok_or_else(|| GithubError::Shape("missing comments".into()))?;
+            .ok_or_else(|| ProviderError::Shape("missing comments".into()))?;
         nodes
             .iter()
             .map(|n| {
                 Ok(Comment {
                     author: login_at(n, "/author/login"),
                     created_at: serde_json::from_value(n["createdAt"].clone())
-                        .map_err(|e| GithubError::Shape(e.to_string()))?,
+                        .map_err(|e| ProviderError::Shape(e.to_string()))?,
                     body: n["body"].as_str().unwrap_or_default().to_string(),
                 })
             })
@@ -335,7 +335,7 @@ impl Client {
             let id = data
                 .pointer("/user/id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| GithubError::Shape(format!("unknown user {login}")))?
+                .ok_or_else(|| ProviderError::Shape(format!("unknown user {login}")))?
                 .to_string();
             ids.push(id);
         }
@@ -363,7 +363,7 @@ impl Client {
             let label = all
                 .iter()
                 .find(|l| l.name.eq_ignore_ascii_case(name))
-                .ok_or_else(|| GithubError::Shape(format!("no label named {name} in {repo}")))?;
+                .ok_or_else(|| ProviderError::Shape(format!("no label named {name} in {repo}")))?;
             ids.push(label.id.clone());
         }
         self.graphql(
@@ -395,12 +395,12 @@ impl Client {
             )
             .await?;
         if data.get("repository").is_some_and(Value::is_null) {
-            return Err(GithubError::Shape(format!("no repository {org}/{repo}")));
+            return Err(ProviderError::Shape(format!("no repository {org}/{repo}")));
         }
         let repo_id = data
             .pointer("/repository/id")
             .and_then(Value::as_str)
-            .ok_or_else(|| GithubError::Shape("missing repository.id".into()))?
+            .ok_or_else(|| ProviderError::Shape("missing repository.id".into()))?
             .to_string();
 
         let labels: Vec<IdName> = parse_at(&data, &["repository", "labels", "nodes"])?;
@@ -466,7 +466,7 @@ impl Client {
         let issue = data
             .pointer("/createIssue/issue")
             .filter(|v| !v.is_null())
-            .ok_or_else(|| GithubError::Shape("createIssue returned no issue".into()))?;
+            .ok_or_else(|| ProviderError::Shape("createIssue returned no issue".into()))?;
         let issue_id = issue.get("id").and_then(Value::as_str).unwrap_or_default();
         let number = issue.get("number").and_then(Value::as_u64).unwrap_or(0);
         let url = issue
@@ -514,7 +514,7 @@ impl Client {
             )
             .await?;
         if data.get("repository").is_some_and(Value::is_null) {
-            return Err(GithubError::Shape(format!(
+            return Err(ProviderError::Shape(format!(
                 "no such repository {}/{}",
                 pr.owner, pr.repo
             )));
@@ -573,9 +573,9 @@ fn parse_at<T: for<'de> Deserialize<'de>>(data: &Value, path: &[&str]) -> Result
     for seg in path {
         cur = cur
             .get(seg)
-            .ok_or_else(|| GithubError::Shape(format!("missing {}", path.join("."))))?;
+            .ok_or_else(|| ProviderError::Shape(format!("missing {}", path.join("."))))?;
     }
-    serde_json::from_value(cur.clone()).map_err(|e| GithubError::Shape(e.to_string()))
+    serde_json::from_value(cur.clone()).map_err(|e| ProviderError::Shape(e.to_string()))
 }
 
 fn login_at(v: &Value, ptr: &str) -> String {
@@ -1047,7 +1047,7 @@ fn summarize_reviews(nodes: Vec<ReviewNode>, decision: Option<ReviewDecision>) -
 fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
     let node = data
         .pull_request
-        .ok_or_else(|| GithubError::Shape(format!("no such PR {}", pr.label())))?;
+        .ok_or_else(|| ProviderError::Shape(format!("no such PR {}", pr.label())))?;
 
     let (checks, pr_runs) = match node.commits.nodes.into_iter().next() {
         Some(PrCommitWrapper { commit }) => {
@@ -1115,6 +1115,70 @@ fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
         default_branch_runs,
         pr,
     })
+}
+
+/// Thin delegation to the inherent methods above, which keep their own
+/// unit tests. Inherent methods win name resolution inside this impl, so
+/// each call goes to the real implementation, not back into the trait.
+#[async_trait::async_trait]
+impl crate::provider::IssueProvider for Client {
+    async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
+        self.org_issues(org, include_closed).await
+    }
+
+    async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
+        self.comments(issue_id).await
+    }
+
+    async fn add_comment(&self, issue_id: &str, body: &str) -> Result<()> {
+        self.add_comment(issue_id, body).await
+    }
+
+    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
+        self.set_state(issue_id, state).await
+    }
+
+    async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
+        self.update_title(issue_id, title).await
+    }
+
+    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
+        self.set_assignees(issue_id, logins).await
+    }
+
+    async fn set_labels(
+        &self,
+        issue_id: &str,
+        repo: &str,
+        org: &str,
+        names: &[String],
+    ) -> Result<()> {
+        self.set_labels(issue_id, repo, org, names).await
+    }
+
+    async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {
+        self.repo_labels(org, repo).await
+    }
+
+    async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions> {
+        self.repo_form_options(org, repo).await
+    }
+
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+        self.create_issue(p).await
+    }
+
+    fn rate_limit(&self) -> Option<RateLimitData> {
+        self.rate_limit()
+    }
+
+    fn supports_pr_summary(&self) -> bool {
+        true
+    }
+
+    async fn pull_request(&self, pr: &PrRef) -> Result<PrSummary> {
+        self.pull_request(pr).await
+    }
 }
 
 #[cfg(test)]

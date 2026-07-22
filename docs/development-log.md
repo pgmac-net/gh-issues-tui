@@ -475,3 +475,34 @@ None — implemented as approved.
 - `cargo build --release`, `cargo test` — 190 passed (7 new: resource-limit detection by type and by message-only, message-joining incl. raw-JSON fallback, and the page-shrink sequence down to its floor).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - No live smoke test: reproducing GitHub's actual resource-limit response requires an org large enough to trip the complexity budget on a closed-issue fetch, which isn't available in this environment. Verified logically instead — cursor pagination is unaffected by page size (GraphQL cursors are opaque), and the new unit tests exercise the exact error-classification and shrink-sequence logic the live path depends on.
+
+# Development log — provider abstraction (2026-07-23)
+
+Ticket: [#63](https://github.com/pgmac-net/gh-issues-tui/issues/63) — enable future non-GitHub backends (Linear [#24](https://github.com/pgmac-net/gh-issues-tui/issues/24), Jira [#25](https://github.com/pgmac-net/gh-issues-tui/issues/25), attached as sub-issues) by abstracting the issue backend behind a trait. Zero behaviour change.
+
+## What was done
+
+1. **`src/provider/` module** — `types.rs` and `error.rs` moved wholesale from `github/` (git-mv, history preserved). `GithubError` became `ProviderError` (`GraphQl` variant renamed `Api`, new `Unsupported(&'static str)` for capability gaps). `mod.rs` adds the `IssueProvider` trait (`async_trait`), the `Provider = Arc<dyn IssueProvider>` alias, `SUPPORTED`, and the `build(name, token_flag)` factory.
+2. **GitHub as first provider** — `impl IssueProvider for Client` at the bottom of `client.rs`, thin delegation to the inherent methods (which keep their unit tests). Opts into the PR-summary capability.
+3. **Event loop on the trait** — `tui/event.rs` swapped `Client` → `Provider` at every site (~29); the clone-into-spawned-task pattern is unchanged, just an `Arc` clone now. The `P` keybind checks `supports_pr_summary()` first and reports a status message when unsupported.
+4. **Startup selection** — `--provider` flag + `provider` config key, precedence flag → config → `"github"`. Unknown names error with the supported list.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Dispatch | `async_trait` + `Arc<dyn IssueProvider>` | Event loop spawns tasks with owned handles; dyn keeps adding a backend to "new impl + factory arm" with no enum to grow. Boxing overhead is noise next to network calls |
+| Capability shape | default trait method returning `Unsupported` + a `supports_*` probe | UI can hide/soften the affordance without attempting the call; providers opt in by overriding both |
+| PR types' home | `provider/types.rs`, not github-private | The data (`PrSummary` etc.) is backend-neutral; only the fetch is GitHub-specific — and that's exactly what the capability method expresses |
+| `set_labels` param order | kept inherent `(issue_id, repo, org, names)` | Matching the existing signature kept the delegation mechanical; a cosmetic reorder would churn call sites for nothing |
+| Terminology | org/repo names unchanged | Renaming to something neutral is deferred until a second provider exists to inform the naming |
+
+## Diversions from plan
+
+None functional. The plan sketched `set_labels(issue_id, org, repo, …)`; implementation kept the existing `(issue_id, repo, org, …)` order (see decisions).
+
+## Verification
+
+- `cargo test` — 200 passed (new: factory rejects unknown provider; capability defaults report `Unsupported`).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- Live TUI drive (pty + pyte): default startup and `--provider github` both fetch the full org (128 issues, 19 repos) through the trait object; detail pane opens and renders; `--provider linear` exits with `unknown provider 'linear'; supported: github`.
