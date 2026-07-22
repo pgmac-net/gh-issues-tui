@@ -506,3 +506,39 @@ None functional. The plan sketched `set_labels(issue_id, org, repo, …)`; imple
 - `cargo test` — 200 passed (new: factory rejects unknown provider; capability defaults report `Unsupported`).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - Live TUI drive (pty + pyte): default startup and `--provider github` both fetch the full org (128 issues, 19 repos) through the trait object; detail pane opens and renders; `--provider linear` exits with `unknown provider 'linear'; supported: github`.
+
+# Development log — Linear provider (2026-07-23)
+
+Ticket: [#24](https://github.com/pgmac-net/gh-issues-tui/issues/24) — second backend behind the [#63](https://github.com/pgmac-net/gh-issues-tui/issues/63) `IssueProvider` abstraction. Implemented on Opus 4.8 (plan rated COMPLEX / Fable 5; Fable unavailable this session — Opus is the sanctioned COMPLEX fallback).
+
+## What was done
+
+New `src/linear/`:
+- `auth.rs` — key chain `--token` → `LINEAR_API_KEY` → `LINEAR_TOKEN`, injectable-closure tests mirroring `github/auth.rs`.
+- `mod.rs` — priority int ↔ `priority:*` value mapping and synthetic-label helpers (`synthetic_priority_labels`, `synthetic_priority_id_to_int`, prefix `linear-priority:`).
+- `client.rs` — Linear GraphQL client (endpoint `https://api.linear.app/graphql`, raw `Authorization` header) implementing `IssueProvider`. Teams → `RepoIssues`; issues paginated per team via `pageInfo`. Mutations: `commentCreate`, `issueUpdate` (state via resolved team workflow state, title, single assignee, labels+priority), `issueCreate`.
+
+Wiring: `provider::build` gains a `linear` arm; `SUPPORTED = ["github", "linear"]`; `main.rs` declares `mod linear`.
+
+## Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Grouping | Teams = repo groups | Teams own issues **and** workflow states, so state/label lookups stay scoped to one team |
+| Selection | Explicit only (flag/config) | Per the ticket: default GitHub unless specifically configured; `.linear.toml` sniffing is unreliable (third-party CLI's file) |
+| Priority | Native field ↔ synthetic `priority:*` label | Existing sort/colour/filter/picker code works untouched; read folds native→label, write peels label→native |
+| Synthetic ids | Prefix `linear-priority:`, resolved against `real_repo_labels` | Keeps fake ids out of Linear mutations; one detection point for both create (id) and set (name) paths |
+| PR summary | `supports_pr_summary = false` | Linear has no GitHub PR links; #63's capability gate degrades `P` to a status message |
+| Comment count | Not fetched in bulk list | Linear has no cheap per-issue comment total on the issues connection; the detail pane still loads the full thread |
+
+## Diversions from plan
+
+- **Comment count** shows as absent in the Linear list view (0), rather than a real count — Linear's issues connection has no cheap comment total. Flagged in the plan's "unknowns to confirm live"; resolved by degrading gracefully. Detail-pane thread is unaffected.
+- **`l` label editor lists the synthetic `priority:*` entries** (they must appear for the `p` picker, which reads the same `repo_labels`). Selecting one there sets priority — harmless, documented.
+- Milestones stay empty; `projects` maps to Linear projects (the plan left this open).
+
+## Verification
+
+- `cargo test` — 214 passed (14 new across `linear::{auth,mod,client}`: key chain, priority round-trip, synthetic-label wellformedness, issue mapping for open/completed/canceled, closed-type classification, rate-limit + error-message parsing).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- Live drive against a real Linear workspace: see the PR for captured screens.

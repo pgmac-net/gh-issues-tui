@@ -25,7 +25,30 @@ gh-issues --provider github     # issue backend (default: github; currently the 
 
 `--org` accepts an organisation or a user account.
 
-`--provider` selects the issue backend. GitHub is the only backend today; the flag (and the matching `provider` config key) exist so future backends (Linear, Jira) can be selected without a breaking change.
+`--provider` selects the issue backend: `github` (default) or `linear`. Jira is not yet implemented.
+
+### Linear backend
+
+```sh
+LINEAR_API_KEY=lin_api_… gh-issues --provider linear
+```
+
+Set `provider = "linear"` in the config to make it the default. Selection is explicit only — a git repo in the cwd never implies Linear.
+
+Authentication uses a Linear **personal API key**: `--token` flag → `LINEAR_API_KEY` → `LINEAR_TOKEN`. As with GitHub, the key is never stored in the config file.
+
+How Linear concepts map onto the UI:
+
+| UI concept | Linear |
+|---|---|
+| Repo group | Team (shown by team key, e.g. `ENG`) |
+| Issue number | Per-team issue number |
+| `priority:*` label | Linear's native priority field, surfaced as a synthetic label so sort/colour/filter/`p` all work; setting it writes the native field back |
+| Assignees | Single assignee (the list holds 0 or 1) |
+| Close / reopen | Moves the issue to a `completed` / open workflow state in its team |
+| `--org` | Ignored — the workspace is fixed by the API key |
+
+Not available on Linear: the linked-PR summary (`P`) — Linear issues have no GitHub PR links, so the key reports "not supported". Linear has no milestones or issue types in the GitHub sense; those form fields stay empty. The list view does not show a comment count for Linear issues (the count appears once you open the detail pane).
 
 ### Starting inside a repository clone
 

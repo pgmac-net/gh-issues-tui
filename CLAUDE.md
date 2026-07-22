@@ -26,11 +26,18 @@ Three top-level modules wired together in `src/main.rs`:
 | `cwd_repo` | Detects the cwd's `origin` GitHub remote (`(owner, repo)`), best-effort via `git remote get-url origin`. |
 | `provider` | Backend-neutral layer: `IssueProvider` trait, domain types, `ProviderError`, name → provider factory. |
 | `github` | Async GitHub GraphQL v4 client + token resolution; implements `IssueProvider`. |
+| `linear` | Async Linear GraphQL client + key resolution; implements `IssueProvider`. Teams = repo groups; native priority ↔ synthetic `priority:*` labels. |
 | `tui` | Terminal UI (ratatui + crossterm). Owns the event loop; talks only to `Provider` (`Arc<dyn IssueProvider>`). |
 
 Startup org resolution in `main.rs`: `--org` flag → cwd git remote (owner, plus the repo name as the initial repo filter) → `default_org`. The detected repo filter is applied with `--org` only when the remote owner matches the flag.
 
-Startup provider resolution in `main.rs`: `--provider` flag → `provider` config key → `"github"`. `provider::build` maps the name to a boxed provider and resolves its credentials; unknown names error with the supported list (`provider::SUPPORTED`).
+Startup provider resolution in `main.rs`: `--provider` flag → `provider` config key → `"github"`. `provider::build` maps the name to a boxed provider and resolves its credentials; unknown names error with the supported list (`provider::SUPPORTED` = `github`, `linear`).
+
+### linear/
+
+- `auth.rs` — `resolve_key`: `--token` → `LINEAR_API_KEY` → `LINEAR_TOKEN`. No local-CLI fallback (no `gh` equivalent). Personal key sent raw in `Authorization` (no `Bearer`).
+- `mod.rs` — priority int (`1=urgent … 4=low`, `0=none`) ↔ `priority:*` label-value mapping, and synthetic-label helpers. Synthetic label ids carry the `linear-priority:` prefix and never reach Linear.
+- `client.rs` — Linear GraphQL client, `impl IssueProvider`. **Teams = repo groups** (`repo` = team key; `org` arg ignored — workspace is the key's). Native priority is folded into a synthetic `priority:*` label on read (`to_issue`) so the app's sort/colour/filter/picker need no Linear special-casing; `set_labels` peels a `priority:*` **name** to the native field, `create_issue` peels a synthetic priority **id** from `label_ids`, both resolving real labels against `real_repo_labels` (which excludes the synthetics). `set_state` resolves the issue's team workflow states and moves it to the lowest-position state of the wanted category. Single-assignee (0-or-1 vec). `supports_pr_summary = false`; milestones/issue-types empty; comment count not fetched in the bulk list.
 
 ### provider/
 

@@ -74,7 +74,7 @@ pub trait IssueProvider: Send + Sync {
 pub type Provider = Arc<dyn IssueProvider>;
 
 /// Provider names accepted by [`build`], in display order.
-pub const SUPPORTED: &[&str] = &["github"];
+pub const SUPPORTED: &[&str] = &["github", "linear"];
 
 /// Build the provider selected by `name`, resolving its credentials.
 /// `token_flag` is the `--token` CLI value, meaningful per provider
@@ -84,6 +84,10 @@ pub fn build(name: &str, token_flag: Option<String>) -> anyhow::Result<Provider>
         "github" => {
             let token = crate::github::auth::resolve_token(token_flag)?;
             Ok(Arc::new(crate::github::Client::new(token)?))
+        }
+        "linear" => {
+            let key = crate::linear::auth::resolve_key(token_flag)?;
+            Ok(Arc::new(crate::linear::Client::new(key)?))
         }
         other => anyhow::bail!(
             "unknown provider '{other}'; supported: {}",
@@ -98,12 +102,13 @@ mod tests {
 
     #[test]
     fn build_rejects_unknown_provider() {
-        let Err(err) = build("linear", None) else {
+        let Err(err) = build("jira", None) else {
             panic!("expected build to fail");
         };
         let err = err.to_string();
-        assert!(err.contains("unknown provider 'linear'"), "{err}");
+        assert!(err.contains("unknown provider 'jira'"), "{err}");
         assert!(err.contains("github"), "{err}");
+        assert!(err.contains("linear"), "{err}");
     }
 
     struct Minimal;

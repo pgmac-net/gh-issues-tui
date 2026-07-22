@@ -17,6 +17,10 @@ src/
 ├── github/
 │   ├── auth.rs      token chain: --token → GITHUB_TOKEN → GH_TOKEN → gh auth token
 │   └── client.rs    GraphQL v4 client: org-wide fetch + mutations; impl IssueProvider
+├── linear/
+│   ├── auth.rs      key chain: --token → LINEAR_API_KEY → LINEAR_TOKEN
+│   ├── client.rs    Linear GraphQL client; impl IssueProvider
+│   └── mod.rs       priority int ↔ priority:* label mapping, synthetic-label helpers
 └── tui/
     ├── app.rs       all state + pure logic (filters, sort, rows, input)
     ├── event.rs     async event loop, background tasks (talks to Provider, never a concrete client)
@@ -31,7 +35,31 @@ One backend is chosen per session: `--provider` flag → `provider` config key �
 
 Backend-specific features are **capabilities**: trait methods with safe defaults (`Err(ProviderError::Unsupported)`) paired with a `supports_*` probe the UI checks before offering the affordance. Today the only capability is the linked-PR summary popup (`supports_pr_summary` / `pull_request`) — GitHub opts in; a provider that doesn't gets a status-bar message instead of a doomed fetch. Domain types stay in `provider/types.rs` even when only one backend can fetch them today (e.g. `PrSummary`): the data is neutral, the fetch is a capability.
 
-Deliberately out of scope: mixed-source views (multiple providers in one list) and renaming the org/repo terminology — both revisit when a second provider lands.
+Deliberately out of scope for #63: mixed-source views (multiple providers in one list) and renaming the org/repo terminology — both revisit when a second provider lands.
+
+### Linear provider ([#24](https://github.com/pgmac-net/gh-issues-tui/issues/24))
+
+The second backend. Selected explicitly (`--provider linear` / `provider = "linear"`); a cwd git repo never implies Linear. Auth is a Linear personal API key (`--token` → `LINEAR_API_KEY` → `LINEAR_TOKEN`), sent raw in the `Authorization` header (no `Bearer` — that's the personal-key convention).
+
+Concept mapping onto the shared domain types:
+
+| Domain type | Linear source | Notes |
+|---|---|---|
+| `RepoIssues` | Team | `repo` = team key, `repo_url` = team URL. `org_issues` ignores its `org` arg (the workspace is the key's). |
+| `Issue.number` | `issue.number` | Per-team. |
+| `Issue.state` | `state.type` | `completed`/`canceled` → Closed, else Open. |
+| `Issue.assignees` | `issue.assignee` | Single-assignee → a 0-or-1 vec. |
+| `Issue.labels` | issue labels **+ synthetic `priority:*`** | Native priority (`1=urgent … 4=low`, `0=none`) is folded into a `priority:*` label so the app's existing sort/colour/filter/picker code needs no Linear special-casing. |
+| `Issue.closed_at` | `completedAt ?? canceledAt` | |
+
+**Priority round-trip.** Linear priority is a native field, but the UI works in `priority:*` labels. The provider bridges both directions:
+- **Read:** `to_issue` inserts a synthetic `priority:<value>` label from the native int.
+- **Picker/form:** `repo_labels` and `repo_form_options` append the four synthetic `priority:*` entries (ids prefixed `linear-priority:`) so the `p` picker and new-issue form have something to show. (Side effect: the `l` label editor also lists them — selecting one there sets priority, which is harmless.)
+- **Write:** `set_labels` peels a `priority:*` *name* to the native `priority` field and resolves only the real names to team label ids; `create_issue` peels a synthetic priority *id* out of `label_ids` the same way. Real label ids are resolved against `real_repo_labels` (the synthetic entries are never sent to Linear).
+
+**Capabilities.** `supports_pr_summary` stays `false` (no GitHub PR links in Linear), so the `P` keybind degrades to a status message via the #63 capability gate. Milestones and issue types have no Linear equivalent and stay empty; `projects` maps to Linear projects. Comment count is not fetched in the bulk list query (it appears when the detail pane loads the thread).
+
+Close/reopen has no single flag in Linear — state is a per-team workflow object — so `set_state` first resolves the issue's team states and moves it to the lowest-position state of the wanted category (`completed` to close; a non-done state to reopen).
 
 ## Data fetch strategy
 
