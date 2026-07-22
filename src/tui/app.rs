@@ -335,7 +335,7 @@ pub enum Mode {
     SelectFieldMulti(usize),
     /// Calendar date picker.
     Calendar(usize),
-    /// y/n confirmation for close/reopen.
+    /// Confirmation popup for close/reopen.
     ConfirmState,
     /// New-issue form field list.
     IssueForm,
@@ -384,6 +384,15 @@ pub enum CommentFocus {
     Editor,
     Save,
     Cancel,
+}
+
+/// Which button has keys in the `Mode::ConfirmState` popup. Reset to `No`
+/// each time the popup opens — the safe default if Enter is pressed without
+/// looking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmChoice {
+    Yes,
+    No,
 }
 
 /// The new-issue form fields, in display order. The row after the last
@@ -1006,6 +1015,9 @@ pub struct App {
     /// Which element of the comment section has keys; reset to `Editor`
     /// each time the editor opens.
     pub comment_focus: CommentFocus,
+    /// Which button has keys in the `Mode::ConfirmState` popup; reset to
+    /// `No` each time the popup opens.
+    pub confirm_choice: ConfirmChoice,
     /// Issue id the set-priority picker was requested for; guards against
     /// stale option responses and selection drift while options load.
     pub priority_pick_issue: Option<String>,
@@ -1074,6 +1086,7 @@ impl App {
             issue_form: None,
             comment_editor: BodyEditor::default(),
             comment_focus: CommentFocus::Editor,
+            confirm_choice: ConfirmChoice::No,
             priority_pick_issue: None,
             label_pick_issue: None,
             calendar_cursor: Utc::now().date_naive(),
