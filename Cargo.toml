@@ -1,6 +1,6 @@
 [package]
 name = "gh-issues"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 description = "Interactive TUI for browsing and managing GitHub issues across an organisation"
 license = "MIT"
