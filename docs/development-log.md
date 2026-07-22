@@ -416,3 +416,33 @@ Work driven by [pgmac-net/gh-issues-tui#46](https://github.com/pgmac-net/gh-issu
 - `cargo test` — 162 passed (6 new: 2 config, 3 `selected_short_ref`, existing suite untouched otherwise).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - Manual smoke test of `y` against a live terminal session left for the PR review step.
+
+# Development log — inline comment editor (2026-07-22)
+
+Work driven by [pgmac-net/gh-issues-tui#51](https://github.com/pgmac-net/gh-issues-tui/issues/51), delivered in PR #53 on branch `51-inline-comment-editor`.
+
+## Process
+
+1. **Plan approval** — implementation plan posted to the ticket and approved before any code, rated STANDARD (implemented on Sonnet 5).
+2. **Clarifying questions** — two open questions resolved with the user before planning: what `c` should do when the detail pane is closed (auto-open it, so no behaviour is lost from the list view), and what the save/cancel UI should look like (rendered `[ Save ]  [ Cancel ]` buttons with `Tab` focus-cycling, rather than a border-title hint).
+3. **Implementation** — replaced the centered `Mode::CommentEditor` popup (`draw_comment_editor_popup`) with an inline section carved out of the bottom third of the detail pane. Added `CommentFocus` (`Editor`/`Save`/`Cancel`) alongside the existing `Focus` enum, `App::start_comment_editor` (mirrors `enter_detail`'s auto-open-and-return-fetch-id pattern), and `comment_pane_width` (mirrors `body_popup_width`'s render/key-handler shared-formula pattern, approximating the detail pane's 60%-of-frame width since it sits behind a `Layout::horizontal` split rather than a fixed popup width).
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| `c` with pane closed | auto-open the pane (fetch comments) and start the editor in one step | User's explicit choice — no behaviour lost versus the old popup, which worked from anywhere |
+| Save/cancel UI | rendered `[ Save ]  [ Cancel ]` button row, `Tab`/`Shift+Tab` cycles editor→Save→Cancel | User's explicit choice over a border-title-only hint; `Ctrl+S`/`Esc` kept as shortcuts from any focus so muscle memory from the old popup still works |
+| Section height | `Constraint::Percentage(33)` of the detail pane, `Constraint::Min(1)` for the thread above it | Matches the ticket's "about 33% of the total height" ask directly |
+| Width formula | new `comment_pane_width`, same clamp-and-subtract-borders shape as `body_popup_width` | One source of truth shared between the renderer and the key handler's visual-row up/down math, same reasoning as the existing popup helpers — exact for a fixed-width popup, an approximation here since the real width comes from a `Layout` solver, judged good enough since it only affects cursor keep-visible scrolling |
+| Already-open pane | `start_comment_editor` doesn't reset `detail_comments` when the pane was already open | Avoids re-fetching or blanking an already-loaded thread just because the editor opened; only closed-pane opens need `spawn_comments` |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- `cargo test` — 185 passed (9 new: 4 `start_comment_editor` in `app.rs`, 5 focus-cycling/discard/save in `event.rs`).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- Live smoke test: tmux-driven session against the release build and the real `pgmac-net` org, on issue #51 itself. Pressed `c` from the list view (pane closed) — pane auto-opened, comment thread loaded, inline section appeared at the bottom with the editor focused; typed multi-line text and confirmed wrap; `Tab` moved focus to `[ Save ]` (confirmed reversed-video highlight via raw ANSI capture), `Enter` submitted — verified posted via `gh issue view --json comments`, then deleted the scratch comment. Repeated with `Tab`×2 to `[ Cancel ]`, `Enter` discarded — confirmed via `gh api .../comments` that no second comment was created.

@@ -12,8 +12,8 @@ use crate::github::types::{
 };
 
 use super::app::{
-    App, BodyEditor, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter,
-    body_popup_width, priority_label_set, priority_set_options,
+    App, BodyEditor, CommentFocus, Focus, ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode,
+    StateFilter, body_popup_width, comment_pane_width, priority_label_set, priority_set_options,
 };
 use super::theme::Theme;
 use super::ui;
@@ -782,21 +782,50 @@ fn handle_comment_editor_key(
 ) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Esc => {
-            app.comment_editor = BodyEditor::default();
-            app.mode = Mode::Normal;
-            app.status = Some("comment discarded".into());
-        }
+        KeyCode::Esc => cancel_comment(app),
         KeyCode::Char('s') if ctrl => submit_comment(app, client, tx),
-        _ => {
-            apply_body_editor_key(&mut app.comment_editor, key, body_wrap_width());
+        KeyCode::Tab => app.comment_focus = next_comment_focus(app.comment_focus),
+        KeyCode::BackTab => app.comment_focus = prev_comment_focus(app.comment_focus),
+        KeyCode::Enter | KeyCode::Char(' ') if app.comment_focus == CommentFocus::Save => {
+            submit_comment(app, client, tx)
         }
+        KeyCode::Enter | KeyCode::Char(' ') if app.comment_focus == CommentFocus::Cancel => {
+            cancel_comment(app)
+        }
+        _ if app.comment_focus == CommentFocus::Editor => {
+            apply_body_editor_key(&mut app.comment_editor, key, comment_wrap_width());
+        }
+        _ => {}
+    }
+}
+
+fn cancel_comment(app: &mut App) {
+    app.comment_editor = BodyEditor::default();
+    app.comment_focus = CommentFocus::Editor;
+    app.mode = Mode::Normal;
+    app.status = Some("comment discarded".into());
+}
+
+fn next_comment_focus(focus: CommentFocus) -> CommentFocus {
+    match focus {
+        CommentFocus::Editor => CommentFocus::Save,
+        CommentFocus::Save => CommentFocus::Cancel,
+        CommentFocus::Cancel => CommentFocus::Editor,
+    }
+}
+
+fn prev_comment_focus(focus: CommentFocus) -> CommentFocus {
+    match focus {
+        CommentFocus::Editor => CommentFocus::Cancel,
+        CommentFocus::Save => CommentFocus::Editor,
+        CommentFocus::Cancel => CommentFocus::Save,
     }
 }
 
 fn submit_comment(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
     let value = app.comment_editor.text();
     app.comment_editor = BodyEditor::default();
+    app.comment_focus = CommentFocus::Editor;
     app.mode = Mode::Normal;
     if value.trim().is_empty() {
         app.status = Some("empty comment discarded".into());
@@ -811,6 +840,12 @@ fn submit_comment(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<App
 fn body_wrap_width() -> usize {
     let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
     body_popup_width(cols) as usize
+}
+
+/// The wrap width the inline comment section is currently rendered at.
+fn comment_wrap_width() -> usize {
+    let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+    comment_pane_width(cols) as usize
 }
 
 fn submit_issue_form(app: &mut App, client: &Client, tx: &mpsc::UnboundedSender<AppEvent>) {
@@ -1009,9 +1044,8 @@ fn handle_normal_key(
 
         // mutations
         KeyCode::Char('c') => {
-            if app.selected_issue().is_some() {
-                app.comment_editor = BodyEditor::default();
-                app.mode = Mode::CommentEditor;
+            if let Some(issue_id) = app.start_comment_editor() {
+                spawn_comments(client, issue_id, tx);
             }
         }
         KeyCode::Char('x') => {
@@ -1778,5 +1812,80 @@ mod tests {
         app.detail_open = true;
         app.selected = 0; // repo header row
         assert_eq!(comments_refresh_target(&app), None);
+    }
+
+    fn comment_editor_test_app() -> App {
+        let (mut app, _issue_id) = app_with_issue(&[]);
+        app.start_comment_editor();
+        app
+    }
+
+    #[test]
+    fn tab_cycles_comment_focus_editor_save_cancel() {
+        let mut app = comment_editor_test_app();
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        assert_eq!(app.comment_focus, CommentFocus::Editor);
+        handle_comment_editor_key(&mut app, key(KeyCode::Tab), &client, &tx);
+        assert_eq!(app.comment_focus, CommentFocus::Save);
+        handle_comment_editor_key(&mut app, key(KeyCode::Tab), &client, &tx);
+        assert_eq!(app.comment_focus, CommentFocus::Cancel);
+        handle_comment_editor_key(&mut app, key(KeyCode::Tab), &client, &tx);
+        assert_eq!(app.comment_focus, CommentFocus::Editor);
+    }
+
+    #[test]
+    fn back_tab_cycles_comment_focus_in_reverse() {
+        let mut app = comment_editor_test_app();
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_comment_editor_key(&mut app, key(KeyCode::BackTab), &client, &tx);
+        assert_eq!(app.comment_focus, CommentFocus::Cancel);
+    }
+
+    #[test]
+    fn enter_on_cancel_focus_discards_and_returns_to_normal() {
+        let mut app = comment_editor_test_app();
+        app.comment_editor.insert('x');
+        app.comment_focus = CommentFocus::Cancel;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_comment_editor_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.comment_editor.text(), "");
+        assert_eq!(app.status.as_deref(), Some("comment discarded"));
+    }
+
+    #[test]
+    fn typed_chars_only_reach_editor_when_editor_focused() {
+        let mut app = comment_editor_test_app();
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        app.comment_focus = CommentFocus::Save;
+        handle_comment_editor_key(&mut app, key(KeyCode::Char('x')), &client, &tx);
+        assert_eq!(app.comment_editor.text(), "");
+
+        app.comment_focus = CommentFocus::Editor;
+        handle_comment_editor_key(&mut app, key(KeyCode::Char('x')), &client, &tx);
+        assert_eq!(app.comment_editor.text(), "x");
+    }
+
+    #[test]
+    fn esc_discards_regardless_of_focus() {
+        let mut app = comment_editor_test_app();
+        app.comment_editor.insert('x');
+        app.comment_focus = CommentFocus::Save;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_comment_editor_key(&mut app, key(KeyCode::Esc), &client, &tx);
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.comment_editor.text(), "");
     }
 }
