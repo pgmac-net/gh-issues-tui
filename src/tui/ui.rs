@@ -8,9 +8,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use crate::github::types::Issue;
 
 use super::app::{
-    App, BODY_POPUP_WIDTH, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH, ISSUE_FORM_CREATE_ROW,
-    ISSUE_FORM_FIELDS, InputKind, Mode, Row, body_popup_width, cursor_row, input_popup_width,
-    input_scroll_skip, wrap_lines,
+    App, BODY_POPUP_WIDTH, CommentFocus, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH,
+    ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row, body_popup_width,
+    comment_pane_width, cursor_row, input_popup_width, input_scroll_skip, wrap_lines,
 };
 use super::theme::Theme;
 
@@ -52,7 +52,6 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
             draw_issue_form(f, app, t);
             draw_form_body_popup(f, app, t);
         }
-        Mode::CommentEditor => draw_comment_editor_popup(f, app, t),
         Mode::Input(kind) => draw_input_popup(f, app, t, kind),
         Mode::PrioritySet => draw_priority_popup(f, app, t),
         Mode::LabelsSet => draw_labels_popup(f, app, t),
@@ -164,6 +163,14 @@ fn pane_border(app: &App, t: &Theme, pane: Focus) -> Style {
 }
 
 fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let area = if app.mode == Mode::CommentEditor {
+        let [thread, comment] =
+            Layout::vertical([Constraint::Min(1), Constraint::Percentage(33)]).areas(area);
+        draw_comment_section(f, app, t, comment);
+        thread
+    } else {
+        area
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
@@ -751,21 +758,26 @@ fn draw_form_body_popup(f: &mut Frame, app: &App, t: &Theme) {
     f.render_widget(para, area);
 }
 
-fn draw_comment_editor_popup(f: &mut Frame, app: &App, t: &Theme) {
-    let area = centered(f.area(), BODY_POPUP_WIDTH, 18.min(f.area().height));
-    f.render_widget(Clear, area);
+/// The inline comment section at the bottom of the detail pane
+/// (`Mode::CommentEditor`): a multi-line editor with a `[ Save ]  [ Cancel ]`
+/// button row, the focused element highlighted. Width matches
+/// `comment_pane_width` so the renderer and the key handler's up/down
+/// visual-row navigation agree on wrap geometry.
+fn draw_comment_section(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    let width = comment_pane_width(f.area().width) as usize;
+    // One row reserved for the button line at the bottom of the block.
     let inner_height = area.height.saturating_sub(2) as usize;
-    let width = body_popup_width(f.area().width) as usize;
+    let text_height = inner_height.saturating_sub(1);
 
     let body = &app.comment_editor;
     let rows = wrap_lines(&body.lines, width);
     let (cur_row, cur_col) = cursor_row(&rows, body.line, body.lines[body.line].cursor);
-    let top = cur_row.saturating_sub(inner_height.saturating_sub(1));
-    let lines: Vec<Line> = rows
+    let top = cur_row.saturating_sub(text_height.saturating_sub(1));
+    let mut lines: Vec<Line> = rows
         .iter()
         .enumerate()
         .skip(top)
-        .take(inner_height)
+        .take(text_height)
         .map(|(i, row)| {
             let text: String = body.lines[row.line]
                 .buffer
@@ -773,20 +785,51 @@ fn draw_comment_editor_popup(f: &mut Frame, app: &App, t: &Theme) {
                 .skip(row.start)
                 .take(row.end - row.start)
                 .collect();
-            if i == cur_row {
+            if i == cur_row && app.comment_focus == CommentFocus::Editor {
                 Line::from(cursor_spans(&text, cur_col))
             } else {
                 Line::raw(text)
             }
         })
         .collect();
+    lines.push(comment_button_line(app, t, width));
+
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(t.accent))
-            .title(" comment (Ctrl+S submits · Esc cancels) "),
+            .title(" add comment (Ctrl+S save · Esc cancel) "),
     );
     f.render_widget(para, area);
+}
+
+/// The centered `[ Save ]  [ Cancel ]` button row, with the focused button
+/// drawn in reversed video.
+fn comment_button_line(app: &App, t: &Theme, width: usize) -> Line<'static> {
+    const SAVE: &str = "[ Save ]";
+    const CANCEL: &str = "[ Cancel ]";
+    let gap = "  ";
+    let total = SAVE.len() + gap.len() + CANCEL.len();
+    let pad = " ".repeat(width.saturating_sub(total) / 2);
+
+    let button_style = |focused: bool| {
+        if focused {
+            Style::default()
+                .fg(t.accent)
+                .add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        }
+    };
+    Line::from(vec![
+        Span::raw(pad),
+        Span::styled(SAVE, button_style(app.comment_focus == CommentFocus::Save)),
+        Span::raw(gap),
+        Span::styled(
+            CANCEL,
+            button_style(app.comment_focus == CommentFocus::Cancel),
+        ),
+    ])
 }
 
 /// Single-line input popup used for search/filters/assignees/labels/title/
@@ -912,7 +955,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("F", "filter editor (pickers + calendar)"),
         ("s / S", "cycle sort key / toggle direction"),
         ("w", "switch org/owner"),
-        ("c", "add comment (multi-line, Ctrl+S submits)"),
+        ("c", "add comment (inline, Tab to buttons, Ctrl+S save)"),
         ("x", "close / reopen issue"),
         ("a", "edit assignees"),
         ("l", "edit labels"),

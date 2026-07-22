@@ -377,6 +377,15 @@ pub enum Focus {
     Detail,
 }
 
+/// Which element of the inline comment section (`Mode::CommentEditor`) has
+/// keys: the multi-line editor itself, or one of its two buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentFocus {
+    Editor,
+    Save,
+    Cancel,
+}
+
 /// The new-issue form fields, in display order. The row after the last
 /// field is the `[Create issue]` action (`ISSUE_FORM_CREATE_ROW`).
 pub const ISSUE_FORM_FIELDS: &[&str] = &[
@@ -870,6 +879,15 @@ pub fn input_popup_width(frame_width: u16) -> u16 {
     INPUT_POPUP_WIDTH.min(frame_width).saturating_sub(2)
 }
 
+/// The inline comment section's inner (text) width: it lives in the detail
+/// pane, which is the right 60% of the frame (see `ui::draw`'s 40/60 split),
+/// minus the section's own border columns. One source of truth for the
+/// renderer and the key handler so wrap geometry always agrees.
+pub fn comment_pane_width(frame_width: u16) -> u16 {
+    let right = (frame_width as u32 * 60 / 100) as u16;
+    right.saturating_sub(2)
+}
+
 /// The char index to start displaying from so a single-line input's cursor
 /// always stays within a `width`-wide window. Stateless: recomputed from
 /// `cursor` and `width` each frame, so the window only moves when the
@@ -985,6 +1003,9 @@ pub struct App {
     /// Multi-line editor backing `Mode::CommentEditor`; reset each time the
     /// editor opens or closes.
     pub comment_editor: BodyEditor,
+    /// Which element of the comment section has keys; reset to `Editor`
+    /// each time the editor opens.
+    pub comment_focus: CommentFocus,
     /// Issue id the set-priority picker was requested for; guards against
     /// stale option responses and selection drift while options load.
     pub priority_pick_issue: Option<String>,
@@ -1052,6 +1073,7 @@ impl App {
             multi_selected: Default::default(),
             issue_form: None,
             comment_editor: BodyEditor::default(),
+            comment_focus: CommentFocus::Editor,
             priority_pick_issue: None,
             label_pick_issue: None,
             calendar_cursor: Utc::now().date_naive(),
@@ -1273,6 +1295,19 @@ impl App {
             self.open_detail();
             Some(id)
         }
+    }
+
+    /// `c`: start (or restart) the inline comment editor for the selected
+    /// issue. Opens the detail pane first when it is closed (auto-follow —
+    /// `c` works the same from the list view as it does inside the pane).
+    /// Returns the issue id when the pane was newly opened and its
+    /// comments need fetching, mirroring `enter_detail`.
+    pub fn start_comment_editor(&mut self) -> Option<String> {
+        self.selected_issue()?;
+        self.comment_editor = BodyEditor::default();
+        self.comment_focus = CommentFocus::Editor;
+        self.mode = Mode::CommentEditor;
+        self.enter_detail()
     }
 
     /// Close the detail pane, returning focus to the list.
@@ -2951,6 +2986,50 @@ mod tests {
         assert_eq!(app.enter_detail(), None); // no comment refetch
         assert!(app.detail_open);
         assert_eq!(app.focus, Focus::Detail);
+    }
+
+    #[test]
+    fn start_comment_editor_on_header_is_none_and_keeps_pane_closed() {
+        let mut app = two_repo_app();
+        app.selected = 0; // repo header
+        assert_eq!(app.start_comment_editor(), None);
+        assert!(!app.detail_open);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn start_comment_editor_opens_closed_pane_and_requests_comments() {
+        let mut app = two_repo_app();
+        app.selected = 1; // first issue row
+        let expected = app.selected_issue().unwrap().id.clone();
+        assert_eq!(app.start_comment_editor(), Some(expected));
+        assert!(app.detail_open);
+        assert_eq!(app.focus, Focus::Detail);
+        assert_eq!(app.mode, Mode::CommentEditor);
+        assert_eq!(app.comment_focus, CommentFocus::Editor);
+    }
+
+    #[test]
+    fn start_comment_editor_on_open_pane_keeps_comments_and_skips_refetch() {
+        let mut app = two_repo_app();
+        app.selected = 1;
+        app.open_detail();
+        app.detail_comments = Some(vec![]);
+        assert_eq!(app.start_comment_editor(), None); // no comment refetch
+        assert!(app.detail_open);
+        assert_eq!(app.mode, Mode::CommentEditor);
+        assert_eq!(app.detail_comments.as_ref().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn start_comment_editor_resets_stale_editor_content_and_focus() {
+        let mut app = two_repo_app();
+        app.selected = 1;
+        app.comment_editor.insert('x');
+        app.comment_focus = CommentFocus::Save;
+        app.start_comment_editor();
+        assert_eq!(app.comment_editor.text(), "");
+        assert_eq!(app.comment_focus, CommentFocus::Editor);
     }
 
     #[test]

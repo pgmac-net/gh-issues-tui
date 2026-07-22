@@ -113,7 +113,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `F` | filter editor (repo, assignee, author, priority, status, created/updated/closed date bounds) |
 | `s` / `S` | cycle sort key / toggle direction |
 | `w` | switch org/owner (free-text; resets filters and view state) |
-| `c` | add a comment (multi-line editor; `Ctrl+S` submits, `Esc` discards) |
+| `c` | add a comment: opens the detail pane (if closed) and its inline editor section (`Ctrl+S` submits, `Esc` discards) |
 | `x` | close or reopen the issue (asks y/n) |
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (picker of the repo's labels, current labels pre-checked) |
@@ -129,7 +129,7 @@ Sort keys: updated, created, closed, state, assignee, author, priority.
 
 ### Editing keys
 
-Every text input (search, filters, assignees, title, org, the new-issue title, and the comment/description editors) opens as a small popup box and supports readline-style editing. The cursor is a block sitting **on** a character:
+Every text input (search, filters, assignees, title, org, the new-issue title, and the description editor) opens as a small popup box and supports readline-style editing. The cursor is a block sitting **on** a character:
 
 | Key | Action |
 |-----|--------|
@@ -142,7 +142,11 @@ Every text input (search, filters, assignees, title, org, the new-issue title, a
 
 Single-line popups (search, filters, assignees, title, org, new-issue title) scroll horizontally to keep the cursor visible when the value is wider than the box; `Enter` submits, `Esc` cancels.
 
-In the multi-line comment and description editors, text word-wraps at the popup width, `↑`/`↓` move by *visual* (wrapped) row, `Enter` inserts a newline, and `Delete` at the end of a line joins the next line on. The comment editor submits on `Ctrl+S` (`Esc` discards); the new-issue description keeps its text on `Esc` and returns to the form.
+In the multi-line comment and description editors, text word-wraps at the editor's width, `↑`/`↓` move by *visual* (wrapped) row, `Enter` inserts a newline, and `Delete` at the end of a line joins the next line on. The new-issue description keeps its text on `Esc` and returns to the form.
+
+### Adding a comment
+
+`c` adds a comment on the selected issue: it opens the detail pane if it's closed (loading the comment thread) and adds an inline section at the bottom, about a third of the pane's height, with a multi-line editor and a `[ Save ]  [ Cancel ]` button row. `Tab`/`Shift+Tab` cycle focus between the editor and the two buttons; `Enter`/`Space` activates whichever is focused. `Ctrl+S` saves and `Esc` cancels from anywhere in the section, regardless of focus. Saving posts the comment and refreshes the thread; cancelling discards the draft and returns to the plain detail pane.
 
 ### Creating issues
 
