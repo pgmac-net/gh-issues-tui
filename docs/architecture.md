@@ -29,6 +29,8 @@ The GitHub search API (`org:X is:issue`) was rejected because it silently caps a
 
 Only open issues are fetched at startup (fast path). The first time the user cycles the state filter to closed/all, the dataset is upgraded once with a refetch that includes closed issues.
 
+Including closed issues can push a single request's combined repo/issue page size over GitHub's GraphQL complexity budget (`Resource limits for this query exceeded`). `Client::graphql_with_backoff` catches this (`GithubError::ResourceLimited`) and retries the same cursor with halved page sizes — cursors are opaque positions, so a smaller `first` mid-fetch is valid — down to a floor, after which the error is surfaced as readable text instead of a raw JSON dump.
+
 ## UI model
 
 - **Row model**: the visible list is a flat `Vec<Row>` of `RepoHeader` and `Issue` entries, rebuilt (`rebuild_rows`) whenever data, filters, sort, or collapse state change. Selection is an index into this vector and is clamped on rebuild.
