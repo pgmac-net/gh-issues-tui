@@ -446,3 +446,32 @@ None — implemented as approved.
 - `cargo test` — 185 passed (9 new: 4 `start_comment_editor` in `app.rs`, 5 focus-cycling/discard/save in `event.rs`).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - Live smoke test: tmux-driven session against the release build and the real `pgmac-net` org, on issue #51 itself. Pressed `c` from the list view (pane closed) — pane auto-opened, comment thread loaded, inline section appeared at the bottom with the editor focused; typed multi-line text and confirmed wrap; `Tab` moved focus to `[ Save ]` (confirmed reversed-video highlight via raw ANSI capture), `Enter` submitted — verified posted via `gh issue view --json comments`, then deleted the scratch comment. Repeated with `Tab`×2 to `[ Cancel ]`, `Enter` discarded — confirmed via `gh api .../comments` that no second comment was created.
+
+# Development log — readable GraphQL resource-limit errors + page-size backoff (2026-07-22)
+
+Work driven by [pgmac-net/gh-issues-tui#53](https://github.com/pgmac-net/gh-issues-tui/issues/53), delivered in PR #54 on branch `53-graphql-resource-limit-error`.
+
+## Process
+
+1. **Plan approval** — implementation plan posted to the ticket and approved before any code, rated STANDARD (implemented on Sonnet 5).
+2. **Code inspection** — traced the `f` key handler (`event.rs`) that upgrades `include_closed` and refetches on the first switch away from the open-only state filter, into `Client::org_issues`/`graphql` (`client.rs`) where the raw GraphQL `errors` array was being stringified straight into the status line, and the `GithubError` enum (`error.rs`) that had no variant for a resource-limit response.
+3. **Implementation** — added `GithubError::ResourceLimited`, classified via a new `errors_contain_resource_limited` (matches known `type` values or a `Resource limits` message substring, since GitHub's exact error `type` for this case isn't consistently documented and the ticket's own paste of the error was truncated before the `type` value). Added `PageSizes` (repos/issues page sizes with a `shrink()` halving method) and `Client::graphql_with_backoff`, which retries a query from the same cursor with smaller pages on that error. Wired both the top-level `ORG_ISSUES_QUERY` loop and the nested per-repo `REPO_ISSUES_QUERY` pagination in `org_issues` through one shared `PageSizes` for the whole fetch.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Detection | match GraphQL error `type` OR a `Resource limits` message substring | GitHub's `type` value for this error isn't documented and the ticket's pasted error was cut off before it; the message text is the one thing confirmed from the actual failure |
+| Backoff scope | one `PageSizes`, shared and never grown back across a whole `org_issues` run | A query that overflows the complexity budget once is likely to again for the same org; growing back would just re-trigger the same failure on the next repo |
+| Backoff shape | halve both repos and issues together down to independent floors (5 / 10) | The error path in the ticket's example pointed deep into nested fields (`repositories.nodes[45].issues.nodes[7].comments.totalCount`), i.e. combined complexity — not clearly attributable to one dimension, so both shrink together |
+| Other GraphQL errors | join each entry's `message` field instead of `errors.to_string()` | Same status-line readability problem existed for any GraphQL error, not just resource-limit ones; minimal fix, same pattern as the existing rate-limit path |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- `cargo build --release`, `cargo test` — 190 passed (7 new: resource-limit detection by type and by message-only, message-joining incl. raw-JSON fallback, and the page-shrink sequence down to its floor).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- No live smoke test: reproducing GitHub's actual resource-limit response requires an org large enough to trip the complexity budget on a closed-issue fetch, which isn't available in this environment. Verified logically instead — cursor pagination is unaffected by page size (GraphQL cursors are opaque), and the new unit tests exercise the exact error-classification and shrink-sequence logic the live path depends on.

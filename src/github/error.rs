@@ -18,6 +18,9 @@ pub enum GithubError {
 
     #[error("{0}")]
     RateLimited(String),
+
+    #[error("query too large for GitHub's GraphQL limits even at the smallest page size ({0})")]
+    ResourceLimited(String),
 }
 
 pub type Result<T> = std::result::Result<T, GithubError>;

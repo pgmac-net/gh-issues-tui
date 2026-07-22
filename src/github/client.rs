@@ -13,6 +13,41 @@ use super::types::{
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 const REPOS_PAGE: u32 = 50;
 const ISSUES_PAGE: u32 = 100;
+const MIN_REPOS_PAGE: u32 = 5;
+const MIN_ISSUES_PAGE: u32 = 10;
+
+/// Page sizes for the org-issues fetch, shrunk on a `ResourceLimited` error
+/// and never grown back — a query that overflows GitHub's complexity budget
+/// once is likely to again, so later requests in the same fetch start small.
+#[derive(Debug, Clone, Copy)]
+struct PageSizes {
+    repos: u32,
+    issues: u32,
+}
+
+impl PageSizes {
+    /// Halves both dimensions toward their floors. Returns `false` (no
+    /// change made) once both are already at the floor — the caller should
+    /// give up and surface the underlying error at that point.
+    fn shrink(&mut self) -> bool {
+        let next_repos = halve(self.repos, MIN_REPOS_PAGE);
+        let next_issues = halve(self.issues, MIN_ISSUES_PAGE);
+        if next_repos == self.repos && next_issues == self.issues {
+            return false;
+        }
+        self.repos = next_repos;
+        self.issues = next_issues;
+        true
+    }
+}
+
+fn halve(current: u32, floor: u32) -> u32 {
+    if current <= floor {
+        floor
+    } else {
+        (current / 2).max(floor)
+    }
+}
 
 /// Async GitHub GraphQL v4 client. Cheap to clone.
 #[derive(Clone)]
@@ -110,11 +145,37 @@ impl Client {
                 };
                 return Err(GithubError::RateLimited(msg));
             }
-            return Err(GithubError::GraphQl(errors.to_string()));
+            if errors_contain_resource_limited(errors) {
+                return Err(GithubError::ResourceLimited(join_error_messages(errors)));
+            }
+            return Err(GithubError::GraphQl(join_error_messages(errors)));
         }
         body.get("data")
             .cloned()
             .ok_or_else(|| GithubError::Shape("missing data".into()))
+    }
+
+    /// Runs a GraphQL query built by `make_vars` from the current page
+    /// sizes, retrying with smaller pages on a `ResourceLimited` error.
+    /// GraphQL cursors are opaque positions, so resuming with a smaller
+    /// `first` from the same cursor is valid — the full dataset still
+    /// arrives, just across more requests.
+    async fn graphql_with_backoff(
+        &self,
+        query: &str,
+        mut make_vars: impl FnMut(&PageSizes) -> Value,
+        sizes: &mut PageSizes,
+    ) -> Result<Value> {
+        loop {
+            match self.graphql(query, make_vars(sizes)).await {
+                Err(GithubError::ResourceLimited(msg)) => {
+                    if !sizes.shrink() {
+                        return Err(GithubError::ResourceLimited(msg));
+                    }
+                }
+                other => return other,
+            }
+        }
     }
 
     /// Fetch all issues for every repository owned by `org` — an
@@ -130,18 +191,25 @@ impl Client {
         };
         let mut out = Vec::new();
         let mut repo_cursor: Option<String> = None;
+        let mut sizes = PageSizes {
+            repos: REPOS_PAGE,
+            issues: ISSUES_PAGE,
+        };
 
         loop {
             let data = self
-                .graphql(
+                .graphql_with_backoff(
                     ORG_ISSUES_QUERY,
-                    json!({
-                        "org": org,
-                        "reposFirst": REPOS_PAGE,
-                        "issuesFirst": ISSUES_PAGE,
-                        "repoCursor": repo_cursor,
-                        "states": states,
-                    }),
+                    |sizes| {
+                        json!({
+                            "org": org,
+                            "reposFirst": sizes.repos,
+                            "issuesFirst": sizes.issues,
+                            "repoCursor": repo_cursor,
+                            "states": states,
+                        })
+                    },
+                    &mut sizes,
                 )
                 .await?;
 
@@ -162,15 +230,18 @@ impl Client {
                 let mut page = repo.issues.page_info;
                 while page.has_next_page {
                     let data = self
-                        .graphql(
+                        .graphql_with_backoff(
                             REPO_ISSUES_QUERY,
-                            json!({
-                                "owner": org,
-                                "name": repo.name,
-                                "issuesFirst": ISSUES_PAGE,
-                                "issueCursor": page.end_cursor,
-                                "states": states,
-                            }),
+                            |sizes| {
+                                json!({
+                                    "owner": org,
+                                    "name": repo.name,
+                                    "issuesFirst": sizes.issues,
+                                    "issueCursor": page.end_cursor,
+                                    "states": states,
+                                })
+                            },
+                            &mut sizes,
                         )
                         .await?;
                     let conn: IssuesConn = parse_at(&data, &["repository", "issues"])?;
@@ -459,6 +530,42 @@ fn errors_contain_rate_limited(errors: &Value) -> bool {
         arr.iter()
             .any(|e| e.get("type").and_then(Value::as_str) == Some("RATE_LIMITED"))
     })
+}
+
+/// True when a GraphQL `errors` array contains a query-too-complex entry.
+/// GitHub's error `type` for this case isn't consistently documented, so
+/// this also matches on the message text observed in practice.
+fn errors_contain_resource_limited(errors: &Value) -> bool {
+    errors.as_array().is_some_and(|arr| {
+        arr.iter().any(|e| {
+            let type_match = e.get("type").and_then(Value::as_str).is_some_and(|t| {
+                matches!(
+                    t.to_ascii_uppercase().as_str(),
+                    "EXCESSIVE_RESOURCE_USAGE" | "RESOURCE_LIMITED" | "MAX_NODE_LIMIT_EXCEEDED"
+                )
+            });
+            let msg_match = e
+                .get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|m| m.contains("Resource limits"));
+            type_match || msg_match
+        })
+    })
+}
+
+/// Joins the `message` field of every entry in a GraphQL `errors` array into
+/// one readable string, instead of surfacing the raw JSON to the status line.
+fn join_error_messages(errors: &Value) -> String {
+    errors
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.get("message").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| errors.to_string())
 }
 
 fn parse_at<T: for<'de> Deserialize<'de>>(data: &Value, path: &[&str]) -> Result<T> {
@@ -1077,6 +1184,71 @@ mod tests {
 
         let untyped = serde_json::json!([{"message": "boom"}]);
         assert!(!errors_contain_rate_limited(&untyped));
+    }
+
+    #[test]
+    fn resource_limited_graphql_error_detected_by_type() {
+        let errors = serde_json::json!([
+            {"type": "EXCESSIVE_RESOURCE_USAGE", "message": "Resource limits for this query exceeded."}
+        ]);
+        assert!(errors_contain_resource_limited(&errors));
+    }
+
+    #[test]
+    fn resource_limited_graphql_error_detected_by_message_when_untyped() {
+        let errors = serde_json::json!([
+            {"message": "Resource limits for this query exceeded."}
+        ]);
+        assert!(errors_contain_resource_limited(&errors));
+
+        let unrelated = serde_json::json!([{"message": "field X doesn't exist"}]);
+        assert!(!errors_contain_resource_limited(&unrelated));
+    }
+
+    #[test]
+    fn join_error_messages_concatenates_all_entries() {
+        let errors = serde_json::json!([
+            {"message": "first problem"},
+            {"message": "second problem"}
+        ]);
+        assert_eq!(
+            join_error_messages(&errors),
+            "first problem; second problem"
+        );
+    }
+
+    #[test]
+    fn join_error_messages_falls_back_to_raw_json_when_no_messages() {
+        let errors = serde_json::json!([{"type": "SOMETHING"}]);
+        assert_eq!(join_error_messages(&errors), errors.to_string());
+    }
+
+    #[test]
+    fn page_sizes_shrink_halves_toward_floor_then_stops() {
+        let mut sizes = PageSizes {
+            repos: REPOS_PAGE,
+            issues: ISSUES_PAGE,
+        };
+        assert!(sizes.shrink());
+        assert_eq!(sizes.repos, 25);
+        assert_eq!(sizes.issues, 50);
+
+        assert!(sizes.shrink());
+        assert_eq!(sizes.repos, 12);
+        assert_eq!(sizes.issues, 25);
+
+        assert!(sizes.shrink());
+        assert_eq!(sizes.repos, 6);
+        assert_eq!(sizes.issues, 12);
+
+        assert!(sizes.shrink());
+        assert_eq!(sizes.repos, MIN_REPOS_PAGE);
+        assert_eq!(sizes.issues, MIN_ISSUES_PAGE);
+
+        // Already at floor — no further shrink possible.
+        assert!(!sizes.shrink());
+        assert_eq!(sizes.repos, MIN_REPOS_PAGE);
+        assert_eq!(sizes.issues, MIN_ISSUES_PAGE);
     }
 
     #[test]
