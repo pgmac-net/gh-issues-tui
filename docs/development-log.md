@@ -542,3 +542,40 @@ Wiring: `provider::build` gains a `linear` arm; `SUPPORTED = ["github", "linear"
 - `cargo test` — 214 passed (14 new across `linear::{auth,mod,client}`: key chain, priority round-trip, synthetic-label wellformedness, issue mapping for open/completed/canceled, closed-type classification, rate-limit + error-message parsing).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - Live drive against a real Linear workspace: see the PR for captured screens.
+
+# Development log — Jira provider (2026-07-23)
+
+Ticket: [#25](https://github.com/pgmac-net/gh-issues-tui/issues/25) — third backend behind the [#63](https://github.com/pgmac-net/gh-issues-tui/issues/63) `IssueProvider` abstraction, closing the last of its sub-tickets. Implemented on Opus 4.8 (plan rated COMPLEX / Fable 5; Fable unavailable this session — Opus is the sanctioned COMPLEX fallback, as with #24).
+
+## What was done
+
+New `src/jira/`:
+- `auth.rs` — env-only credential resolution (`JIRA_BASE_URL` + `JIRA_EMAIL` + token via `--token`/`JIRA_API_TOKEN`) into `JiraCreds`; injectable env closure, unit-tested missing-var paths.
+- `mod.rs` — pure helpers: Jira priority name (five levels) ↔ `priority:*` value (four); synthetic-label helpers (`jira-priority:` prefix); ADF `adf_to_text`/`text_to_adf`; `parse_jira_dt` (Jira's `+0000` offset); `key_to_number`.
+- `client.rs` — Jira Cloud REST client (`/rest/api/3`, HTTP Basic auth) implementing `IssueProvider`. Projects → `RepoIssues`; two-phase fetch (projects, then per-project JQL search). Mutations: comment (ADF), workflow-transition state change, title, single assignee (accountId resolution), labels+priority, create (issue type required).
+
+Wiring: `provider::build` gains a `jira` arm; `SUPPORTED = [github, linear, jira]`; `main.rs` declares `mod jira`.
+
+## Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Flavour | Jira **Cloud** only | Confirmed with Paul; Server/DC (v2 API, Bearer PAT, wiki-markup) is a separate effort |
+| Credentials | **Env-only** (`JIRA_BASE_URL`/`JIRA_EMAIL`/`JIRA_API_TOKEN`) | `provider::build` has no `Config`; keeps its signature unchanged and matches "secrets never in config" |
+| Grouping | **Projects = repo groups** | Parallels teams/repos; JQL scopes issues per project cleanly |
+| Body | **ADF flatten-on-read / wrap-on-write** | Descriptions/comments are ADF (rich JSON); the detail pane wants readable text, create/comment need valid ADF |
+| Priority | Native field ↔ synthetic `priority:*` (five→four levels) | Reuses the Linear pattern so the app's sort/colour/filter/picker need no special-casing |
+| Issue type | Required on create, from the project | Jira mandates it — exercises `FormOptions.issue_types` (empty for Linear) |
+
+## Diversions from plan
+
+- **`GET /search`** (classic `startAt`/`total` pagination) chosen over the newer token-based `/search/jql`; the classic endpoint is more broadly documented and, without a live instance to confirm the new shape, the safer bet. Noted as a deprecation risk in docs.
+- **Query params** built via `reqwest::Url::parse_with_params` rather than `RequestBuilder::query` — the latter is compiled out by the crate's `default-features = false` reqwest build.
+- **`repo_url`** is `{site}/browse/{KEY}` (Jira has a canonical browse URL, unlike Linear teams).
+
+## Verification
+
+- `cargo test` — 232 passed (18 new across `jira::{auth,mod,client}`: env-resolution chain, priority five→four mapping, synthetic-label wellformedness, ADF flatten + text round-trip, empty-body ADF, Jira datetime parse, key→number, issue-JSON→domain mapping for open/done/unassigned, error-payload joining; plus `build` rejecting unknown and listing all three).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+- Startup credential-error paths confirmed manually (`--provider jira` with no env → clear `JIRA_BASE_URL` message; `--provider asana` → unknown-provider listing all three).
+- **No live drive** — no Jira instance available. REST endpoint shapes, ADF structure, and transition workflow are unit-tested against sample payloads only. Flagged in the PR: the Linear live drive caught a bad field and a complexity-budget bug that mocks missed, so the same untested-live risk applies here.

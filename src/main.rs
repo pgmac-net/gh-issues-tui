@@ -1,6 +1,7 @@
 mod config;
 mod cwd_repo;
 mod github;
+mod jira;
 mod linear;
 mod provider;
 mod tui;
