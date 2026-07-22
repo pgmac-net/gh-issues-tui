@@ -20,9 +20,12 @@ gh-issues --org my-org          # open issues only (default)
 gh-issues --org my-org --all    # include closed issues in the initial fetch
 gh-issues                       # inside a repo clone: that repo's owner, filtered to the repo
 gh-issues --refresh 60          # auto-refresh every 60 seconds (0 disables)
+gh-issues --provider github     # issue backend (default: github; currently the only one)
 ```
 
 `--org` accepts an organisation or a user account.
+
+`--provider` selects the issue backend. GitHub is the only backend today; the flag (and the matching `provider` config key) exist so future backends (Linear, Jira) can be selected without a breaking change.
 
 ### Starting inside a repository clone
 
@@ -51,6 +54,7 @@ Optional TOML config at `~/.config/gh-issues/config.toml`:
 
 ```toml
 default_org = "my-org"
+provider = "github"         # issue backend (default: "github"; currently the only one)
 default_collapsed = false   # start with repo groups expanded (default: true)
 refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)

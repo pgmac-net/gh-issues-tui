@@ -6,12 +6,12 @@ use thiserror::Error;
 pub const RATE_LIMIT_MSG_PREFIX: &str = "API rate limit exceeded";
 
 #[derive(Debug, Error)]
-pub enum GithubError {
+pub enum ProviderError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
-    #[error("GraphQL errors: {0}")]
-    GraphQl(String),
+    #[error("API errors: {0}")]
+    Api(String),
 
     #[error("unexpected response shape: {0}")]
     Shape(String),
@@ -19,8 +19,11 @@ pub enum GithubError {
     #[error("{0}")]
     RateLimited(String),
 
-    #[error("query too large for GitHub's GraphQL limits even at the smallest page size ({0})")]
+    #[error("query too large for the provider's limits even at the smallest page size ({0})")]
     ResourceLimited(String),
+
+    #[error("not supported by this provider: {0}")]
+    Unsupported(&'static str),
 }
 
-pub type Result<T> = std::result::Result<T, GithubError>;
+pub type Result<T> = std::result::Result<T, ProviderError>;

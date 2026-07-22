@@ -9,17 +9,29 @@ Built for [pgmac-net/homelabia#128](https://github.com/pgmac-net/homelabia/issue
 ```
 src/
 ├── main.rs          CLI (clap), panic hook, wiring
-├── config.rs        ~/.config/gh-issues/config.toml (default_org, copy_format, ...)
+├── config.rs        ~/.config/gh-issues/config.toml (default_org, provider, copy_format, ...)
+├── provider/
+│   ├── mod.rs       IssueProvider trait, Provider alias (Arc<dyn>), name → provider factory
+│   ├── types.rs     backend-neutral domain types: Issue / RepoIssues / Comment / IssueState / ...
+│   └── error.rs     ProviderError (thiserror), incl. Unsupported for capability gaps
 ├── github/
 │   ├── auth.rs      token chain: --token → GITHUB_TOKEN → GH_TOKEN → gh auth token
-│   ├── client.rs    GraphQL v4 client: org-wide fetch + mutations
-│   ├── types.rs     Issue / RepoIssues / Comment / IssueState
-│   └── error.rs     thiserror error type
+│   └── client.rs    GraphQL v4 client: org-wide fetch + mutations; impl IssueProvider
 └── tui/
     ├── app.rs       all state + pure logic (filters, sort, rows, input)
-    ├── event.rs     async event loop, background tasks
+    ├── event.rs     async event loop, background tasks (talks to Provider, never a concrete client)
     └── ui.rs        pure render
 ```
+
+## Provider abstraction ([#63](https://github.com/pgmac-net/gh-issues-tui/issues/63))
+
+The TUI is written against `provider::IssueProvider`, a backend-neutral async trait covering the core issue operations (org-wide fetch, comments, create, mutations, label/form lookups, rate-limit state). The event loop holds a `Provider` (`Arc<dyn IssueProvider>`) and clones it into spawned tasks exactly as it used to clone the concrete client; `github::Client` implements the trait by thin delegation to its inherent methods.
+
+One backend is chosen per session: `--provider` flag → `provider` config key → `"github"`. The factory (`provider::build`) resolves per-provider credentials — GitHub keeps its existing token chain — and rejects unknown names with the supported list. Linear ([#24](https://github.com/pgmac-net/gh-issues-tui/issues/24)) and Jira ([#25](https://github.com/pgmac-net/gh-issues-tui/issues/25)) slot in as new trait impls plus a factory arm.
+
+Backend-specific features are **capabilities**: trait methods with safe defaults (`Err(ProviderError::Unsupported)`) paired with a `supports_*` probe the UI checks before offering the affordance. Today the only capability is the linked-PR summary popup (`supports_pr_summary` / `pull_request`) — GitHub opts in; a provider that doesn't gets a status-bar message instead of a doomed fetch. Domain types stay in `provider/types.rs` even when only one backend can fetch them today (e.g. `PrSummary`): the data is neutral, the fetch is a capability.
+
+Deliberately out of scope: mixed-source views (multiple providers in one list) and renaming the org/repo terminology — both revisit when a second provider lands.
 
 ## Data fetch strategy
 
@@ -29,7 +41,7 @@ The GitHub search API (`org:X is:issue`) was rejected because it silently caps a
 
 Only open issues are fetched at startup (fast path). The first time the user cycles the state filter to closed/all, the dataset is upgraded once with a refetch that includes closed issues.
 
-Including closed issues can push a single request's combined repo/issue page size over GitHub's GraphQL complexity budget (`Resource limits for this query exceeded`). `Client::graphql_with_backoff` catches this (`GithubError::ResourceLimited`) and retries the same cursor with halved page sizes — cursors are opaque positions, so a smaller `first` mid-fetch is valid — down to a floor, after which the error is surfaced as readable text instead of a raw JSON dump.
+Including closed issues can push a single request's combined repo/issue page size over GitHub's GraphQL complexity budget (`Resource limits for this query exceeded`). `Client::graphql_with_backoff` catches this (`ProviderError::ResourceLimited`) and retries the same cursor with halved page sizes — cursors are opaque positions, so a smaller `first` mid-fetch is valid — down to a floor, after which the error is surfaced as readable text instead of a raw JSON dump.
 
 ## UI model
 
@@ -53,7 +65,7 @@ Assignee/label edits are whole-set replacements. Assignees use a comma-separated
 
 ## Linked PR summaries
 
-`P` in the detail pane scans the selected issue's body and loaded comment thread for explicit `github.com/{owner}/{repo}/pull/{N}` links (`parse_pr_links` in `types.rs`) — bare `#N` is deliberately not matched, since in an issues tool it's ambiguous between an issue and a PR. Zero links reports a status message; one link fetches the summary directly; several open `Mode::PrPicker` first (reusing the filter-editor's picker machinery).
+`P` in the detail pane scans the selected issue's body and loaded comment thread for explicit `github.com/{owner}/{repo}/pull/{N}` links (`parse_pr_links` in `provider/types.rs`) — bare `#N` is deliberately not matched, since in an issues tool it's ambiguous between an issue and a PR. Zero links reports a status message; one link fetches the summary directly; several open `Mode::PrPicker` first (reusing the filter-editor's picker machinery).
 
 `Client::pull_request` fetches everything in one GraphQL query: title/body/state/draft, base/head refs, diffstat, `reviewDecision` plus the review list (deduped to each reviewer's latest state), comment/review-thread counts, the head commit's `statusCheckRollup` (the `CheckRun`/`StatusContext` union flattened into one DTO via `__typename`), the head commit's `checkSuites` (the PR's own Actions runs), and `defaultBranchRef`'s recent commits' `checkSuites` (the "merge to main" runs). `App::pr_target` guards the async response against a stale PR (the popup closed or retargeted before it landed) — the same pattern as `priority_pick_issue`/`label_pick_issue`.
 
@@ -67,6 +79,6 @@ Assignee/label edits are whole-set replacements. Assignees use a comma-separated
 
 ## Testing
 
-Pure logic lives in `tui/app.rs` and is covered by unit tests: filtering (state/text/repo/assignee/author/date bounds), sorting, grouping/collapse row building, selection clamping, UTF-8-safe input editing, date parsing, and PR-link collection/picker/stale-drop state. `github/client.rs` tests cover response DTO parsing (including deleted-author → `ghost`, pagination shapes, and `PrSummary` deserialisation across the `CheckRun`/`StatusContext` union and an empty rollup). `github/types.rs` tests cover `parse_pr_links` (full URLs, dedup, trailing path/query, non-PR GitHub URLs, and rejecting bare `#N`). `github/auth.rs` tests the token chain with injected closures.
+Pure logic lives in `tui/app.rs` and is covered by unit tests: filtering (state/text/repo/assignee/author/date bounds), sorting, grouping/collapse row building, selection clamping, UTF-8-safe input editing, date parsing, and PR-link collection/picker/stale-drop state. `github/client.rs` tests cover response DTO parsing (including deleted-author → `ghost`, pagination shapes, and `PrSummary` deserialisation across the `CheckRun`/`StatusContext` union and an empty rollup). `provider/types.rs` tests cover `parse_pr_links` (full URLs, dedup, trailing path/query, non-PR GitHub URLs, and rejecting bare `#N`). `github/auth.rs` tests the token chain with injected closures.
 
 End-to-end verification for the initial release was done against the live `pgmac-net` org: initial load (106 issues / 18 repos), and a scripted keystroke session that added a comment to and closed a scratch issue through the TUI.

@@ -1,7 +1,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::github::RateLimitData;
-use crate::github::types::{
+use crate::provider::types::RateLimitData;
+use crate::provider::types::{
     Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, PrRef, PrSummary, RepoIssues,
     RepoLabel, parse_pr_links, priority_value, priority_value_rank,
 };
@@ -2268,7 +2268,7 @@ mod tests {
     fn priority_issue(number: u64, priority: Option<&str>) -> Issue {
         let mut i = issue(number, "t", IssueState::Open);
         if let Some(p) = priority {
-            i.labels = vec![crate::github::types::Label {
+            i.labels = vec![crate::provider::types::Label {
                 name: format!("priority:{p}"),
                 color: String::new(),
             }];
@@ -2685,11 +2685,11 @@ mod tests {
     fn priority_label_set_replaces_existing_priority() {
         let mut i = issue(1, "a", IssueState::Open);
         i.labels = vec![
-            crate::github::types::Label {
+            crate::provider::types::Label {
                 name: "bug".into(),
                 color: "".into(),
             },
-            crate::github::types::Label {
+            crate::provider::types::Label {
                 name: "Priority:Low".into(),
                 color: "".into(),
             },
@@ -2705,7 +2705,7 @@ mod tests {
     #[test]
     fn priority_label_set_adds_when_none_present() {
         let mut i = issue(1, "a", IssueState::Open);
-        i.labels = vec![crate::github::types::Label {
+        i.labels = vec![crate::provider::types::Label {
             name: "bug".into(),
             color: "".into(),
         }];
@@ -2723,7 +2723,7 @@ mod tests {
     #[test]
     fn label_filter_matches_bare_value() {
         let mut issue = issue(1, "a", IssueState::Open);
-        issue.labels = vec![crate::github::types::Label {
+        issue.labels = vec![crate::provider::types::Label {
             name: "priority:high".into(),
             color: "".into(),
         }];
@@ -2748,7 +2748,7 @@ mod tests {
     #[test]
     fn label_filter_matches_any_of_several_values() {
         let mut issue = issue(4, "d", IssueState::Open);
-        issue.labels = vec![crate::github::types::Label {
+        issue.labels = vec![crate::provider::types::Label {
             name: "priority:urgent".into(),
             color: "".into(),
         }];
@@ -2767,7 +2767,7 @@ mod tests {
     #[test]
     fn label_filter_matches_status() {
         let mut issue = issue(2, "b", IssueState::Open);
-        issue.labels = vec![crate::github::types::Label {
+        issue.labels = vec![crate::provider::types::Label {
             name: "status:needs-review".into(),
             color: "".into(),
         }];
@@ -2791,7 +2791,7 @@ mod tests {
     #[test]
     fn label_filter_matches_is_case_insensitive() {
         let mut issue = issue(3, "c", IssueState::Open);
-        issue.labels = vec![crate::github::types::Label {
+        issue.labels = vec![crate::provider::types::Label {
             name: "Priority:High".into(),
             color: "".into(),
         }];
@@ -2856,12 +2856,12 @@ mod tests {
     #[test]
     fn compute_priority_options() {
         let mut a = issue(1, "a", IssueState::Open);
-        a.labels = vec![crate::github::types::Label {
+        a.labels = vec![crate::provider::types::Label {
             name: "priority:high".into(),
             color: "".into(),
         }];
         let mut b = issue(2, "b", IssueState::Open);
-        b.labels = vec![crate::github::types::Label {
+        b.labels = vec![crate::provider::types::Label {
             name: "priority:low".into(),
             color: "".into(),
         }];
@@ -2880,7 +2880,7 @@ mod tests {
         let mut a = issue(1, "a", IssueState::Open);
         a.labels = ["priority:urgent", "priority:medium", "priority:P1"]
             .iter()
-            .map(|n| crate::github::types::Label {
+            .map(|n| crate::provider::types::Label {
                 name: n.to_string(),
                 color: "".into(),
             })
@@ -2899,7 +2899,7 @@ mod tests {
     #[test]
     fn compute_status_options() {
         let mut a = issue(1, "a", IssueState::Open);
-        a.labels = vec![crate::github::types::Label {
+        a.labels = vec![crate::provider::types::Label {
             name: "status:needs-review".into(),
             color: "".into(),
         }];
@@ -2943,7 +2943,7 @@ mod tests {
     #[test]
     fn label_values_handles_mixed_case_prefix() {
         let mut a = issue(1, "a", IssueState::Open);
-        a.labels = vec![crate::github::types::Label {
+        a.labels = vec![crate::provider::types::Label {
             name: "Priority:High".into(),
             color: "".into(),
         }];
@@ -3457,7 +3457,7 @@ mod tests {
             pr,
             title: "t".into(),
             body: String::new(),
-            state: crate::github::types::PrState::Open,
+            state: crate::provider::types::PrState::Open,
             is_draft: false,
             base_ref: "main".into(),
             head_ref: "feature".into(),

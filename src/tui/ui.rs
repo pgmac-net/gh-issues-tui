@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::github::types::Issue;
+use crate::provider::types::Issue;
 
 use super::app::{
     App, BODY_POPUP_WIDTH, CommentFocus, ConfirmChoice, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH,
@@ -118,8 +118,8 @@ fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
 
 fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
     let state_span = match issue.state {
-        crate::github::types::IssueState::Open => Span::styled("●", Style::default().fg(t.open)),
-        crate::github::types::IssueState::Closed => {
+        crate::provider::types::IssueState::Open => Span::styled("●", Style::default().fg(t.open)),
+        crate::provider::types::IssueState::Closed => {
             Span::styled("●", Style::default().fg(t.closed))
         }
     };
@@ -286,8 +286,8 @@ fn title_style(issue: &Issue, t: &Theme) -> Style {
 
 fn state_style(issue: &Issue, t: &Theme) -> Style {
     match issue.state {
-        crate::github::types::IssueState::Open => Style::default().fg(t.open),
-        crate::github::types::IssueState::Closed => Style::default().fg(t.closed),
+        crate::provider::types::IssueState::Open => Style::default().fg(t.open),
+        crate::provider::types::IssueState::Closed => Style::default().fg(t.closed),
     }
 }
 
@@ -358,8 +358,8 @@ fn draw_confirm_popup(f: &mut Frame, app: &App, t: &Theme) {
     let action = app
         .selected_issue()
         .map(|i| match i.state {
-            crate::github::types::IssueState::Open => "close",
-            crate::github::types::IssueState::Closed => "reopen",
+            crate::provider::types::IssueState::Open => "close",
+            crate::provider::types::IssueState::Closed => "reopen",
         })
         .unwrap_or("toggle");
     let message = match app.selected_issue() {
@@ -586,9 +586,9 @@ fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
                             format!("{} ", s.state)
                         },
                         Style::default().fg(match s.state {
-                            crate::github::types::PrState::Merged => t.assignee,
-                            crate::github::types::PrState::Open => t.open,
-                            crate::github::types::PrState::Closed => t.closed,
+                            crate::provider::types::PrState::Merged => t.assignee,
+                            crate::provider::types::PrState::Open => t.open,
+                            crate::provider::types::PrState::Closed => t.closed,
                         }),
                     ),
                     Span::styled(
@@ -1047,7 +1047,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::types::{Issue, IssueState, Label};
+    use crate::provider::types::{Issue, IssueState, Label};
 
     fn issue(labels: Vec<Label>) -> Issue {
         Issue {
@@ -1094,7 +1094,7 @@ mod tests {
 
     /// Single-repo app with one issue in `state`, selected, `Mode::ConfirmState`.
     fn confirm_app(state: IssueState) -> App {
-        use crate::github::types::RepoIssues;
+        use crate::provider::types::RepoIssues;
 
         let mut i = issue(vec![]);
         i.state = state;
