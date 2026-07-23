@@ -25,7 +25,7 @@ gh-issues --provider github     # issue backend (default: github; currently the 
 
 `--org` accepts an organisation or a user account.
 
-`--provider` selects the issue backend: `github` (default) or `linear`. Jira is not yet implemented.
+`--provider` selects the issue backend: `github` (default), `linear`, or `jira`.
 
 ### Linear backend
 
@@ -49,6 +49,32 @@ How Linear concepts map onto the UI:
 | `--org` | Ignored — the workspace is fixed by the API key |
 
 Not available on Linear: the linked-PR summary (`P`) — Linear issues have no GitHub PR links, so the key reports "not supported". Linear has no milestones or issue types in the GitHub sense; those form fields stay empty. The list view does not show a comment count for Linear issues (the count appears once you open the detail pane).
+
+### Jira backend
+
+```sh
+JIRA_BASE_URL=https://your-site.atlassian.net \
+JIRA_EMAIL=you@example.com \
+JIRA_API_TOKEN=… \
+gh-issues --provider jira
+```
+
+Jira **Cloud** only. Authentication is HTTP Basic with your email + an [API token](https://id.atlassian.com/manage-profile/security/api-tokens); all three env vars are required (`--token` overrides `JIRA_API_TOKEN`). Set `provider = "jira"` in the config to make it the default. As with the other backends, no secret is stored in the config file.
+
+How Jira concepts map onto the UI:
+
+| UI concept | Jira |
+|---|---|
+| Repo group | Project (shown by project key, e.g. `PROJ`) |
+| Issue number | Numeric suffix of the issue key (`PROJ-123` → `123`) |
+| `priority:*` label | Jira's native priority (`Highest`→urgent … `Low`/`Lowest`→low), surfaced as a synthetic label so sort/colour/filter/`p` all work; setting it writes the native field back |
+| Body | Description is Atlassian Document Format (ADF); it's flattened to plain text for display and wrapped back to ADF when you create an issue or comment |
+| Assignees | Single assignee (the list holds 0 or 1) |
+| Close / reopen | Runs a workflow transition to a Done / not-Done status (needs a matching transition in the project's workflow) |
+| Issue type | Required when creating an issue — the new-issue form's type picker is populated from the project |
+| `--org` | Ignored — the site is fixed by the credentials |
+
+Not available on Jira: the linked-PR summary (`P`, no GitHub PR links) and milestones. Rich ADF formatting (tables, panels, media) is dropped when flattening to text.
 
 ### Starting inside a repository clone
 

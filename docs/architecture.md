@@ -21,6 +21,10 @@ src/
 │   ├── auth.rs      key chain: --token → LINEAR_API_KEY → LINEAR_TOKEN
 │   ├── client.rs    Linear GraphQL client; impl IssueProvider
 │   └── mod.rs       priority int ↔ priority:* label mapping, synthetic-label helpers
+├── jira/
+│   ├── auth.rs      env creds: JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN (Basic auth)
+│   ├── client.rs    Jira Cloud REST client; impl IssueProvider
+│   └── mod.rs       priority name ↔ priority:* mapping, ADF flatten/wrap, Jira datetime parse
 └── tui/
     ├── app.rs       all state + pure logic (filters, sort, rows, input)
     ├── event.rs     async event loop, background tasks (talks to Provider, never a concrete client)
@@ -60,6 +64,32 @@ Concept mapping onto the shared domain types:
 **Capabilities.** `supports_pr_summary` stays `false` (no GitHub PR links in Linear), so the `P` keybind degrades to a status message via the #63 capability gate. Milestones and issue types have no Linear equivalent and stay empty; `projects` maps to Linear projects. Comment count is not fetched in the bulk list query (it appears when the detail pane loads the thread).
 
 Close/reopen has no single flag in Linear — state is a per-team workflow object — so `set_state` first resolves the issue's team states and moves it to the lowest-position state of the wanted category (`completed` to close; a non-done state to reopen).
+
+### Jira provider ([#25](https://github.com/pgmac-net/gh-issues-tui/issues/25))
+
+The third backend and the only **REST** one (`/rest/api/3`, Jira Cloud). Selected explicitly (`--provider jira` / `provider = "jira"`). Credentials come from env — `provider::build` has no `Config`, and Jira needs more than a token: `JIRA_BASE_URL`, `JIRA_EMAIL`, and the token (`--token` → `JIRA_API_TOKEN`), combined into HTTP Basic auth (`base64(email:token)`).
+
+Concept mapping onto the shared domain types:
+
+| Domain type | Jira source | Notes |
+|---|---|---|
+| `RepoIssues` | Project | `repo` = project key, `repo_url` = `{site}/browse/{KEY}`. `org` arg ignored. |
+| `Issue.id` | Issue **key** (`PROJ-123`) | Used directly in every mutation URL. |
+| `Issue.number` | Numeric suffix of the key | `key_to_number`. |
+| `Issue.body` | `description` (ADF) | Flattened to text via `adf_to_text`; write paths wrap text back with `text_to_adf`. |
+| `Issue.state` | `status.statusCategory.key` | `done` → Closed, else Open. |
+| `Issue.assignees` | `assignee` | Single → 0-or-1 vec. |
+| `Issue.labels` | `labels[]` (strings) **+ synthetic `priority:*`** | Native priority (`Highest…Lowest`) folded into a `priority:*` label; Jira labels have no ids. |
+| `Issue.closed_at` | `resolutiondate` | Parsed with `parse_jira_dt` (Jira's `+0000` offset isn't RFC 3339). |
+| `comment_count` | `fields.comment.total` | Available in the list fetch (unlike Linear). |
+
+**Fetch** is two-phase (like Linear): page `/project/search`, then page each project's issues via `GET /search` with JQL `project = "KEY" ORDER BY updated DESC` (`AND statusCategory != Done` unless closed are included), `startAt`/`total` pagination.
+
+**Priority round-trip** mirrors Linear: read folds native→`priority:*`; `repo_labels`/`repo_form_options` append the four synthetic entries (ids prefixed `jira-priority:`); `set_labels` peels a `priority:*` *name* to the native `priority` field, `create_issue` peels a synthetic *id* from `label_ids`. Unlike Linear/GitHub, real labels need no id resolution — Jira labels are free-form strings sent verbatim.
+
+**Jira-specific wrinkles:** the new-issue form's **issue type is required** (`create_issue` errors without one) and is populated from the project's `issueTypes`; `set_state` fetches the issue's workflow **transitions** and posts the one whose target `statusCategory` matches the wanted open/closed state (fails clearly if the workflow offers none); `supports_pr_summary = false`; milestones and GitHub-style projects stay empty; `rate_limit` is always `None` (Jira Cloud reports no counts). ADF flattening is intentionally lossy — tables, panels, and media are dropped.
+
+**Verification gap:** no live Jira instance was available, so the REST endpoint shapes, ADF structure, and transition workflow are covered only by unit tests against sample payloads. (The Linear live drive caught two API bugs mocks would have missed — the same risk stands here until someone runs it against a real site.)
 
 ## Data fetch strategy
 
