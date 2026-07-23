@@ -151,7 +151,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 
 | Key | Action |
 |-----|--------|
-| `j`/`k`, `↑`/`↓` | move selection (scroll in detail view) |
+| `j`/`k`, `↑`/`↓` | move selection in the list; in the detail pane, move the card highlight (issue body / each comment) |
 | `PgUp`/`PgDn`, `g`/`G` | page / jump to top / bottom |
 | `Space` | collapse/expand the selected repo group |
 | `←` / `→` | on a repo header: collapse / expand the group. On an issue: `→` moves into the detail pane (opening it if closed), `←` backs out to the list |
@@ -167,6 +167,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `s` / `S` | cycle sort key / toggle direction |
 | `w` | switch org/owner (free-text; resets filters and view state) |
 | `c` | add a comment: opens the detail pane (if closed) and its inline editor section (`Ctrl+S` submits, `Esc` discards) |
+| `e` | edit the highlighted detail card inline — the issue description (body card) or a comment — in the same editor section |
 | `x` | close or reopen the issue (confirmation popup: `←`/`→`/`Tab` moves focus, `Enter` picks, or `y`/`n`/`Esc` shortcuts) |
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (picker of the repo's labels, current labels pre-checked) |
@@ -200,6 +201,10 @@ In the multi-line comment and description editors, text word-wraps at the editor
 ### Adding a comment
 
 `c` adds a comment on the selected issue: it opens the detail pane if it's closed (loading the comment thread) and adds an inline section at the bottom, about a third of the pane's height, with a multi-line editor and a `[ Save ]  [ Cancel ]` button row. `Tab`/`Shift+Tab` cycle focus between the editor and the two buttons; `Enter`/`Space` activates whichever is focused. `Ctrl+S` saves and `Esc` cancels from anywhere in the section, regardless of focus. Saving posts the comment and refreshes the thread; cancelling discards the draft and returns to the plain detail pane.
+
+### Editing the description and comments
+
+In the detail pane the comment thread renders as **cards** — each comment is bounded by a header rule showing its author and timestamp and a matching bottom rule, so where one comment ends and the next begins is obvious. `j`/`k` move a **card highlight** through the pane: card 0 is the issue body, then one card per comment. `e` opens the same inline editor section on the highlighted card, prefilled with its current text — the issue **description** when the body card is highlighted, or the **comment** otherwise. Editing uses the identical editor controls as adding a comment (`Ctrl+S` saves, `Esc` discards). Saving an edited description or comment refreshes the pane; an empty save discards a comment edit but is accepted for the description (clearing it is valid). All three backends (GitHub, Linear, Jira) support editing.
 
 ### Creating issues
 

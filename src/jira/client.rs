@@ -194,6 +194,11 @@ impl Client {
         Ok(nodes
             .iter()
             .map(|c| Comment {
+                id: c
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
                 author: c
                     .pointer("/author/displayName")
                     .and_then(Value::as_str)
@@ -216,6 +221,24 @@ impl Client {
         )
         .await
         .map(drop)
+    }
+
+    /// Edit a comment. Jira addresses it by issue key + comment id.
+    pub async fn update_comment(&self, issue_id: &str, comment_id: &str, body: &str) -> Result<()> {
+        self.put(
+            &format!("/issue/{issue_id}/comment/{comment_id}"),
+            json!({ "body": text_to_adf(body) }),
+        )
+        .await
+    }
+
+    /// Edit an issue's description. Jira's body field is `description` (ADF).
+    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+        self.put(
+            &format!("/issue/{issue_id}"),
+            json!({ "fields": { "description": text_to_adf(body) } }),
+        )
+        .await
     }
 
     /// Move the issue through a workflow transition whose target status
@@ -579,11 +602,17 @@ impl crate::provider::IssueProvider for Client {
     async fn add_comment(&self, issue_id: &str, body: &str) -> Result<()> {
         self.add_comment(issue_id, body).await
     }
+    async fn update_comment(&self, issue_id: &str, comment_id: &str, body: &str) -> Result<()> {
+        self.update_comment(issue_id, comment_id, body).await
+    }
     async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
         self.set_state(issue_id, state).await
     }
     async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
         self.update_title(issue_id, title).await
+    }
+    async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+        self.update_body(issue_id, body).await
     }
     async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
         self.set_assignees(issue_id, logins).await

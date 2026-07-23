@@ -108,16 +108,21 @@ Including closed issues can push a single request's combined repo/issue page siz
 - **Modes**: `Normal`, `Input(kind)` (single-line popup editor for search/filters/assignees/title/org), `IssueFormBody` (multi-line popup editor, `BodyEditor` key handling), `CommentEditor` (multi-line editor inline at the bottom of the detail pane rather than a popup — `Editor`/`Save`/`Cancel` sub-focus via `CommentFocus`, `Tab` cycles it, `Ctrl+S`/`Esc` work from any of the three), `PrioritySet` / `LabelsSet` (picker popups editing an existing issue's priority / label set, fed by `repo_labels`), `PrPicker` / `PrSummary` (`P` in the detail pane — picker over PR links found in the issue body/comments, then a summary popup fed by `Client::pull_request`), `FilterMenu`, `ConfirmState` (close/reopen confirmation popup with a `[ Yes ]  [ No ]` button row — `confirm_choice` on `App`, reset to `No` on open; `←`/`→`/`Tab`/`h`/`l` toggle focus, `Enter` picks, `y`/`n`/`Esc` remain direct shortcuts), `Help`.
 - **Async**: all GitHub calls run in `tokio::spawn`ed tasks that report back over an mpsc channel (`AppEvent`); the event loop `select!`s over keys and app events. The UI never blocks on the network.
 - **Consistency**: mutations trigger a full refetch on completion rather than optimistic patching — simpler, and correct by construction. When the detail pane is open, the same completion also refetches the open issue's comment thread, so a just-added comment appears without navigating away and back.
+- **Detail cards & inline editing**: the comment thread renders as cards (author · timestamp header rule, body, bottom rule). A card cursor (`detail_card`: 0 = issue body, 1..=N = comments) is moved by `j`/`k` while the pane has focus and scrolled into view by `detail_card_offset` (line arithmetic mirroring `draw_detail`, kept in sync by the shared `comment_card_lines` helper). `e` edits the highlighted card. The single `CommentEditor` mode serves add-comment, edit-comment, and edit-description via `EditorTarget` on `App`; `submit_comment` branches to the matching mutation and an empty save is discarded except for the description.
 
 ## Mutations
 
 | Action | GraphQL |
 |--------|---------|
 | add comment | `addComment` |
+| edit comment | `updateIssueComment(body:)` |
+| edit description | `updateIssue(body:)` |
 | close / reopen | `closeIssue` / `reopenIssue` |
 | edit title | `updateIssue(title:)` |
 | replace assignees | `user(login){id}` lookups, then `updateIssue(assigneeIds:)` |
 | replace labels | `repository.labels` lookup, then `updateIssue(labelIds:)` |
+
+The `IssueProvider::update_comment(issue_id, comment_id, body)` signature carries the issue id for every backend even though only Jira needs it (Jira's REST comment endpoint is `PUT /issue/{key}/comment/{id}`; GitHub/Linear address a comment by its node id alone). Linear maps the description edit to `issueUpdate(description:)` and Jira to a `PUT /issue/{key}` `fields.description` (ADF), so all three backends support editing.
 
 Assignee/label edits are whole-set replacements. Assignees use a comma-separated text input pre-filled with the current set. Labels use a multi-select picker (same mechanics as the new-issue form's labels field) fed by `repository.labels`, pre-checked with the issue's current labels — Enter submits the checked set as the new full label set.
 

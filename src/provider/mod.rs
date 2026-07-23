@@ -29,9 +29,17 @@ pub trait IssueProvider: Send + Sync {
 
     async fn add_comment(&self, issue_id: &str, body: &str) -> Result<()>;
 
+    /// Edit an existing comment's body. `comment_id` is the backend node id
+    /// carried on [`Comment::id`]; `issue_id` is its parent issue (some
+    /// backends — Jira — address a comment by issue key + comment id).
+    async fn update_comment(&self, issue_id: &str, comment_id: &str, body: &str) -> Result<()>;
+
     async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()>;
 
     async fn update_title(&self, issue_id: &str, title: &str) -> Result<()>;
+
+    /// Edit an issue's description (body).
+    async fn update_body(&self, issue_id: &str, body: &str) -> Result<()>;
 
     /// Replace the full assignee set with the users named in `logins`.
     async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()>;
@@ -129,10 +137,16 @@ mod tests {
         async fn add_comment(&self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
+        async fn update_comment(&self, _: &str, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
         async fn set_state(&self, _: &str, _: IssueState) -> Result<()> {
             Ok(())
         }
         async fn update_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_body(&self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
         async fn set_assignees(&self, _: &str, _: &[String]) -> Result<()> {

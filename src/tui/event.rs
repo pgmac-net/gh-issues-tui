@@ -12,9 +12,9 @@ use crate::provider::types::{
 };
 
 use super::app::{
-    App, BodyEditor, CommentFocus, ConfirmChoice, Focus, ISSUE_FORM_CREATE_ROW, InputKind,
-    IssueForm, Mode, StateFilter, body_popup_width, comment_pane_width, priority_label_set,
-    priority_set_options,
+    App, BodyEditor, CommentFocus, ConfirmChoice, EditorTarget, Focus, ISSUE_FORM_CREATE_ROW,
+    InputKind, IssueForm, Mode, StateFilter, body_popup_width, comment_pane_width,
+    priority_label_set, priority_set_options,
 };
 use super::theme::Theme;
 use super::ui;
@@ -303,7 +303,12 @@ fn handle_app_event(
             // Ignore stale responses for a previously selected issue.
             if app.selected_issue().map(|i| i.id.clone()) == Some(issue_id) {
                 match result {
-                    Ok(c) => app.detail_comments = Some(c),
+                    Ok(c) => {
+                        app.detail_comments = Some(c);
+                        // Keep the card highlight within the new comment count.
+                        let last = app.detail_card_count().saturating_sub(1);
+                        app.detail_card = app.detail_card.min(last);
+                    }
                     Err(e) => app.status = Some(format!("comments failed: {e}")),
                 }
             }
@@ -830,16 +835,42 @@ fn prev_comment_focus(focus: CommentFocus) -> CommentFocus {
 
 fn submit_comment(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<AppEvent>) {
     let value = app.comment_editor.text();
+    let target = app.editor_target.clone();
     app.comment_editor = BodyEditor::default();
     app.comment_focus = CommentFocus::Editor;
+    app.editor_target = EditorTarget::NewComment;
     app.mode = Mode::Normal;
-    if value.trim().is_empty() {
-        app.status = Some("empty comment discarded".into());
+    // An empty comment is discarded; an empty description is a valid edit
+    // (clearing the body).
+    if value.trim().is_empty() && !matches!(target, EditorTarget::EditBody) {
+        app.status = Some("empty — discarded".into());
         return;
     }
-    with_issue(app, client, tx, "comment added", move |c, id| async move {
-        c.add_comment(&id, &value).await
-    });
+    match target {
+        EditorTarget::NewComment => {
+            with_issue(app, client, tx, "comment added", move |c, id| async move {
+                c.add_comment(&id, &value).await
+            });
+        }
+        EditorTarget::EditComment { comment_id } => {
+            with_issue(
+                app,
+                client,
+                tx,
+                "comment updated",
+                move |c, id| async move { c.update_comment(&id, &comment_id, &value).await },
+            );
+        }
+        EditorTarget::EditBody => {
+            with_issue(
+                app,
+                client,
+                tx,
+                "description updated",
+                move |c, id| async move { c.update_body(&id, &value).await },
+            );
+        }
+    }
 }
 
 /// The wrap width the body popup is currently rendered at.
@@ -925,14 +956,14 @@ fn handle_normal_key(
         // navigation
         KeyCode::Char('j') | KeyCode::Down => {
             if app.focus == Focus::Detail {
-                app.detail_scroll = app.detail_scroll.saturating_add(1);
+                app.move_detail_card(1);
             } else {
                 nav(app, client, tx, |a| a.move_selection(1));
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if app.focus == Focus::Detail {
-                app.detail_scroll = app.detail_scroll.saturating_sub(1);
+                app.move_detail_card(-1);
             } else {
                 nav(app, client, tx, |a| a.move_selection(-1));
             }
@@ -1054,6 +1085,8 @@ fn handle_normal_key(
                 spawn_comments(client, issue_id, tx);
             }
         }
+        // Edit the highlighted detail card: the issue body or a comment.
+        KeyCode::Char('e') if app.detail_open => app.start_edit_selected_card(),
         KeyCode::Char('x') => {
             if app.selected_issue().is_some() {
                 app.confirm_choice = ConfirmChoice::No;

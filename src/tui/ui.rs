@@ -175,7 +175,7 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
-        .title(" issue (Tab switch · j/k scroll · P for linked PR · Esc close) ");
+        .title(" issue (Tab switch · j/k select card · e edit · P linked PR · Esc close) ");
     let Some(issue) = app.selected_issue() else {
         // Live follow landed on a repo header (or an empty list).
         f.render_widget(
@@ -188,13 +188,16 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         );
         return;
     };
+    // The card highlight is only meaningful while the pane has focus.
+    let selected_card = (app.focus == Focus::Detail).then_some(app.detail_card);
+    let mut title_style = title_style(issue, t).add_modifier(Modifier::BOLD);
+    if selected_card == Some(0) {
+        title_style = title_style.fg(t.accent).add_modifier(Modifier::REVERSED);
+    }
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled(format!("#{} ", issue.number), Style::default().fg(t.dim)),
-            Span::styled(
-                issue.title.clone(),
-                title_style(issue, t).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(issue.title.clone(), title_style),
         ]),
         Line::from(vec![
             Span::styled(format!("{} ", issue.state), state_style(issue, t)),
@@ -241,6 +244,7 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     }
 
     lines.push(Line::default());
+    let card_width = area.width.saturating_sub(2) as usize;
     match &app.detail_comments {
         None => lines.push(Line::styled(
             "loading comments…",
@@ -250,20 +254,27 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             lines.push(Line::styled("no comments", Style::default().fg(t.dim)));
         }
         Some(comments) => {
-            for c in comments {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("── {} ", c.author),
-                        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{} ", c.created_at.format("%Y-%m-%d %H:%M")),
-                        Style::default().fg(t.dim),
-                    ),
-                ]));
+            for (i, c) in comments.iter().enumerate() {
+                let selected = selected_card == Some(i + 1);
+                // Header rule embeds author + timestamp; a matching bottom rule
+                // closes the card so its bounds are obvious. Highlighted when
+                // the card is the navigation cursor.
+                let header = format!(
+                    "── {} · {} ",
+                    c.author,
+                    c.created_at.format("%Y-%m-%d %H:%M")
+                );
+                let mut header_style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+                let mut rule_style = Style::default().fg(t.dim);
+                if selected {
+                    header_style = header_style.add_modifier(Modifier::REVERSED);
+                    rule_style = Style::default().fg(t.accent);
+                }
+                lines.push(rule_line(&header, card_width, header_style));
                 for l in c.body.lines() {
                     lines.push(Line::raw(l.to_string()));
                 }
+                lines.push(rule_line("", card_width, rule_style));
                 lines.push(Line::default());
             }
         }
@@ -274,6 +285,13 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, 0));
     f.render_widget(para, area);
+}
+
+/// A horizontal card rule: `prefix` followed by box-drawing dashes filling out
+/// to `width`, all in `style`. Used for the comment cards' header and footer.
+fn rule_line(prefix: &str, width: usize, style: Style) -> Line<'static> {
+    let fill = width.saturating_sub(prefix.chars().count());
+    Span::styled(format!("{prefix}{}", "─".repeat(fill)), style).into()
 }
 
 /// Title colour: the priority label's own colour when one is set, default otherwise.
@@ -830,11 +848,16 @@ fn draw_comment_section(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         .collect();
     lines.push(comment_button_line(app, t, width));
 
+    let action = match app.editor_target {
+        crate::tui::app::EditorTarget::NewComment => "add comment",
+        crate::tui::app::EditorTarget::EditComment { .. } => "edit comment",
+        crate::tui::app::EditorTarget::EditBody => "edit description",
+    };
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(t.accent))
-            .title(" add comment (Ctrl+S save · Esc cancel) "),
+            .title(format!(" {action} (Ctrl+S save · Esc cancel) ")),
     );
     f.render_widget(para, area);
 }
@@ -976,7 +999,7 @@ fn draw_calendar_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
 
 fn draw_help(f: &mut Frame, t: &Theme) {
     const HELP: &[(&str, &str)] = &[
-        ("j/k ↑/↓", "move"),
+        ("j/k ↑/↓", "move / select detail card"),
         ("Space", "collapse/expand repo group"),
         ("←", "collapse repo group / back to list"),
         ("→", "expand repo group / into detail pane"),
@@ -992,6 +1015,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("s / S", "cycle sort key / toggle direction"),
         ("w", "switch org/owner"),
         ("c", "add comment (inline, Tab to buttons, Ctrl+S save)"),
+        ("e", "edit description / comment (detail pane)"),
         ("x", "close / reopen issue"),
         ("a", "edit assignees"),
         ("l", "edit labels"),
