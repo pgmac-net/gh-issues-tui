@@ -17,14 +17,14 @@ disqualified `tui-markdown`: it reflows paragraphs and lags the pinned
 ratatui 0.30. The project's existing ethos (rustls over a keyring, OSC 52
 over a clipboard crate) also favours a minimal, self-contained solution here.
 
-**Hard invariant:** `render()` emits exactly one output `Line` per source
-line — block styling (headings, fences, quotes, lists) restyles a line, it
-never adds or removes one. This matters because `App::comment_card_lines`
-(`3 + body.lines().count()`) and `App::detail_card_offset` independently
-count source lines to keep the comment-card scroll cursor in sync with what
-`ui::draw_detail` paints. Keeping the renderer 1:1 with source lines meant
-**zero changes to `app.rs`** — the existing scroll math stays correct for
-free.
+**Property:** `render()` emits exactly one output `Line` per source line —
+block styling (headings, fences, quotes, lists) restyles a line, it never adds
+or removes one. This originally kept a source-line-counting scroll cursor in
+sync with what `ui::draw_detail` paints. Since the #59 detail-pane redesign the
+scroll clamps measure *wrapped* height with ratatui's `Paragraph::line_count`
+(`unstable-rendered-line-info` feature) instead, so this one-line-per-source
+property is no longer load-bearing for scroll sync — but it keeps the source→
+screen mapping predictable and is cheap to preserve.
 
 Block dispatch happens per line (only fenced-code state carries across
 lines); an inline character-scanner then produces styled `Span`s for bold,

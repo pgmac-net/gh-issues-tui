@@ -1,16 +1,20 @@
 use chrono::{Datelike, NaiveDate};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 
-use crate::provider::types::Issue;
+use crate::provider::types::{Comment, Issue};
 
 use super::app::{
-    App, BODY_POPUP_WIDTH, CommentFocus, ConfirmChoice, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH,
-    ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row, body_popup_width,
-    comment_pane_width, cursor_row, input_popup_width, input_scroll_skip, wrap_lines,
+    App, BODY_POPUP_WIDTH, CommentFocus, ConfirmChoice, DetailSel, FILTER_FIELDS, Focus,
+    INPUT_POPUP_WIDTH, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row,
+    body_popup_width, comment_pane_width, cursor_row, detail_split, input_popup_width,
+    input_scroll_skip, wrap_lines,
 };
 use super::markdown;
 use super::theme::Theme;
@@ -165,6 +169,8 @@ fn pane_border(app: &App, t: &Theme, pane: Focus) -> Style {
 }
 
 fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    // The inline comment editor, when open, takes the bottom third of the pane;
+    // the body + comments regions share the rest so the body stays visible.
     let area = if app.mode == Mode::CommentEditor {
         let [thread, comment] =
             Layout::vertical([Constraint::Min(1), Constraint::Percentage(33)]).areas(area);
@@ -173,12 +179,13 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     } else {
         area
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(pane_border(app, t, Focus::Detail))
-        .title(" issue (Tab switch · j/k select card · e edit · P linked PR · Esc close) ");
+
     let Some(issue) = app.selected_issue() else {
         // Live follow landed on a repo header (or an empty list).
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(pane_border(app, t, Focus::Detail))
+            .title(" issue ");
         f.render_widget(
             Paragraph::new(Line::styled(
                 "no issue selected",
@@ -189,10 +196,152 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         );
         return;
     };
-    // The card highlight is only meaningful while the pane has focus.
-    let selected_card = (app.focus == Focus::Detail).then_some(app.detail_card);
+
+    let focused = app.focus == Focus::Detail;
+    let (body_h, comments_h) = detail_split(area.height);
+    let [body_area, comments_area] =
+        Layout::vertical([Constraint::Length(body_h), Constraint::Length(comments_h)]).areas(area);
+
+    draw_detail_body(f, app, t, issue, body_area, focused);
+    if comments_h > 0 {
+        draw_detail_comments(f, app, t, comments_area, focused);
+    }
+}
+
+/// The fixed top region: issue metadata + the description body, scrolled by
+/// `body_scroll`, with a scrollbar when the content overflows.
+fn draw_detail_body(f: &mut Frame, app: &App, t: &Theme, issue: &Issue, area: Rect, focused: bool) {
+    let selected = focused && app.detail_sel == DetailSel::Body;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pane_border(app, t, Focus::Detail))
+        .title(" issue (Tab comment · j/k scroll · e edit · P PR · ← list · Esc close) ");
+    let inner_w = area.width.saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2);
+
+    let lines = body_lines(issue, selected, t);
+    let content_h = paragraph_height(&lines, inner_w);
+    let max_scroll = content_h.saturating_sub(inner_h);
+    let scroll = app.body_scroll.min(max_scroll);
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        area,
+    );
+    render_region_scrollbar(f, t, area, content_h, inner_h, scroll);
+}
+
+/// The bottom region: the stacked comment cards, scrolled by `comments_scroll`,
+/// with a scrollbar reflecting position within the *selected* comment.
+fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: bool) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pane_border(app, t, Focus::Detail))
+        .title(" comments ");
+    let inner_w = area.width.saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2);
+
+    let selected = match app.detail_sel {
+        _ if !focused => None,
+        DetailSel::Comment(i) => Some(i),
+        DetailSel::Body => None,
+    };
+
+    let comments = match &app.detail_comments {
+        None => {
+            f.render_widget(
+                Paragraph::new(Line::styled(
+                    "loading comments…",
+                    Style::default().fg(t.dim),
+                ))
+                .block(block),
+                area,
+            );
+            return;
+        }
+        Some(c) if c.is_empty() => {
+            f.render_widget(
+                Paragraph::new(Line::styled("no comments", Style::default().fg(t.dim)))
+                    .block(block),
+                area,
+            );
+            return;
+        }
+        Some(c) => c,
+    };
+
+    let card_width = inner_w as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, c) in comments.iter().enumerate() {
+        lines.extend(comment_card_lines(c, selected == Some(i), card_width, t));
+    }
+
+    let scroll = app.comments_scroll;
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        area,
+    );
+
+    // Scrollbar maps to the selected comment's own extent; falls back to the
+    // whole thread when the body (not a comment) has focus.
+    if let Some(i) = selected {
+        let top = comment_offset(comments, i, inner_w);
+        let height = comment_height(&comments[i], inner_w);
+        render_region_scrollbar(f, t, area, height, inner_h, scroll.saturating_sub(top));
+    } else {
+        let total = paragraph_height(
+            &comments
+                .iter()
+                .flat_map(|c| comment_card_lines(c, false, card_width, t))
+                .collect::<Vec<_>>(),
+            inner_w,
+        );
+        render_region_scrollbar(f, t, area, total, inner_h, scroll);
+    }
+}
+
+/// Draw a vertical scrollbar on `area`'s right edge when `content_h` overflows
+/// `viewport_h`; a no-op otherwise so short content stays uncluttered.
+fn render_region_scrollbar(
+    f: &mut Frame,
+    t: &Theme,
+    area: Rect,
+    content_h: u16,
+    viewport_h: u16,
+    pos: u16,
+) {
+    if content_h <= viewport_h {
+        return;
+    }
+    let mut state = ScrollbarState::new(content_h as usize)
+        .viewport_content_length(viewport_h as usize)
+        .position(pos as usize);
+    f.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_style(Style::default().fg(t.accent))
+            .track_style(Style::default().fg(t.dim)),
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut state,
+    );
+}
+
+/// Metadata header + rendered description for the body region. The title is
+/// highlighted when the body is the selected region. Shared by the renderer
+/// and `body_content_height` so measured and drawn heights match.
+fn body_lines(issue: &Issue, selected: bool, t: &Theme) -> Vec<Line<'static>> {
     let mut title_style = title_style(issue, t).add_modifier(Modifier::BOLD);
-    if selected_card == Some(0) {
+    if selected {
         title_style = title_style.fg(t.accent).add_modifier(Modifier::REVERSED);
     }
     let mut lines: Vec<Line> = vec![
@@ -239,49 +388,73 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         )),
         Line::default(),
     ];
-
     lines.extend(markdown::render(&issue.body, t));
+    lines
+}
 
-    lines.push(Line::default());
-    let card_width = area.width.saturating_sub(2) as usize;
-    match &app.detail_comments {
-        None => lines.push(Line::styled(
-            "loading comments…",
-            Style::default().fg(t.dim),
-        )),
-        Some(comments) if comments.is_empty() => {
-            lines.push(Line::styled("no comments", Style::default().fg(t.dim)));
-        }
-        Some(comments) => {
-            for (i, c) in comments.iter().enumerate() {
-                let selected = selected_card == Some(i + 1);
-                // Header rule embeds author + timestamp; a matching bottom rule
-                // closes the card so its bounds are obvious. Highlighted when
-                // the card is the navigation cursor.
-                let header = format!(
-                    "── {} · {} ",
-                    c.author,
-                    c.created_at.format("%Y-%m-%d %H:%M")
-                );
-                let mut header_style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
-                let mut rule_style = Style::default().fg(t.dim);
-                if selected {
-                    header_style = header_style.add_modifier(Modifier::REVERSED);
-                    rule_style = Style::default().fg(t.accent);
-                }
-                lines.push(rule_line(&header, card_width, header_style));
-                lines.extend(markdown::render(&c.body, t));
-                lines.push(rule_line("", card_width, rule_style));
-                lines.push(Line::default());
-            }
-        }
+/// One comment card: an author·timestamp header rule, the rendered body, a
+/// bottom rule, and a trailing blank separator. Highlighted (accent/reversed)
+/// when it is the selected card. Shared by the renderer and `comment_height`.
+fn comment_card_lines(
+    c: &Comment,
+    selected: bool,
+    card_width: usize,
+    t: &Theme,
+) -> Vec<Line<'static>> {
+    let header = format!(
+        "── {} · {} ",
+        c.author,
+        c.created_at.format("%Y-%m-%d %H:%M")
+    );
+    let mut header_style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+    let mut rule_style = Style::default().fg(t.dim);
+    if selected {
+        header_style = header_style.add_modifier(Modifier::REVERSED);
+        rule_style = Style::default().fg(t.accent);
     }
+    let mut lines = vec![rule_line(&header, card_width, header_style)];
+    lines.extend(markdown::render(&c.body, t));
+    lines.push(rule_line("", card_width, rule_style));
+    lines.push(Line::default());
+    lines
+}
 
-    let para = Paragraph::new(lines)
-        .block(block)
+/// Wrapped (visual) height of `lines` at inner width `width`. Uses ratatui's
+/// rendered-line-info so it matches exactly what `Paragraph` draws.
+fn paragraph_height(lines: &[Line<'static>], width: u16) -> u16 {
+    if width == 0 {
+        return 0;
+    }
+    let count = Paragraph::new(lines.to_vec())
         .wrap(Wrap { trim: false })
-        .scroll((app.detail_scroll, 0));
-    f.render_widget(para, area);
+        .line_count(width);
+    u16::try_from(count).unwrap_or(u16::MAX)
+}
+
+/// Wrapped height of the body region's content (metadata + description) at
+/// inner width `width`. Styling doesn't affect wrapping, so a default theme
+/// gives an exact count for the key handler's scroll clamp.
+pub fn body_content_height(issue: &Issue, width: u16) -> u16 {
+    paragraph_height(&body_lines(issue, false, &Theme::default()), width)
+}
+
+/// Wrapped height of one comment card (header rule + body + footer + blank) at
+/// inner width `width`.
+pub fn comment_height(c: &Comment, width: u16) -> u16 {
+    paragraph_height(
+        &comment_card_lines(c, false, width as usize, &Theme::default()),
+        width,
+    )
+}
+
+/// Visual-row offset of comment `i`'s top within the stacked comments
+/// paragraph: the summed heights of the comments before it.
+pub fn comment_offset(comments: &[Comment], i: usize, width: u16) -> u16 {
+    comments
+        .iter()
+        .take(i)
+        .map(|c| comment_height(c, width))
+        .fold(0u16, |acc, h| acc.saturating_add(h))
 }
 
 /// A horizontal card rule: `prefix` followed by box-drawing dashes filling out
@@ -996,13 +1169,16 @@ fn draw_calendar_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize) {
 
 fn draw_help(f: &mut Frame, t: &Theme) {
     const HELP: &[(&str, &str)] = &[
-        ("j/k ↑/↓", "move / select detail card"),
+        ("j/k ↑/↓", "move list / scroll detail region"),
         ("Space", "collapse/expand repo group"),
         ("←", "collapse repo group / back to list"),
         ("→", "expand repo group / into detail pane"),
         ("[ / ]", "collapse all / expand all"),
         ("Enter", "open issue in detail pane"),
-        ("Tab", "switch pane (Shift+Tab reverse)"),
+        (
+            "Tab",
+            "next comment in pane / switch pane (Shift+Tab reverse)",
+        ),
         ("Esc / q", "close detail pane"),
         ("o / O", "open issue / repo in browser"),
         ("y", "copy issue ref to clipboard"),
@@ -1113,6 +1289,51 @@ mod tests {
         assert_eq!(title_style(&i, &Theme::default()).fg, None);
     }
 
+    fn test_comment(body: &str) -> Comment {
+        Comment {
+            id: "c".into(),
+            author: "octocat".into(),
+            created_at: chrono::Utc::now(),
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn body_content_height_counts_metadata_and_body() {
+        // 4 metadata lines (title, state, assignees, blank) + 0 body lines.
+        let empty = issue(vec![]);
+        assert_eq!(body_content_height(&empty, 80), 4);
+        // + three body lines, none wide enough to wrap at width 80.
+        let mut three = issue(vec![]);
+        three.body = "line one\nline two\nline three".into();
+        assert_eq!(body_content_height(&three, 80), 7);
+    }
+
+    #[test]
+    fn comment_height_counts_header_body_footer_blank() {
+        // header rule + 1 body line + footer rule + trailing blank.
+        assert_eq!(comment_height(&test_comment("one line"), 80), 4);
+        // header + 3 body + footer + blank.
+        assert_eq!(comment_height(&test_comment("a\nb\nc"), 80), 6);
+    }
+
+    #[test]
+    fn comment_height_accounts_for_wrapping() {
+        // A body line far wider than the pane wraps into multiple visual rows,
+        // so the measured height exceeds the naive source-line count.
+        let long = "x".repeat(200);
+        let h = comment_height(&test_comment(&long), 40);
+        assert!(h > 4, "expected wrapped height > 4, got {h}");
+    }
+
+    #[test]
+    fn comment_offset_sums_preceding_card_heights() {
+        let comments = vec![test_comment("a\nb\nc"), test_comment("only one")];
+        assert_eq!(comment_offset(&comments, 0, 80), 0);
+        // First card is header + 3 body + footer + blank = 6 rows.
+        assert_eq!(comment_offset(&comments, 1, 80), 6);
+    }
+
     /// Single-repo app with one issue in `state`, selected, `Mode::ConfirmState`.
     fn confirm_app(state: IssueState) -> App {
         use crate::provider::types::RepoIssues;
@@ -1169,6 +1390,84 @@ mod tests {
         buf[(x, y)]
             .modifier
             .contains(ratatui::style::Modifier::REVERSED)
+    }
+
+    /// A detail-pane app with a long body and one long + two short comments,
+    /// rendered into a `TestBackend` so the two-region layout can be asserted.
+    fn detail_render_string(sel: DetailSel) -> String {
+        use crate::provider::types::RepoIssues;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut i = issue(vec![]);
+        i.number = 42;
+        i.title = "Redesign the detail pane".into();
+        i.body = (1..=20)
+            .map(|n| format!("Body line {n} with enough words to possibly wrap in a narrow pane."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
+        app.state_filter = crate::tui::app::StateFilter::All;
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![i],
+        }]);
+        app.selected = 1;
+        app.open_detail();
+        app.detail_comments = Some(vec![
+            test_comment(
+                &(1..=15)
+                    .map(|n| format!("Comment line {n} long enough to scroll within one card."))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            test_comment("Second comment, short."),
+            test_comment("Third comment."),
+        ]);
+        app.detail_sel = sel;
+        if let DetailSel::Comment(idx) = sel {
+            let w = comment_pane_width(100);
+            app.comments_scroll = comment_offset(app.detail_comments.as_ref().unwrap(), idx, w);
+        }
+
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app, &Theme::default())).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn detail_pane_shows_two_regions_body_and_comments() {
+        let out = detail_render_string(DetailSel::Comment(0));
+        // Both region blocks are titled and present.
+        assert!(out.contains("issue (Tab comment"), "body title missing");
+        assert!(out.contains(" comments "), "comments title missing");
+        // The pinned body metadata and description render in the top region.
+        assert!(out.contains("#42"), "issue number missing");
+        assert!(out.contains("Body line 1"), "body text missing");
+        // The selected comment's header rule renders in the bottom region.
+        assert!(out.contains("── octocat"), "comment header missing");
+    }
+
+    #[test]
+    fn detail_pane_draws_scrollbars_when_content_overflows() {
+        // Long body + long selected comment both overflow their regions, so a
+        // scrollbar thumb (█) is drawn for each.
+        let out = detail_render_string(DetailSel::Comment(0));
+        assert!(out.contains('█'), "expected scrollbar thumbs to be drawn");
     }
 
     #[test]

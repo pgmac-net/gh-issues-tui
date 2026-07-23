@@ -377,6 +377,38 @@ pub enum Focus {
     Detail,
 }
 
+/// What the detail pane's keyboard focus is on: the issue body region, or one
+/// of the comment cards (0-indexed). Tab/Shift+Tab cycle through
+/// `Body → Comment(0) → … → Comment(n-1) → Body`; the selected region is the
+/// one `j/k` scroll and `e` edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailSel {
+    Body,
+    Comment(usize),
+}
+
+/// Body region's share of the detail pane height (percent); the comments
+/// region takes the rest. Mirrored by the `Layout::vertical` split in
+/// `ui::draw_detail`.
+const DETAIL_BODY_PCT: u16 = 45;
+/// Minimum outer height for the body region so its metadata header stays
+/// visible even in a short terminal.
+const DETAIL_BODY_MIN_H: u16 = 6;
+
+/// Split the detail pane's total height into `(body_region_h, comments_region_h)`,
+/// each including its own border rows. One source of truth for the renderer's
+/// layout and the key handler's scroll clamps.
+pub fn detail_split(area_h: u16) -> (u16, u16) {
+    // Too short to host two bordered regions: give it all to the body.
+    if area_h <= DETAIL_BODY_MIN_H + 3 {
+        return (area_h, 0);
+    }
+    let body = ((area_h as u32 * DETAIL_BODY_PCT as u32 / 100) as u16).max(DETAIL_BODY_MIN_H);
+    // Always leave the comments region at least three rows.
+    let body = body.min(area_h.saturating_sub(3));
+    (body, area_h - body)
+}
+
 /// Which element of the inline comment section (`Mode::CommentEditor`) has
 /// keys: the multi-line editor itself, or one of its two buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -746,14 +778,6 @@ impl Default for BodyEditor {
     }
 }
 
-/// Logical line count of one rendered comment card: a header rule, the body
-/// (one line per source line), a bottom rule, and a trailing blank. Shared by
-/// `App::detail_card_offset` and `ui::draw_detail` so the card-scroll offsets
-/// match what is drawn.
-pub fn comment_card_lines(c: &Comment) -> usize {
-    3 + c.body.lines().count()
-}
-
 impl BodyEditor {
     /// Prefill an editor with existing text, one `InputState` per line, cursor
     /// at the end of the last line. An empty string yields the `Default`
@@ -1079,10 +1103,15 @@ pub struct App {
     /// Persistent rate-limit error (shown until cleared by a successful fetch).
     pub rate_limit_error: Option<String>,
     pub detail_comments: Option<Vec<Comment>>,
-    pub detail_scroll: u16,
-    /// Highlighted card in the detail pane: 0 = the issue body, 1..=N = the
-    /// (card − 1)th comment. Drives `j/k` navigation and which card `e` edits.
-    pub detail_card: usize,
+    /// Which region of the detail pane has focus (body or a comment card).
+    /// Tab/Shift+Tab move it; `j/k` scroll the selected region; `e` edits it.
+    pub detail_sel: DetailSel,
+    /// Visual-row scroll offset within the body region.
+    pub body_scroll: u16,
+    /// Visual-row scroll offset into the stacked comments paragraph. Selecting
+    /// a comment snaps this to that comment's top; `j/k` then scroll within
+    /// the selected comment's own extent.
+    pub comments_scroll: u16,
     /// Candidate PR links, populated when more than one is found (`Mode::PrPicker`).
     pub pr_links: Vec<PrRef>,
     /// The PR currently being fetched or shown; guards against a stale
@@ -1143,8 +1172,9 @@ impl App {
             rate_limit: None,
             rate_limit_error: None,
             detail_comments: None,
-            detail_scroll: 0,
-            detail_card: 0,
+            detail_sel: DetailSel::Body,
+            body_scroll: 0,
+            comments_scroll: 0,
             pr_links: Vec::new(),
             pr_target: None,
             pr_summary: None,
@@ -1328,8 +1358,7 @@ impl App {
         self.focus = Focus::List;
         self.detail_open = false;
         self.detail_comments = None;
-        self.detail_scroll = 0;
-        self.detail_card = 0;
+        self.reset_detail_scroll();
         self.clear_pr_state();
         self.loading = true;
     }
@@ -1338,10 +1367,16 @@ impl App {
     pub fn open_detail(&mut self) {
         self.detail_open = true;
         self.focus = Focus::Detail;
-        self.detail_scroll = 0;
-        self.detail_card = 0;
+        self.reset_detail_scroll();
         self.detail_comments = None;
         self.clear_pr_state();
+    }
+
+    /// Reset the detail pane's selection and both scroll offsets to the top.
+    pub fn reset_detail_scroll(&mut self) {
+        self.detail_sel = DetailSel::Body;
+        self.body_scroll = 0;
+        self.comments_scroll = 0;
     }
 
     /// `→` on an issue row: move focus into the detail pane, opening the
@@ -1373,68 +1408,94 @@ impl App {
         self.enter_detail()
     }
 
-    /// Number of navigable cards in the detail pane: the issue body (card 0)
-    /// plus one per loaded comment.
-    pub fn detail_card_count(&self) -> usize {
-        1 + self.detail_comments.as_ref().map_or(0, Vec::len)
+    /// Number of loaded comments (0 while they are still fetching or absent).
+    pub fn detail_comment_count(&self) -> usize {
+        self.detail_comments.as_ref().map_or(0, Vec::len)
     }
 
-    /// Move the detail-pane card highlight by `delta`, clamped to the card
-    /// range, and scroll so the newly selected card's top is in view.
-    pub fn move_detail_card(&mut self, delta: isize) {
-        let last = self.detail_card_count().saturating_sub(1);
-        let next = (self.detail_card as isize + delta).clamp(0, last as isize) as usize;
-        self.detail_card = next;
-        self.detail_scroll = self.detail_card_offset(next);
-    }
-
-    /// The visual-line offset of card `card`'s top in the detail paragraph.
-    /// Mirrors the line layout in `ui::draw_detail`; keep the two in sync.
-    /// (Wrapping is not modelled — long lines make this an under-estimate, so
-    /// the selected card's header still scrolls into view, just not pinned to
-    /// the very top.)
-    pub fn detail_card_offset(&self, card: usize) -> u16 {
-        if card == 0 {
-            return 0;
-        }
-        let Some(issue) = self.selected_issue() else {
-            return 0;
+    /// Tab (`delta = 1`) / Shift+Tab (`delta = -1`): cycle the detail selection
+    /// through `Body → Comment(0) → … → Comment(n-1)` and wrap. Selecting the
+    /// body leaves `body_scroll` where it was (so returning keeps your place);
+    /// the caller snaps `comments_scroll` to the newly selected comment's top.
+    pub fn select_detail(&mut self, delta: isize) {
+        let n = self.detail_comment_count() as isize;
+        // Positions: 0 = Body, 1..=n = Comment(0..n-1). `n + 1` slots total.
+        let cur = match self.detail_sel {
+            DetailSel::Body => 0,
+            DetailSel::Comment(i) => i as isize + 1,
         };
-        // Fixed meta block (title, state, assignees, blank) + body + blank.
-        let mut offset = 4 + issue.body.lines().count() + 1;
-        if let Some(comments) = &self.detail_comments {
-            for c in comments.iter().take(card - 1) {
-                offset += comment_card_lines(c);
-            }
-        }
-        u16::try_from(offset).unwrap_or(u16::MAX)
+        let next = (cur + delta).rem_euclid(n + 1);
+        self.detail_sel = if next == 0 {
+            DetailSel::Body
+        } else {
+            DetailSel::Comment((next - 1) as usize)
+        };
     }
 
-    /// `e`: edit the highlighted detail card — the issue body (card 0) or a
-    /// comment. Opens the inline editor prefilled with the current content.
-    /// No-op unless the detail pane is open on an issue.
+    /// Keep `detail_sel` valid after a new comment thread lands: a selection
+    /// past the end falls back to the last comment, and an empty thread falls
+    /// back to the body.
+    pub fn clamp_detail_sel(&mut self) {
+        if let DetailSel::Comment(i) = self.detail_sel {
+            let n = self.detail_comment_count();
+            self.detail_sel = match n {
+                0 => DetailSel::Body,
+                _ if i >= n => DetailSel::Comment(n - 1),
+                _ => DetailSel::Comment(i),
+            };
+        }
+    }
+
+    /// Scroll the body region, clamped to `[0, max]` (max = content height
+    /// minus the region's viewport height, 0 when it all fits).
+    pub fn scroll_body(&mut self, delta: isize, max: u16) {
+        let next = (self.body_scroll as isize + delta).clamp(0, max as isize);
+        self.body_scroll = next as u16;
+    }
+
+    /// Scroll within the selected comment: `comments_scroll` is an absolute
+    /// offset into the stacked comments paragraph, clamped to `[lo, hi]` where
+    /// `lo` is the comment's top and `hi` is `lo + height − viewport` (floored
+    /// at `lo`, so a comment that fits doesn't scroll).
+    pub fn scroll_comment(&mut self, delta: isize, lo: u16, hi: u16) {
+        let hi = hi.max(lo);
+        let next = (self.comments_scroll as isize + delta).clamp(lo as isize, hi as isize);
+        self.comments_scroll = next as u16;
+    }
+
+    /// Snap the comments viewport so comment `top` (a precomputed offset) sits
+    /// at the top of the region. Called after `select_detail` lands on a comment.
+    pub fn snap_comment(&mut self, top: u16) {
+        self.comments_scroll = top;
+    }
+
+    /// `e`: edit the selected detail region — the issue body or a comment.
+    /// Opens the inline editor prefilled with the current content. No-op
+    /// unless the detail pane is open on an issue.
     pub fn start_edit_selected_card(&mut self) {
         if !self.detail_open {
             return;
         }
-        if self.detail_card == 0 {
-            let Some(issue) = self.selected_issue() else {
-                return;
-            };
-            self.comment_editor = BodyEditor::from_text(&issue.body);
-            self.editor_target = EditorTarget::EditBody;
-        } else {
-            let idx = self.detail_card - 1;
-            let Some(c) = self
-                .detail_comments
-                .as_ref()
-                .and_then(|cs| cs.get(idx))
-                .cloned()
-            else {
-                return;
-            };
-            self.comment_editor = BodyEditor::from_text(&c.body);
-            self.editor_target = EditorTarget::EditComment { comment_id: c.id };
+        match self.detail_sel {
+            DetailSel::Body => {
+                let Some(issue) = self.selected_issue() else {
+                    return;
+                };
+                self.comment_editor = BodyEditor::from_text(&issue.body);
+                self.editor_target = EditorTarget::EditBody;
+            }
+            DetailSel::Comment(idx) => {
+                let Some(c) = self
+                    .detail_comments
+                    .as_ref()
+                    .and_then(|cs| cs.get(idx))
+                    .cloned()
+                else {
+                    return;
+                };
+                self.comment_editor = BodyEditor::from_text(&c.body);
+                self.editor_target = EditorTarget::EditComment { comment_id: c.id };
+            }
         }
         self.comment_focus = CommentFocus::Editor;
         self.mode = Mode::CommentEditor;
@@ -3199,37 +3260,100 @@ mod tests {
     }
 
     #[test]
-    fn comment_card_lines_counts_rules_body_and_blank() {
-        assert_eq!(comment_card_lines(&comment("c", "one line")), 4); // 3 + 1
-        assert_eq!(comment_card_lines(&comment("c", "a\nb\nc")), 6); // 3 + 3
-    }
-
-    #[test]
-    fn detail_card_count_is_body_plus_comments() {
+    fn detail_comment_count_reflects_loaded_thread() {
         let app = detail_app_with_comments();
-        assert_eq!(app.detail_card_count(), 3); // body + 2 comments
+        assert_eq!(app.detail_comment_count(), 2);
+        let mut none = two_repo_app();
+        none.selected = 1;
+        none.open_detail();
+        assert_eq!(none.detail_comment_count(), 0);
     }
 
     #[test]
-    fn move_detail_card_clamps_and_sets_scroll() {
+    fn select_detail_cycles_body_through_comments_and_wraps() {
+        let mut app = detail_app_with_comments(); // body + 2 comments
+        assert_eq!(app.detail_sel, DetailSel::Body);
+
+        app.select_detail(1);
+        assert_eq!(app.detail_sel, DetailSel::Comment(0));
+        app.select_detail(1);
+        assert_eq!(app.detail_sel, DetailSel::Comment(1));
+        app.select_detail(1); // wraps back to body
+        assert_eq!(app.detail_sel, DetailSel::Body);
+
+        app.select_detail(-1); // wraps to last comment
+        assert_eq!(app.detail_sel, DetailSel::Comment(1));
+    }
+
+    #[test]
+    fn select_detail_with_no_comments_stays_on_body() {
+        let mut app = two_repo_app();
+        app.selected = 1;
+        app.open_detail();
+        app.detail_comments = Some(vec![]);
+        app.select_detail(1);
+        assert_eq!(app.detail_sel, DetailSel::Body);
+        app.select_detail(-1);
+        assert_eq!(app.detail_sel, DetailSel::Body);
+    }
+
+    #[test]
+    fn scroll_body_clamps_to_zero_and_max() {
         let mut app = detail_app_with_comments();
-        assert_eq!(app.detail_card, 0);
-        app.move_detail_card(-1); // clamped at body
-        assert_eq!(app.detail_card, 0);
-        assert_eq!(app.detail_scroll, 0);
+        app.scroll_body(-1, 10); // can't go above the top
+        assert_eq!(app.body_scroll, 0);
+        app.scroll_body(4, 10);
+        assert_eq!(app.body_scroll, 4);
+        app.scroll_body(100, 10); // clamped at max
+        assert_eq!(app.body_scroll, 10);
+    }
 
-        app.move_detail_card(1);
-        assert_eq!(app.detail_card, 1);
-        // Empty body: base = 4 meta + 0 body + 1 blank = 5.
-        assert_eq!(app.detail_scroll, 5);
+    #[test]
+    fn scroll_comment_clamps_within_its_span() {
+        let mut app = detail_app_with_comments();
+        app.detail_sel = DetailSel::Comment(1);
+        app.snap_comment(20); // comment top offset
+        // Span is [20, 25]; scrolling can't rise above the header.
+        app.scroll_comment(-5, 20, 25);
+        assert_eq!(app.comments_scroll, 20);
+        app.scroll_comment(3, 20, 25);
+        assert_eq!(app.comments_scroll, 23);
+        app.scroll_comment(100, 20, 25); // clamped at the bottom
+        assert_eq!(app.comments_scroll, 25);
+    }
 
-        app.move_detail_card(1);
-        assert_eq!(app.detail_card, 2);
-        // Second comment starts after the first card (3 + 2 body lines = 5).
-        assert_eq!(app.detail_scroll, 10);
+    #[test]
+    fn scroll_comment_that_fits_does_not_move() {
+        let mut app = detail_app_with_comments();
+        app.snap_comment(8);
+        // hi < lo (comment shorter than viewport): stays pinned to the top.
+        app.scroll_comment(5, 8, 3);
+        assert_eq!(app.comments_scroll, 8);
+    }
 
-        app.move_detail_card(5); // clamped at last comment
-        assert_eq!(app.detail_card, 2);
+    #[test]
+    fn clamp_detail_sel_falls_back_when_thread_shrinks() {
+        let mut app = detail_app_with_comments();
+        app.detail_sel = DetailSel::Comment(1);
+        app.detail_comments = Some(vec![comment("c1", "only one now")]);
+        app.clamp_detail_sel();
+        assert_eq!(app.detail_sel, DetailSel::Comment(0));
+
+        app.detail_comments = Some(vec![]);
+        app.clamp_detail_sel();
+        assert_eq!(app.detail_sel, DetailSel::Body);
+    }
+
+    #[test]
+    fn reset_detail_scroll_returns_to_body_top() {
+        let mut app = detail_app_with_comments();
+        app.detail_sel = DetailSel::Comment(1);
+        app.body_scroll = 4;
+        app.comments_scroll = 12;
+        app.reset_detail_scroll();
+        assert_eq!(app.detail_sel, DetailSel::Body);
+        assert_eq!(app.body_scroll, 0);
+        assert_eq!(app.comments_scroll, 0);
     }
 
     #[test]
@@ -3242,7 +3366,7 @@ mod tests {
         {
             app.repos[repo_idx].issues[issue_idx].body = "current description".into();
         }
-        app.detail_card = 0;
+        app.detail_sel = DetailSel::Body;
         app.start_edit_selected_card();
         assert_eq!(app.mode, Mode::CommentEditor);
         assert_eq!(app.editor_target, EditorTarget::EditBody);
@@ -3252,7 +3376,7 @@ mod tests {
     #[test]
     fn start_edit_comment_card_prefills_and_targets_comment_id() {
         let mut app = detail_app_with_comments();
-        app.detail_card = 1; // first comment
+        app.detail_sel = DetailSel::Comment(0); // first comment
         app.start_edit_selected_card();
         assert_eq!(app.mode, Mode::CommentEditor);
         assert_eq!(
@@ -3262,6 +3386,17 @@ mod tests {
             }
         );
         assert_eq!(app.comment_editor.text(), "first\nsecond");
+    }
+
+    #[test]
+    fn detail_split_gives_body_and_comments_regions() {
+        let (body, comments) = detail_split(30);
+        assert!(body >= DETAIL_BODY_MIN_H);
+        assert_eq!(body + comments, 30);
+        assert!(comments >= 3);
+        // A tiny pane collapses to body-only.
+        let (b2, c2) = detail_split(6);
+        assert_eq!((b2, c2), (6, 0));
     }
 
     #[test]

@@ -151,13 +151,14 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 
 | Key | Action |
 |-----|--------|
-| `j`/`k`, `↑`/`↓` | move selection in the list; in the detail pane, move the card highlight (issue body / each comment) |
+| `j`/`k`, `↑`/`↓` | move selection in the list; in the detail pane, scroll the selected region (issue body or the selected comment) |
 | `PgUp`/`PgDn`, `g`/`G` | page / jump to top / bottom |
 | `Space` | collapse/expand the selected repo group |
 | `←` / `→` | on a repo header: collapse / expand the group. On an issue: `→` moves into the detail pane (opening it if closed), `←` backs out to the list |
 | `[` / `]` | collapse all / expand all groups |
 | `Enter` | open the issue in a right-hand detail pane (loads the comment thread) |
-| `Tab` / `Shift+Tab` | switch focus between the list and detail panes |
+| `Tab` / `Shift+Tab` | from the list: switch into the detail pane. In the detail pane: move to the next / previous comment |
+| `←` | in the detail pane: return focus to the list |
 | `Esc` / `q` | close the detail pane (from either pane) |
 | `o` / `O` | open issue / repo in the browser |
 | `y` | copy the selected issue's short reference (`owner/repo#number`) to the clipboard, via OSC 52 |
@@ -167,7 +168,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `s` / `S` | cycle sort key / toggle direction |
 | `w` | switch org/owner (free-text; resets filters and view state) |
 | `c` | add a comment: opens the detail pane (if closed) and its inline editor section (`Ctrl+S` submits, `Esc` discards) |
-| `e` | edit the highlighted detail card inline — the issue description (body card) or a comment — in the same editor section |
+| `e` | edit the selected detail region inline — the issue description (body) or the selected comment — in the same editor section |
 | `x` | close or reopen the issue (confirmation popup: `←`/`→`/`Tab` moves focus, `Enter` picks, or `y`/`n`/`Esc` shortcuts) |
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (picker of the repo's labels, current labels pre-checked) |
@@ -204,9 +205,11 @@ In the multi-line comment and description editors, text word-wraps at the editor
 
 ### Editing the description and comments
 
-In the detail pane the comment thread renders as **cards** — each comment is bounded by a header rule showing its author and timestamp and a matching bottom rule, so where one comment ends and the next begins is obvious. `j`/`k` move a **card highlight** through the pane: card 0 is the issue body, then one card per comment. `e` opens the same inline editor section on the highlighted card, prefilled with its current text — the issue **description** when the body card is highlighted, or the **comment** otherwise. Editing uses the identical editor controls as adding a comment (`Ctrl+S` saves, `Esc` discards). Saving an edited description or comment refreshes the pane; an empty save discards a comment edit but is accepted for the description (clearing it is valid). All three backends (GitHub, Linear, Jira) support editing.
+The detail pane splits into two independently scrolling regions. The **top region** pins the issue metadata and description so it never scrolls away with the comments. The **bottom region** holds the comment thread, rendered as **cards** — each comment is bounded by a header rule showing its author and timestamp and a matching bottom rule, so where one comment ends and the next begins is obvious. Each region shows a scrollbar on its right edge when its content is taller than the region, marking your position through the text.
 
-The body and each comment render as lightweight markdown: `# ` headings, `**bold**`/`*italic*`, `` `inline code` ``, fenced ` ``` ` code blocks, `> ` blockquotes, `-`/`*`/`+` and numbered lists, `---` rules, and `[text](url)` links (shown as styled text, the URL itself is dropped). Rendering is line-for-line — one screen line per source line — so it doesn't disturb the card cursor or scroll offset above; tables, nested-list re-indent, and syntax highlighting inside code fences aren't supported.
+`Tab` / `Shift+Tab` move the selection through the body and each comment (wrapping around); `←` hands focus back to the list. `j`/`k` (or `↑`/`↓`) scroll the **selected** region only — the description when the body is selected, or, once you select a comment, that comment's own text (its header scrolls up out of the way as you read, and the scrollbar tracks your position within that one comment). `PageUp`/`PageDown` step by a screenful. `e` opens the same inline editor section on the selected region, prefilled with its current text — the issue **description** when the body is selected, or the **comment** otherwise. Editing uses the identical editor controls as adding a comment (`Ctrl+S` saves, `Esc` discards). Saving an edited description or comment refreshes the pane; an empty save discards a comment edit but is accepted for the description (clearing it is valid). All three backends (GitHub, Linear, Jira) support editing.
+
+The body and each comment render as lightweight markdown: `# ` headings, `**bold**`/`*italic*`, `` `inline code` ``, fenced ` ``` ` code blocks, `> ` blockquotes, `-`/`*`/`+` and numbered lists, `---` rules, and `[text](url)` links (shown as styled text, the URL itself is dropped). Rendering is line-for-line — one screen line per source line — with wrapping measured accurately so scroll positions and scrollbars stay correct; tables, nested-list re-indent, and syntax highlighting inside code fences aren't supported.
 
 ### Creating issues
 
