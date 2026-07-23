@@ -451,7 +451,7 @@ fn handle_key(
         Mode::PrioritySet => handle_priority_set_key(app, key, client, tx),
         Mode::LabelsSet => handle_labels_set_key(app, key, client, tx),
         Mode::PrPicker => handle_pr_picker_key(app, key, client, tx),
-        Mode::PrSummary => handle_pr_summary_key(app, key),
+        Mode::PrSummary => handle_pr_summary_key(app, key, client, tx),
         Mode::Help => app.mode = Mode::Normal,
     }
 }
@@ -480,7 +480,12 @@ fn handle_pr_picker_key(
     }
 }
 
-fn handle_pr_summary_key(app: &mut App, key: KeyEvent) {
+fn handle_pr_summary_key(
+    app: &mut App,
+    key: KeyEvent,
+    client: &Provider,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.close_pr_summary(),
         KeyCode::Char('j') | KeyCode::Down => {
@@ -488,6 +493,22 @@ fn handle_pr_summary_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.pr_scroll = app.pr_scroll.saturating_sub(1);
+        }
+        KeyCode::Tab => app.select_pr_target(1),
+        KeyCode::BackTab => app.select_pr_target(-1),
+        KeyCode::Char('o') | KeyCode::Enter => {
+            if let Some(url) = app.pr_selected_url() {
+                match open::that(&url) {
+                    Ok(()) => app.status = Some(format!("opened {url}")),
+                    Err(e) => app.status = Some(format!("open failed: {e}")),
+                }
+            }
+        }
+        KeyCode::Char('r') => {
+            if let Some(pr) = app.pr_target.clone() {
+                app.refresh_pr_summary();
+                spawn_pr_summary(client, pr, tx);
+            }
         }
         _ => {}
     }

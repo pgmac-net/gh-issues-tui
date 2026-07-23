@@ -827,8 +827,8 @@ query($owner: String!, $name: String!, $number: Int!) {
               contexts(first: 100) {
                 nodes {
                   __typename
-                  ... on CheckRun { name conclusion }
-                  ... on StatusContext { context state }
+                  ... on CheckRun { name conclusion detailsUrl }
+                  ... on StatusContext { context state targetUrl }
                 }
               }
             }
@@ -852,7 +852,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 fragment CheckSuiteFields on CheckSuite {
   conclusion
   createdAt
-  workflowRun { runNumber event workflow { name } }
+  workflowRun { runNumber event url workflow { name } }
 }";
 
 // ---- pull_request response DTOs ----
@@ -956,6 +956,7 @@ struct ContextsConn {
 /// The `CheckRun` / `StatusContext` GraphQL union, flattened into one
 /// deserialize target — only the fields for the resolved `__typename` are set.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ContextNode {
     #[serde(rename = "__typename")]
     typename: String,
@@ -963,6 +964,10 @@ struct ContextNode {
     conclusion: Option<String>,
     context: Option<String>,
     state: Option<String>,
+    #[serde(default)]
+    details_url: Option<String>,
+    #[serde(default)]
+    target_url: Option<String>,
 }
 
 impl ContextNode {
@@ -971,10 +976,12 @@ impl ContextNode {
             "CheckRun" => Some(CheckContextInfo {
                 name: self.name.unwrap_or_default(),
                 conclusion: self.conclusion.unwrap_or_else(|| "PENDING".into()),
+                url: self.details_url.unwrap_or_default(),
             }),
             "StatusContext" => Some(CheckContextInfo {
                 name: self.context.unwrap_or_default(),
                 conclusion: self.state.unwrap_or_default(),
+                url: self.target_url.unwrap_or_default(),
             }),
             _ => None,
         }
@@ -1003,6 +1010,7 @@ impl CheckSuiteNode {
             event: wr.event,
             conclusion: self.conclusion,
             created_at: self.created_at,
+            url: wr.url,
         })
     }
 }
@@ -1012,6 +1020,7 @@ impl CheckSuiteNode {
 struct WorkflowRunNode {
     run_number: u64,
     event: String,
+    url: String,
     workflow: WorkflowNameNode,
 }
 
@@ -1407,8 +1416,8 @@ mod tests {
                                 "state": "SUCCESS",
                                 "contexts": {
                                     "nodes": [
-                                        {"__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS", "context": null, "state": null},
-                                        {"__typename": "StatusContext", "name": null, "conclusion": null, "context": "legacy-ci", "state": "SUCCESS"}
+                                        {"__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS", "context": null, "state": null, "detailsUrl": "https://github.com/o/r/runs/1"},
+                                        {"__typename": "StatusContext", "name": null, "conclusion": null, "context": "legacy-ci", "state": "SUCCESS", "targetUrl": "https://ci.example.com/legacy"}
                                     ]
                                 }
                             },
@@ -1416,7 +1425,7 @@ mod tests {
                                 "nodes": [{
                                     "conclusion": "SUCCESS",
                                     "createdAt": "2026-07-20T00:00:00Z",
-                                    "workflowRun": {"runNumber": 42, "event": "pull_request", "workflow": {"name": "ci.yml"}}
+                                    "workflowRun": {"runNumber": 42, "event": "pull_request", "url": "https://github.com/o/r/actions/runs/42", "workflow": {"name": "ci.yml"}}
                                 }]
                             }
                         }
@@ -1432,7 +1441,7 @@ mod tests {
                                 "nodes": [{
                                     "conclusion": "SUCCESS",
                                     "createdAt": "2026-07-19T00:00:00Z",
-                                    "workflowRun": {"runNumber": 128, "event": "push", "workflow": {"name": "release.yml"}}
+                                    "workflowRun": {"runNumber": 128, "event": "push", "url": "https://github.com/o/r/actions/runs/128", "workflow": {"name": "release.yml"}}
                                 }]
                             }
                         }]
@@ -1456,13 +1465,23 @@ mod tests {
         assert_eq!(checks.state.as_deref(), Some("SUCCESS"));
         assert_eq!(checks.contexts.len(), 2);
         assert_eq!(checks.contexts[0].name, "ci");
+        assert_eq!(checks.contexts[0].url, "https://github.com/o/r/runs/1");
         assert_eq!(checks.contexts[1].name, "legacy-ci");
+        assert_eq!(checks.contexts[1].url, "https://ci.example.com/legacy");
 
         assert_eq!(summary.pr_runs.len(), 1);
         assert_eq!(summary.pr_runs[0].workflow, "ci.yml");
+        assert_eq!(
+            summary.pr_runs[0].url,
+            "https://github.com/o/r/actions/runs/42"
+        );
         assert_eq!(summary.default_branch_name, "main");
         assert_eq!(summary.default_branch_runs.len(), 1);
         assert_eq!(summary.default_branch_runs[0].workflow, "release.yml");
+        assert_eq!(
+            summary.default_branch_runs[0].url,
+            "https://github.com/o/r/actions/runs/128"
+        );
     }
 
     #[test]
@@ -1507,6 +1526,8 @@ mod tests {
             "defaultBranchRef",
             "CheckRun",
             "StatusContext",
+            "detailsUrl",
+            "targetUrl",
         ] {
             assert!(PR_SUMMARY_QUERY.contains(field), "missing {field}");
         }

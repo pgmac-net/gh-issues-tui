@@ -747,9 +747,9 @@ fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent))
-        .title(" PR summary (j/k scroll · Esc close) ");
+        .title(" PR summary (j/k scroll · Tab select · o open · r refresh · Esc close) ");
 
-    let lines: Vec<Line> = match &app.pr_summary {
+    let mut lines: Vec<Line> = match &app.pr_summary {
         None => vec![Line::styled(
             "loading PR summary…",
             Style::default().fg(t.dim),
@@ -861,6 +861,24 @@ fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
             lines
         }
     };
+
+    // Highlight the selected row (`Tab`/`Shift+Tab`) by patching a
+    // background onto each of its spans' existing styles, preserving their
+    // foreground colours and modifiers.
+    if let Some(sel_line) = app
+        .pr_targets()
+        .get(app.pr_sel)
+        .map(|target| target.line as usize)
+        && let Some(l) = lines.get_mut(sel_line)
+    {
+        let old = std::mem::take(l);
+        *l = Line::from(
+            old.spans
+                .into_iter()
+                .map(|s| Span::styled(s.content, s.style.bg(t.selected_bg)))
+                .collect::<Vec<_>>(),
+        );
+    }
 
     let para = Paragraph::new(lines)
         .block(block)
