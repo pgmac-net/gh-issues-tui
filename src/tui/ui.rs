@@ -1211,7 +1211,14 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         })
         .collect();
     f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" keys ")),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" keys ")
+                .title_bottom(
+                    Line::from(format!(" v{} ", env!("CARGO_PKG_VERSION"))).right_aligned(),
+                ),
+        ),
         area,
     );
 }
@@ -1500,5 +1507,21 @@ mod tests {
         let buf = render_confirm_buffer(&app);
         assert!(!is_reversed_at(&buf, "Yes"));
         assert!(is_reversed_at(&buf, "No"));
+    }
+
+    #[test]
+    fn help_popup_renders_version() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_help(f, &Theme::default())).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("v0.8.2"),
+            "version not found in help popup"
+        );
     }
 }
