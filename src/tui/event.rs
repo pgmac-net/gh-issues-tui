@@ -1102,6 +1102,11 @@ fn handle_normal_key(
             app.input.start(&app.filters.text.clone());
             app.mode = Mode::Input(InputKind::Search);
         }
+        // jump the selection to an issue by number (does not filter the list)
+        KeyCode::Char('#') => {
+            app.input.start("");
+            app.mode = Mode::Input(InputKind::GotoNumber);
+        }
         KeyCode::Char('f') => {
             app.state_filter = app.state_filter.next();
             if app.state_filter != StateFilter::Open && !app.include_closed {
@@ -1349,6 +1354,15 @@ fn submit_input(
                 form.title = value.trim().to_string();
             }
             app.mode = Mode::IssueForm;
+        }
+        InputKind::GotoNumber => {
+            let trimmed = value.trim().trim_start_matches('#').trim();
+            match trimmed.parse::<u64>() {
+                Ok(number) => nav(app, client, tx, |a| {
+                    a.jump_to_number(number);
+                }),
+                Err(_) => app.status = Some("not an issue number".into()),
+            }
         }
     }
 }

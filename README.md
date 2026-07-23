@@ -163,6 +163,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `o` / `O` | open issue / repo in the browser |
 | `y` | copy the selected issue's short reference (`owner/repo#number`) to the clipboard, via OSC 52 |
 | `/` | free-text search (title, body, `#number`) |
+| `#` | jump the selection to a loaded issue by number (moves the selector bar; does not filter — reveals a hidden match by clearing filters and relaxing the state filter, searches the current repo group first) |
 | `f` | cycle state filter: open → closed → all |
 | `F` | filter editor (repo, assignee, author, priority, status, created/updated/closed date bounds) |
 | `s` / `S` | cycle sort key / toggle direction |
