@@ -12,6 +12,7 @@ use super::app::{
     ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row, body_popup_width,
     comment_pane_width, cursor_row, input_popup_width, input_scroll_skip, wrap_lines,
 };
+use super::markdown;
 use super::theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
@@ -239,9 +240,7 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         Line::default(),
     ];
 
-    for l in issue.body.lines() {
-        lines.push(Line::raw(l.to_string()));
-    }
+    lines.extend(markdown::render(&issue.body, t));
 
     lines.push(Line::default());
     let card_width = area.width.saturating_sub(2) as usize;
@@ -271,9 +270,7 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                     rule_style = Style::default().fg(t.accent);
                 }
                 lines.push(rule_line(&header, card_width, header_style));
-                for l in c.body.lines() {
-                    lines.push(Line::raw(l.to_string()));
-                }
+                lines.extend(markdown::render(&c.body, t));
                 lines.push(rule_line("", card_width, rule_style));
                 lines.push(Line::default());
             }
