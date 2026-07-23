@@ -175,6 +175,13 @@ impl PrRef {
     pub fn label(&self) -> String {
         format!("{}/{}#{}", self.owner, self.repo, self.number)
     }
+
+    pub fn url(&self) -> String {
+        format!(
+            "https://github.com/{}/{}/pull/{}",
+            self.owner, self.repo, self.number
+        )
+    }
 }
 
 /// Scan `text` for explicit `github.com/{owner}/{repo}/pull/{N}` links.
@@ -264,6 +271,9 @@ pub struct CheckContextInfo {
     pub name: String,
     /// Raw GitHub conclusion/state string (e.g. `SUCCESS`, `FAILURE`, `PENDING`).
     pub conclusion: String,
+    /// Details/target URL for this check or status, opened by the PR
+    /// summary popup's `o`/Enter action.
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -282,6 +292,9 @@ pub struct WorkflowRunInfo {
     pub event: String,
     pub conclusion: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// The run's URL on GitHub, opened by the PR summary popup's `o`/Enter
+    /// action.
+    pub url: String,
 }
 
 /// Everything the PR-summary popup needs, fetched in one GraphQL query.
