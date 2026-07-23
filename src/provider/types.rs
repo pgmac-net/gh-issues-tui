@@ -87,6 +87,8 @@ pub struct RepoIssues {
 
 #[derive(Debug, Clone)]
 pub struct Comment {
+    /// Backend node id, needed to edit the comment.
+    pub id: String,
     pub author: String,
     pub created_at: DateTime<Utc>,
     pub body: String,

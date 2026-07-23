@@ -279,6 +279,7 @@ impl Client {
             .iter()
             .map(|n| {
                 Ok(Comment {
+                    id: n["id"].as_str().unwrap_or_default().to_string(),
                     author: login_at(n, "/author/login"),
                     created_at: serde_json::from_value(n["createdAt"].clone())
                         .map_err(|e| ProviderError::Shape(e.to_string()))?,
@@ -294,6 +295,17 @@ impl Client {
                addComment(input: {subjectId: $id, body: $body}) { clientMutationId }
              }",
             json!({ "id": issue_id, "body": body }),
+        )
+        .await
+        .map(drop)
+    }
+
+    pub async fn update_comment(&self, comment_id: &str, body: &str) -> Result<()> {
+        self.graphql(
+            "mutation($id: ID!, $body: String!) {
+               updateIssueComment(input: {id: $id, body: $body}) { clientMutationId }
+             }",
+            json!({ "id": comment_id, "body": body }),
         )
         .await
         .map(drop)
@@ -317,6 +329,17 @@ impl Client {
                updateIssue(input: {id: $id, title: $title}) { clientMutationId }
              }",
             json!({ "id": issue_id, "title": title }),
+        )
+        .await
+        .map(drop)
+    }
+
+    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+        self.graphql(
+            "mutation($id: ID!, $body: String!) {
+               updateIssue(input: {id: $id, body: $body}) { clientMutationId }
+             }",
+            json!({ "id": issue_id, "body": body }),
         )
         .await
         .map(drop)
@@ -773,7 +796,7 @@ query($id: ID!) {
   node(id: $id) {
     ... on Issue {
       comments(first: 100) {
-        nodes { author { login } createdAt body }
+        nodes { id author { login } createdAt body }
       }
     }
   }
@@ -1134,12 +1157,20 @@ impl crate::provider::IssueProvider for Client {
         self.add_comment(issue_id, body).await
     }
 
+    async fn update_comment(&self, _issue_id: &str, comment_id: &str, body: &str) -> Result<()> {
+        self.update_comment(comment_id, body).await
+    }
+
     async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
         self.set_state(issue_id, state).await
     }
 
     async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
         self.update_title(issue_id, title).await
+    }
+
+    async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+        self.update_body(issue_id, body).await
     }
 
     async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {

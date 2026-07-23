@@ -386,6 +386,19 @@ pub enum CommentFocus {
     Cancel,
 }
 
+/// What the inline editor (`Mode::CommentEditor`) writes on save. All three
+/// share the same multi-line-editor + Save/Cancel widget; only the mutation
+/// and the header text differ.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorTarget {
+    /// Add a new comment to the selected issue (`c`).
+    NewComment,
+    /// Edit an existing comment by its backend id (`e` on a comment card).
+    EditComment { comment_id: String },
+    /// Edit the selected issue's description (`e` on the body card).
+    EditBody,
+}
+
 /// Which button has keys in the `Mode::ConfirmState` popup. Reset to `No`
 /// each time the popup opens — the safe default if Enter is pressed without
 /// looking.
@@ -733,7 +746,33 @@ impl Default for BodyEditor {
     }
 }
 
+/// Logical line count of one rendered comment card: a header rule, the body
+/// (one line per source line), a bottom rule, and a trailing blank. Shared by
+/// `App::detail_card_offset` and `ui::draw_detail` so the card-scroll offsets
+/// match what is drawn.
+pub fn comment_card_lines(c: &Comment) -> usize {
+    3 + c.body.lines().count()
+}
+
 impl BodyEditor {
+    /// Prefill an editor with existing text, one `InputState` per line, cursor
+    /// at the end of the last line. An empty string yields the `Default`
+    /// single blank line.
+    pub fn from_text(text: &str) -> Self {
+        if text.is_empty() {
+            return Self::default();
+        }
+        let lines: Vec<InputState> = text
+            .split('\n')
+            .map(|l| InputState {
+                cursor: l.chars().count(),
+                buffer: l.to_string(),
+            })
+            .collect();
+        let line = lines.len() - 1;
+        Self { lines, line }
+    }
+
     pub fn insert(&mut self, c: char) {
         self.lines[self.line].insert(c);
     }
@@ -1015,6 +1054,9 @@ pub struct App {
     /// Which element of the comment section has keys; reset to `Editor`
     /// each time the editor opens.
     pub comment_focus: CommentFocus,
+    /// What the inline editor writes on save (add comment / edit comment /
+    /// edit body); set each time the editor opens.
+    pub editor_target: EditorTarget,
     /// Which button has keys in the `Mode::ConfirmState` popup; reset to
     /// `No` each time the popup opens.
     pub confirm_choice: ConfirmChoice,
@@ -1038,6 +1080,9 @@ pub struct App {
     pub rate_limit_error: Option<String>,
     pub detail_comments: Option<Vec<Comment>>,
     pub detail_scroll: u16,
+    /// Highlighted card in the detail pane: 0 = the issue body, 1..=N = the
+    /// (card − 1)th comment. Drives `j/k` navigation and which card `e` edits.
+    pub detail_card: usize,
     /// Candidate PR links, populated when more than one is found (`Mode::PrPicker`).
     pub pr_links: Vec<PrRef>,
     /// The PR currently being fetched or shown; guards against a stale
@@ -1086,6 +1131,7 @@ impl App {
             issue_form: None,
             comment_editor: BodyEditor::default(),
             comment_focus: CommentFocus::Editor,
+            editor_target: EditorTarget::NewComment,
             confirm_choice: ConfirmChoice::No,
             priority_pick_issue: None,
             label_pick_issue: None,
@@ -1098,6 +1144,7 @@ impl App {
             rate_limit_error: None,
             detail_comments: None,
             detail_scroll: 0,
+            detail_card: 0,
             pr_links: Vec::new(),
             pr_target: None,
             pr_summary: None,
@@ -1282,6 +1329,7 @@ impl App {
         self.detail_open = false;
         self.detail_comments = None;
         self.detail_scroll = 0;
+        self.detail_card = 0;
         self.clear_pr_state();
         self.loading = true;
     }
@@ -1291,6 +1339,7 @@ impl App {
         self.detail_open = true;
         self.focus = Focus::Detail;
         self.detail_scroll = 0;
+        self.detail_card = 0;
         self.detail_comments = None;
         self.clear_pr_state();
     }
@@ -1319,8 +1368,76 @@ impl App {
         self.selected_issue()?;
         self.comment_editor = BodyEditor::default();
         self.comment_focus = CommentFocus::Editor;
+        self.editor_target = EditorTarget::NewComment;
         self.mode = Mode::CommentEditor;
         self.enter_detail()
+    }
+
+    /// Number of navigable cards in the detail pane: the issue body (card 0)
+    /// plus one per loaded comment.
+    pub fn detail_card_count(&self) -> usize {
+        1 + self.detail_comments.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Move the detail-pane card highlight by `delta`, clamped to the card
+    /// range, and scroll so the newly selected card's top is in view.
+    pub fn move_detail_card(&mut self, delta: isize) {
+        let last = self.detail_card_count().saturating_sub(1);
+        let next = (self.detail_card as isize + delta).clamp(0, last as isize) as usize;
+        self.detail_card = next;
+        self.detail_scroll = self.detail_card_offset(next);
+    }
+
+    /// The visual-line offset of card `card`'s top in the detail paragraph.
+    /// Mirrors the line layout in `ui::draw_detail`; keep the two in sync.
+    /// (Wrapping is not modelled — long lines make this an under-estimate, so
+    /// the selected card's header still scrolls into view, just not pinned to
+    /// the very top.)
+    pub fn detail_card_offset(&self, card: usize) -> u16 {
+        if card == 0 {
+            return 0;
+        }
+        let Some(issue) = self.selected_issue() else {
+            return 0;
+        };
+        // Fixed meta block (title, state, assignees, blank) + body + blank.
+        let mut offset = 4 + issue.body.lines().count() + 1;
+        if let Some(comments) = &self.detail_comments {
+            for c in comments.iter().take(card - 1) {
+                offset += comment_card_lines(c);
+            }
+        }
+        u16::try_from(offset).unwrap_or(u16::MAX)
+    }
+
+    /// `e`: edit the highlighted detail card — the issue body (card 0) or a
+    /// comment. Opens the inline editor prefilled with the current content.
+    /// No-op unless the detail pane is open on an issue.
+    pub fn start_edit_selected_card(&mut self) {
+        if !self.detail_open {
+            return;
+        }
+        if self.detail_card == 0 {
+            let Some(issue) = self.selected_issue() else {
+                return;
+            };
+            self.comment_editor = BodyEditor::from_text(&issue.body);
+            self.editor_target = EditorTarget::EditBody;
+        } else {
+            let idx = self.detail_card - 1;
+            let Some(c) = self
+                .detail_comments
+                .as_ref()
+                .and_then(|cs| cs.get(idx))
+                .cloned()
+            else {
+                return;
+            };
+            self.comment_editor = BodyEditor::from_text(&c.body);
+            self.editor_target = EditorTarget::EditComment { comment_id: c.id };
+        }
+        self.comment_focus = CommentFocus::Editor;
+        self.mode = Mode::CommentEditor;
     }
 
     /// Close the detail pane, returning focus to the list.
@@ -3045,6 +3162,116 @@ mod tests {
         assert_eq!(app.comment_focus, CommentFocus::Editor);
     }
 
+    fn comment(id: &str, body: &str) -> Comment {
+        Comment {
+            id: id.into(),
+            author: "octocat".into(),
+            created_at: Utc.with_ymd_and_hms(2026, 7, 22, 13, 6, 0).unwrap(),
+            body: body.into(),
+        }
+    }
+
+    /// Detail pane open on issue #1 (empty body) with two comments loaded.
+    fn detail_app_with_comments() -> App {
+        let mut app = two_repo_app();
+        app.selected = 1; // issue #1
+        app.open_detail();
+        app.detail_comments = Some(vec![
+            comment("c1", "first\nsecond"),
+            comment("c2", "only one line"),
+        ]);
+        app
+    }
+
+    #[test]
+    fn body_editor_from_text_splits_lines_and_ends_cursor() {
+        let b = BodyEditor::from_text("hello\nworld");
+        assert_eq!(b.text(), "hello\nworld");
+        assert_eq!(b.line, 1);
+        assert_eq!(b.lines[1].cursor, 5); // end of "world"
+    }
+
+    #[test]
+    fn body_editor_from_empty_text_is_default() {
+        let b = BodyEditor::from_text("");
+        assert_eq!(b.lines.len(), 1);
+        assert_eq!(b.text(), "");
+    }
+
+    #[test]
+    fn comment_card_lines_counts_rules_body_and_blank() {
+        assert_eq!(comment_card_lines(&comment("c", "one line")), 4); // 3 + 1
+        assert_eq!(comment_card_lines(&comment("c", "a\nb\nc")), 6); // 3 + 3
+    }
+
+    #[test]
+    fn detail_card_count_is_body_plus_comments() {
+        let app = detail_app_with_comments();
+        assert_eq!(app.detail_card_count(), 3); // body + 2 comments
+    }
+
+    #[test]
+    fn move_detail_card_clamps_and_sets_scroll() {
+        let mut app = detail_app_with_comments();
+        assert_eq!(app.detail_card, 0);
+        app.move_detail_card(-1); // clamped at body
+        assert_eq!(app.detail_card, 0);
+        assert_eq!(app.detail_scroll, 0);
+
+        app.move_detail_card(1);
+        assert_eq!(app.detail_card, 1);
+        // Empty body: base = 4 meta + 0 body + 1 blank = 5.
+        assert_eq!(app.detail_scroll, 5);
+
+        app.move_detail_card(1);
+        assert_eq!(app.detail_card, 2);
+        // Second comment starts after the first card (3 + 2 body lines = 5).
+        assert_eq!(app.detail_scroll, 10);
+
+        app.move_detail_card(5); // clamped at last comment
+        assert_eq!(app.detail_card, 2);
+    }
+
+    #[test]
+    fn start_edit_body_card_prefills_and_targets_body() {
+        let mut app = detail_app_with_comments();
+        if let Some(&Row::Issue {
+            repo_idx,
+            issue_idx,
+        }) = app.rows.get(app.selected)
+        {
+            app.repos[repo_idx].issues[issue_idx].body = "current description".into();
+        }
+        app.detail_card = 0;
+        app.start_edit_selected_card();
+        assert_eq!(app.mode, Mode::CommentEditor);
+        assert_eq!(app.editor_target, EditorTarget::EditBody);
+        assert_eq!(app.comment_editor.text(), "current description");
+    }
+
+    #[test]
+    fn start_edit_comment_card_prefills_and_targets_comment_id() {
+        let mut app = detail_app_with_comments();
+        app.detail_card = 1; // first comment
+        app.start_edit_selected_card();
+        assert_eq!(app.mode, Mode::CommentEditor);
+        assert_eq!(
+            app.editor_target,
+            EditorTarget::EditComment {
+                comment_id: "c1".into()
+            }
+        );
+        assert_eq!(app.comment_editor.text(), "first\nsecond");
+    }
+
+    #[test]
+    fn start_edit_selected_card_noop_when_pane_closed() {
+        let mut app = two_repo_app();
+        app.selected = 1;
+        app.start_edit_selected_card();
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
     #[test]
     fn parse_date_rejects_garbage() {
         assert!(parse_date("not-a-date").is_none());
@@ -3483,6 +3710,7 @@ mod tests {
             issue.body = "see https://github.com/o/r/pull/1".into();
         }
         app.detail_comments = Some(vec![Comment {
+            id: "c1".into(),
             author: "x".into(),
             created_at: Utc::now(),
             body: "also https://github.com/o/r2/pull/2".into(),
