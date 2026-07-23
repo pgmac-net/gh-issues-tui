@@ -1540,7 +1540,7 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(
-            content.contains("v0.8.2"),
+            content.contains(concat!("v", env!("CARGO_PKG_VERSION"))),
             "version not found in help popup"
         );
     }
