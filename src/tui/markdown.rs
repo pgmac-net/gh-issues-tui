@@ -1,10 +1,10 @@
 //! Simple, line-oriented markdown renderer for the detail pane.
 //!
-//! `App::comment_card_lines` / `App::detail_card_offset` count *source*
-//! lines to keep the comment-card scroll cursor in sync with what
-//! `ui::draw_detail` paints, so `render` must emit exactly one output
-//! [`Line`] per input line — block styling (headings, fences, quotes,
-//! lists) never adds or drops a line, only restyles it.
+//! `render` emits exactly one output [`Line`] per input line — block styling
+//! (headings, fences, quotes, lists) never adds or drops a line, only restyles
+//! it. The detail pane's scroll clamps measure *wrapped* height with ratatui's
+//! `Paragraph::line_count`, so this one-line-per-source-line property is no
+//! longer load-bearing for scroll sync, but it keeps the mapping predictable.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

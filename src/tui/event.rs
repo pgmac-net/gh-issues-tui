@@ -12,9 +12,9 @@ use crate::provider::types::{
 };
 
 use super::app::{
-    App, BodyEditor, CommentFocus, ConfirmChoice, EditorTarget, Focus, ISSUE_FORM_CREATE_ROW,
-    InputKind, IssueForm, Mode, StateFilter, body_popup_width, comment_pane_width,
-    priority_label_set, priority_set_options,
+    App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorTarget, Focus,
+    ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter, body_popup_width,
+    comment_pane_width, detail_split, priority_label_set, priority_set_options,
 };
 use super::theme::Theme;
 use super::ui;
@@ -248,7 +248,7 @@ fn nav(
     if current == prev {
         return;
     }
-    app.detail_scroll = 0;
+    app.reset_detail_scroll();
     app.detail_comments = None;
     if let Some(id) = current {
         spawn_comments(client, id, tx);
@@ -305,9 +305,8 @@ fn handle_app_event(
                 match result {
                     Ok(c) => {
                         app.detail_comments = Some(c);
-                        // Keep the card highlight within the new comment count.
-                        let last = app.detail_card_count().saturating_sub(1);
-                        app.detail_card = app.detail_card.min(last);
+                        // Keep the selection valid within the new comment count.
+                        app.clamp_detail_sel();
                     }
                     Err(e) => app.status = Some(format!("comments failed: {e}")),
                 }
@@ -885,6 +884,73 @@ fn comment_wrap_width() -> usize {
     comment_pane_width(cols) as usize
 }
 
+/// The detail pane's current inner width and the body/comments regions'
+/// viewport heights, derived from the live terminal size. Mirrors `ui::draw`'s
+/// 40/60 horizontal split and `detail_split`'s vertical split so the key
+/// handler's scroll clamps agree with what is drawn.
+fn detail_metrics() -> (u16, u16, u16) {
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let inner_w = comment_pane_width(cols);
+    // Main area = total rows minus the info + bottom status lines.
+    let main_h = rows.saturating_sub(2);
+    let (body_h, comments_h) = detail_split(main_h);
+    (
+        inner_w,
+        body_h.saturating_sub(2),
+        comments_h.saturating_sub(2),
+    )
+}
+
+/// Scroll the selected detail region by `lines` (negative = up), clamped to
+/// that region's extent: the body to its content, a comment to its own span.
+fn detail_scroll(app: &mut App, lines: isize) {
+    let (inner_w, body_view, comments_view) = detail_metrics();
+    match app.detail_sel {
+        DetailSel::Body => {
+            let Some(issue) = app.selected_issue() else {
+                return;
+            };
+            let content = ui::body_content_height(issue, inner_w);
+            let max = content.saturating_sub(body_view);
+            app.scroll_body(lines, max);
+        }
+        DetailSel::Comment(i) => {
+            let bounds = app.detail_comments.as_ref().and_then(|comments| {
+                let c = comments.get(i)?;
+                let top = ui::comment_offset(comments, i, inner_w);
+                let height = ui::comment_height(c, inner_w);
+                Some((top, top + height.saturating_sub(comments_view)))
+            });
+            if let Some((lo, hi)) = bounds {
+                app.scroll_comment(lines, lo, hi);
+            }
+        }
+    }
+}
+
+/// The active region's viewport height, used as the PageUp/PageDown step.
+fn detail_page_rows(app: &App) -> isize {
+    let (_, body_view, comments_view) = detail_metrics();
+    match app.detail_sel {
+        DetailSel::Body => body_view as isize,
+        DetailSel::Comment(_) => comments_view as isize,
+    }
+}
+
+/// After `select_detail` lands on a comment, snap the comments viewport so
+/// that comment's header sits at the top of the region.
+fn snap_after_select(app: &mut App) {
+    let DetailSel::Comment(i) = app.detail_sel else {
+        return;
+    };
+    let (inner_w, _, _) = detail_metrics();
+    let Some(comments) = app.detail_comments.as_ref() else {
+        return;
+    };
+    let top = ui::comment_offset(comments, i, inner_w);
+    app.snap_comment(top);
+}
+
 fn submit_issue_form(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<AppEvent>) {
     let Some(form) = &app.issue_form else { return };
     if form.options.is_none() {
@@ -945,7 +1011,24 @@ fn handle_normal_key(
             }
         }
         KeyCode::Esc if app.detail_open => app.close_detail(),
-        KeyCode::Tab | KeyCode::BackTab => app.cycle_focus(),
+        // In the detail pane Tab/Shift+Tab move between comments; from the
+        // list they switch into the pane.
+        KeyCode::Tab => {
+            if app.focus == Focus::Detail {
+                app.select_detail(1);
+                snap_after_select(app);
+            } else {
+                app.cycle_focus();
+            }
+        }
+        KeyCode::BackTab => {
+            if app.focus == Focus::Detail {
+                app.select_detail(-1);
+                snap_after_select(app);
+            } else {
+                app.cycle_focus();
+            }
+        }
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Char('r') => {
             app.loading = true;
@@ -956,20 +1039,34 @@ fn handle_normal_key(
         // navigation
         KeyCode::Char('j') | KeyCode::Down => {
             if app.focus == Focus::Detail {
-                app.move_detail_card(1);
+                detail_scroll(app, 1);
             } else {
                 nav(app, client, tx, |a| a.move_selection(1));
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if app.focus == Focus::Detail {
-                app.move_detail_card(-1);
+                detail_scroll(app, -1);
             } else {
                 nav(app, client, tx, |a| a.move_selection(-1));
             }
         }
-        KeyCode::PageDown => nav(app, client, tx, |a| a.move_selection(15)),
-        KeyCode::PageUp => nav(app, client, tx, |a| a.move_selection(-15)),
+        KeyCode::PageDown => {
+            if app.focus == Focus::Detail {
+                let page = detail_page_rows(app);
+                detail_scroll(app, page);
+            } else {
+                nav(app, client, tx, |a| a.move_selection(15));
+            }
+        }
+        KeyCode::PageUp => {
+            if app.focus == Focus::Detail {
+                let page = detail_page_rows(app);
+                detail_scroll(app, -page);
+            } else {
+                nav(app, client, tx, |a| a.move_selection(-15));
+            }
+        }
         KeyCode::Char('g') | KeyCode::Home => nav(app, client, tx, |a| a.selected = 0),
         KeyCode::Char('G') | KeyCode::End => {
             nav(app, client, tx, |a| {
