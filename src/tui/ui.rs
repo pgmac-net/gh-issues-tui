@@ -528,6 +528,7 @@ fn input_prompt(kind: InputKind) -> &'static str {
         InputKind::Title => "title",
         InputKind::Org => "org/owner (Enter switches)",
         InputKind::FormTitle => "issue title (Enter sets)",
+        InputKind::GotoNumber => "issue # (Enter jumps)",
     }
 }
 
@@ -1183,6 +1184,7 @@ fn draw_help(f: &mut Frame, t: &Theme) {
         ("o / O", "open issue / repo in browser"),
         ("y", "copy issue ref to clipboard"),
         ("/", "text search"),
+        ("#", "jump to issue number"),
         ("f", "cycle state filter (open/closed/all)"),
         ("F", "filter editor (pickers + calendar)"),
         ("s / S", "cycle sort key / toggle direction"),

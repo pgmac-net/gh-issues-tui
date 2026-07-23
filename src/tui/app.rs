@@ -369,6 +369,8 @@ pub enum InputKind {
     Org,
     /// Title field of the new-issue form.
     FormTitle,
+    /// Jump the selection to a loaded issue by its number (does not filter).
+    GotoNumber,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1697,6 +1699,85 @@ impl App {
         self.selected = next as usize;
     }
 
+    /// Move the selection to the loaded issue with `number`, expanding its
+    /// repo group if collapsed. Searches the currently-selected repo group
+    /// first, then the rest in order, so repeated numbers across repos stay
+    /// unambiguous in the common single-repo/filtered view. Unlike `/`
+    /// search this never filters the list *down*: if the target is loaded
+    /// but hidden by the active filters or state filter, those are cleared
+    /// (state → `All`) so the row becomes visible before jumping — widening,
+    /// not narrowing. Returns false (selection unchanged, status set) when no
+    /// loaded issue has that number; closed issues must be fetched (`f`/
+    /// `--all`) before they can be jumped to.
+    pub fn jump_to_number(&mut self, number: u64) -> bool {
+        if self.repos.is_empty() {
+            self.status = Some(format!("no issue #{number} loaded"));
+            return false;
+        }
+        // Start the search at the currently-selected repo group.
+        let start = match self.rows.get(self.selected) {
+            Some(Row::Issue { repo_idx, .. }) | Some(Row::RepoHeader { repo_idx }) => *repo_idx,
+            None => 0,
+        };
+        let n = self.repos.len();
+        let mut found: Option<usize> = None;
+        for k in 0..n {
+            let ri = (start + k) % n;
+            if self.repos[ri].issues.iter().any(|i| i.number == number) {
+                found = Some(ri);
+                break;
+            }
+        }
+        let Some(repo_idx) = found else {
+            self.status = Some(format!("no issue #{number} loaded"));
+            return false;
+        };
+        let repo_name = self.repos[repo_idx].repo.clone();
+
+        // Reveal the issue if the active filters currently hide it — clearing
+        // widens the list, which is the opposite of `/` search's narrowing and
+        // keeps the ticket's "mustn't filter the list" intent.
+        let exact = self.repo_filter_exact();
+        let hidden = !self.filters.repo_matches(&repo_name, exact)
+            || self.repos[repo_idx]
+                .issues
+                .iter()
+                .find(|i| i.number == number)
+                .is_some_and(|i| !self.filters.matches(i, self.state_filter));
+        if hidden {
+            self.clear_filters();
+            self.state_filter = StateFilter::All;
+        }
+        // Expand the group so the issue row exists.
+        self.collapsed.remove(&repo_name);
+        self.rebuild_rows();
+
+        // Locate the row by repo name and number (number alone repeats across repos).
+        let target = self.rows.iter().position(|row| match row {
+            Row::Issue {
+                repo_idx: r,
+                issue_idx,
+            } => self.repos.get(*r).is_some_and(|repo| {
+                repo.repo == repo_name
+                    && repo
+                        .issues
+                        .get(*issue_idx)
+                        .is_some_and(|i| i.number == number)
+            }),
+            Row::RepoHeader { .. } => false,
+        });
+        if let Some(idx) = target {
+            self.selected = idx;
+            self.status = Some(format!("jumped to #{number}"));
+            true
+        } else {
+            // Shouldn't happen — the issue was found in loaded data and the
+            // group was expanded — but never leave a misleading status.
+            self.status = Some(format!("no issue #{number} loaded"));
+            false
+        }
+    }
+
     /// Count of issues in a given repo that pass the current filters (excluding repo filter).
     pub fn repo_visible_count(&self, repo_idx: usize) -> usize {
         self.repos
@@ -1989,6 +2070,92 @@ mod tests {
         assert_eq!(app.rows.len(), 3); // alpha header + beta header + beta issue
         app.toggle_collapse();
         assert_eq!(app.rows.len(), 5);
+    }
+
+    #[test]
+    fn jump_to_number_selects_matching_issue() {
+        let mut app = two_repo_app();
+        app.selected = 0;
+        assert!(app.jump_to_number(3));
+        assert_eq!(app.selected_issue().map(|i| i.number), Some(3));
+        // Filters untouched — the list still holds every issue.
+        assert!(!app.filters.is_active());
+    }
+
+    #[test]
+    fn jump_to_number_expands_collapsed_group() {
+        let mut app = two_repo_app();
+        // Collapse beta (holds #3), then jump into it.
+        app.collapsed.insert("beta".into());
+        app.rebuild_rows();
+        app.selected = 0; // sit on the alpha side
+        assert!(app.jump_to_number(3));
+        assert_eq!(app.selected_issue().map(|i| i.number), Some(3));
+        assert!(!app.collapsed.contains("beta"));
+    }
+
+    #[test]
+    fn jump_to_number_absent_returns_false() {
+        let mut app = two_repo_app();
+        app.selected = 2;
+        let before = app.selected;
+        assert!(!app.jump_to_number(999));
+        assert_eq!(app.selected, before);
+        assert_eq!(app.status.as_deref(), Some("no issue #999 loaded"));
+    }
+
+    #[test]
+    fn jump_to_number_prefers_current_repo_on_collision() {
+        // Both repos own an issue numbered 7.
+        let mut app = app_with(vec![
+            RepoIssues {
+                repo: "alpha".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(7, "alpha seven", IssueState::Open)],
+            },
+            RepoIssues {
+                repo: "beta".into(),
+                repo_url: "u".into(),
+                issues: vec![issue(7, "beta seven", IssueState::Open)],
+            },
+        ]);
+        // Selection sits on the beta group → beta's #7 should win.
+        let beta_header = app
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::RepoHeader { repo_idx: 1 }))
+            .unwrap();
+        app.selected = beta_header;
+        assert!(app.jump_to_number(7));
+        assert_eq!(
+            app.selected_repo().map(|r| r.repo.clone()),
+            Some("beta".into())
+        );
+        assert_eq!(
+            app.selected_issue().map(|i| i.title.clone()),
+            Some("beta seven".into())
+        );
+    }
+
+    #[test]
+    fn jump_to_number_reveals_filtered_out_issue() {
+        let mut app = app_with(vec![RepoIssues {
+            repo: "alpha".into(),
+            repo_url: "u".into(),
+            issues: vec![
+                issue(1, "open one", IssueState::Open),
+                issue(2, "closed two", IssueState::Closed),
+            ],
+        }]);
+        // State filter Open hides the closed issue; a text filter hides it too.
+        app.state_filter = StateFilter::Open;
+        app.filters.text = "one".into();
+        app.rebuild_rows();
+        assert!(app.jump_to_number(2));
+        // Reveal widened the view: filters cleared and state relaxed to All.
+        assert!(!app.filters.is_active());
+        assert_eq!(app.state_filter, StateFilter::All);
+        assert_eq!(app.selected_issue().map(|i| i.number), Some(2));
     }
 
     #[test]
