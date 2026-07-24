@@ -337,14 +337,14 @@ pub enum Mode {
     Calendar(usize),
     /// Confirmation popup for close/reopen.
     ConfirmState,
-    /// New-issue form field list.
+    /// New-issue form: single inline form, `Tab`/`Shift+Tab` moves between
+    /// fields and the Create/Cancel buttons; text fields (title, body) edit
+    /// in place, choice fields open a picker popup.
     IssueForm,
     /// Single-select popup for a new-issue form field.
     IssueFormSelect(usize),
     /// Multi-select popup (Space toggles) for a new-issue form field.
     IssueFormMulti(usize),
-    /// Multi-line editor for the new issue's body.
-    IssueFormBody,
     /// Multi-line editor for adding a comment to the selected issue.
     CommentEditor,
     /// Single-select popup choosing a priority label for the selected issue.
@@ -367,8 +367,6 @@ pub enum InputKind {
     Title,
     /// Switch the org/owner being browsed.
     Org,
-    /// Title field of the new-issue form.
-    FormTitle,
     /// Jump the selection to a loaded issue by its number (does not filter).
     GotoNumber,
 }
@@ -468,12 +466,32 @@ pub const ISSUE_FORM_FIELDS: &[&str] = &[
 /// Index of the `[Create issue]` row in the form.
 pub const ISSUE_FORM_CREATE_ROW: usize = ISSUE_FORM_FIELDS.len();
 
+/// Index of the `[Cancel]` row in the form, one past Create.
+pub const ISSUE_FORM_CANCEL_ROW: usize = ISSUE_FORM_CREATE_ROW + 1;
+
+/// Width of the label column in the new-issue form; the value column gets
+/// the rest of `issue_form_width`.
+pub const ISSUE_FORM_LABEL_WIDTH: usize = 14;
+
+/// The new-issue form's outer width; inner text width mirrors the other
+/// popups' clamp-minus-borders pattern.
+pub const ISSUE_FORM_WIDTH: u16 = 78;
+
+pub fn issue_form_width(frame_width: u16) -> u16 {
+    ISSUE_FORM_WIDTH.min(frame_width).saturating_sub(2)
+}
+
+/// Visual rows reserved for the inline description box, independent of
+/// content length — scrolls to keep the cursor visible, mirroring the
+/// inline comment editor.
+pub const ISSUE_FORM_DESC_HEIGHT: usize = 4;
+
 /// State of the new-issue form. Selections index into the corresponding
 /// `FormOptions` list (not the "—"-prefixed popup display list).
 pub struct IssueForm {
     /// Repo the issue will be created in, captured when the form opened.
     pub repo: String,
-    pub title: String,
+    pub title: InputState,
     pub body: BodyEditor,
     pub assignees: std::collections::HashSet<usize>,
     pub labels: std::collections::HashSet<usize>,
@@ -490,7 +508,7 @@ impl IssueForm {
     pub fn new(repo: String) -> Self {
         Self {
             repo,
-            title: String::new(),
+            title: InputState::default(),
             body: BodyEditor::default(),
             assignees: Default::default(),
             labels: Default::default(),
@@ -552,7 +570,7 @@ impl IssueForm {
         let opts = self.field_options(idx);
         let pick = |sel: Option<usize>| sel.and_then(|i| opts.get(i).cloned()).unwrap_or_default();
         match idx {
-            0 => self.title.clone(),
+            0 => self.title.buffer.clone(),
             1 => self.body.summary(),
             2 | 3 => {
                 let set = if idx == 2 {
@@ -617,7 +635,7 @@ impl IssueForm {
     /// and the options fetch has landed (repo id comes from it).
     pub fn build_params(&self) -> Option<NewIssueParams> {
         let o = self.options.as_ref()?;
-        let title = self.title.trim();
+        let title = self.title.buffer.trim();
         if title.is_empty() {
             return None;
         }
@@ -946,17 +964,8 @@ impl BodyEditor {
     }
 }
 
-/// The body-editor popup's outer width; the inner (text) width is this
-/// clamped to the frame minus the two border columns. One source of truth
-/// for the renderer and the key handler so wrap geometry always agrees.
-pub const BODY_POPUP_WIDTH: u16 = 76;
-
-pub fn body_popup_width(frame_width: u16) -> u16 {
-    BODY_POPUP_WIDTH.min(frame_width).saturating_sub(2)
-}
-
 /// The single-line input popup's outer width; inner width mirrors
-/// `body_popup_width`'s clamp-minus-borders pattern.
+/// `issue_form_width`'s clamp-minus-borders pattern.
 pub const INPUT_POPUP_WIDTH: u16 = 60;
 
 pub fn input_popup_width(frame_width: u16) -> u16 {
@@ -3786,14 +3795,14 @@ mod tests {
     #[test]
     fn build_params_requires_options_and_title() {
         let mut form = IssueForm::new("alpha".into());
-        form.title = "hello".into();
+        form.title.start("hello");
         assert!(form.build_params().is_none()); // options not loaded
 
         form.options = Some(form_options());
-        form.title = "   ".into();
+        form.title.start("   ");
         assert!(form.build_params().is_none()); // blank title
 
-        form.title = "hello".into();
+        form.title.start("hello");
         let p = form.build_params().unwrap();
         assert_eq!(p.repo_id, "R_repo");
         assert_eq!(p.title, "hello");
@@ -3805,7 +3814,7 @@ mod tests {
     fn build_params_assembles_ids_and_merges_priority() {
         let mut form = IssueForm::new("alpha".into());
         form.options = Some(form_options());
-        form.title = "t".into();
+        form.title.start("t");
         form.assignees.insert(0); // pgmac
         form.labels.insert(0); // bug
         form.priority = Some(0); // priority:high → L_ph
@@ -4044,7 +4053,6 @@ mod tests {
             Mode::IssueForm,
             Mode::IssueFormSelect(4),
             Mode::IssueFormMulti(2),
-            Mode::IssueFormBody,
             Mode::CommentEditor,
         ] {
             app.mode = mode;

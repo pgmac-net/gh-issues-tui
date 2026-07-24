@@ -11,10 +11,10 @@ use ratatui::widgets::{
 use crate::provider::types::{Comment, Issue};
 
 use super::app::{
-    App, BODY_POPUP_WIDTH, CommentFocus, ConfirmChoice, DetailSel, FILTER_FIELDS, Focus,
-    INPUT_POPUP_WIDTH, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_FIELDS, InputKind, Mode, Row,
-    body_popup_width, comment_pane_width, cursor_row, detail_split, input_popup_width,
-    input_scroll_skip, wrap_lines,
+    App, CommentFocus, ConfirmChoice, DetailSel, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH,
+    ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_DESC_HEIGHT, ISSUE_FORM_FIELDS,
+    ISSUE_FORM_LABEL_WIDTH, ISSUE_FORM_WIDTH, InputKind, IssueForm, Mode, Row, comment_pane_width,
+    cursor_row, detail_split, input_popup_width, input_scroll_skip, issue_form_width, wrap_lines,
 };
 use super::markdown;
 use super::theme::Theme;
@@ -52,10 +52,6 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
         Mode::IssueFormMulti(idx) => {
             draw_issue_form(f, app, t);
             draw_form_choice_popup(f, app, t, idx, true);
-        }
-        Mode::IssueFormBody => {
-            draw_issue_form(f, app, t);
-            draw_form_body_popup(f, app, t);
         }
         Mode::Input(kind) => draw_input_popup(f, app, t, kind),
         Mode::PrioritySet => draw_priority_popup(f, app, t),
@@ -527,7 +523,6 @@ fn input_prompt(kind: InputKind) -> &'static str {
         InputKind::Assignees => "assignees (comma-separated logins)",
         InputKind::Title => "title",
         InputKind::Org => "org/owner (Enter switches)",
-        InputKind::FormTitle => "issue title (Enter sets)",
         InputKind::GotoNumber => "issue # (Enter jumps)",
     }
 }
@@ -887,55 +882,177 @@ fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
     f.render_widget(para, area);
 }
 
+/// The single inline new-issue form: title and description edit in place,
+/// choice fields show their current selection and open a picker popup on
+/// Enter, `[ Create ]`/`[ Cancel ]` sit at the bottom. `Tab`/`Shift+Tab`
+/// move focus; the focused row is highlighted (a cursor for text fields,
+/// a background fill for choice fields and the buttons).
 fn draw_issue_form(f: &mut Frame, app: &App, t: &Theme) {
     let Some(form) = &app.issue_form else { return };
-    let area = centered(f.area(), 70, ISSUE_FORM_FIELDS.len() as u16 + 4);
+    let value_width =
+        (issue_form_width(f.area().width) as usize).saturating_sub(ISSUE_FORM_LABEL_WIDTH);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(form_title_line(form, t, value_width));
+    lines.extend(form_description_lines(form, t, value_width));
+    for (i, name) in ISSUE_FORM_FIELDS.iter().enumerate().skip(2) {
+        let focused = form.field_idx == i;
+        let style = if focused {
+            Style::default().bg(t.selected_bg)
+        } else {
+            Style::default()
+        };
+        let value = if form.options.is_none() {
+            "loading…".to_string()
+        } else {
+            form.field_display(i)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {name:<ISSUE_FORM_LABEL_WIDTH$}"),
+                style.fg(t.accent),
+            ),
+            Span::styled(value, style),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(issue_form_button_line(
+        form,
+        t,
+        value_width + ISSUE_FORM_LABEL_WIDTH,
+    ));
+
+    let area = centered(
+        f.area(),
+        ISSUE_FORM_WIDTH,
+        (lines.len() as u16 + 2).min(f.area().height),
+    );
     f.render_widget(Clear, area);
-
-    let mut items: Vec<ListItem> = ISSUE_FORM_FIELDS
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let style = if i == form.field_idx {
-                Style::default().bg(t.selected_bg)
-            } else {
-                Style::default()
-            };
-            let value = if form.options.is_none() && i >= 2 {
-                "loading…".to_string()
-            } else {
-                form.field_display(i)
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {name:<14}"), style.fg(t.accent)),
-                Span::styled(value, style),
-            ]))
-        })
-        .collect();
-
-    let create_style = if form.field_idx == ISSUE_FORM_CREATE_ROW {
-        Style::default()
-            .bg(t.selected_bg)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().add_modifier(Modifier::BOLD)
-    };
-    items.push(ListItem::new(Line::raw("")));
-    items.push(ListItem::new(Line::from(Span::styled(
-        " [ Create issue ]",
-        create_style.fg(t.open),
-    ))));
-
-    let list = List::new(items).block(
+    let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(t.accent))
             .title(format!(
-                " new issue in {} (Enter edit · Esc cancel) ",
+                " new issue in {} (Tab move · Enter edit/activate · Esc cancel) ",
                 form.repo
             )),
     );
-    f.render_widget(list, area);
+    f.render_widget(para, area);
+}
+
+/// The title row: an inline single-line editor, horizontally scrolled to
+/// keep the cursor visible when focused.
+fn form_title_line(form: &IssueForm, t: &Theme, value_width: usize) -> Line<'static> {
+    let focused = form.field_idx == 0;
+    let style = if focused {
+        Style::default().bg(t.selected_bg)
+    } else {
+        Style::default()
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {:<ISSUE_FORM_LABEL_WIDTH$}", ISSUE_FORM_FIELDS[0]),
+        style.fg(t.accent),
+    )];
+    if focused {
+        let skip = input_scroll_skip(form.title.cursor, value_width);
+        let visible: String = form
+            .title
+            .buffer
+            .chars()
+            .skip(skip)
+            .take(value_width)
+            .collect();
+        spans.extend(
+            cursor_spans(&visible, form.title.cursor - skip)
+                .into_iter()
+                .map(|s| Span::styled(s.content, s.style.bg(t.selected_bg))),
+        );
+    } else {
+        spans.push(Span::raw(form.title.buffer.clone()));
+    }
+    Line::from(spans)
+}
+
+/// The description row: a label line, then a fixed-height, word-wrapped
+/// inline block that scrolls to keep the cursor's visual row visible when
+/// focused (mirrors the inline comment editor, minus its own border).
+fn form_description_lines(form: &IssueForm, t: &Theme, value_width: usize) -> Vec<Line<'static>> {
+    let focused = form.field_idx == 1;
+    let label_style = if focused {
+        Style::default().bg(t.selected_bg)
+    } else {
+        Style::default()
+    };
+    let mut lines = vec![Line::from(Span::styled(
+        format!(" {:<ISSUE_FORM_LABEL_WIDTH$}", ISSUE_FORM_FIELDS[1]),
+        label_style.fg(t.accent),
+    ))];
+
+    let rows = wrap_lines(&form.body.lines, value_width);
+    let (cur_row, cur_col) = cursor_row(
+        &rows,
+        form.body.line,
+        form.body.lines[form.body.line].cursor,
+    );
+    let top = if focused {
+        cur_row.saturating_sub(ISSUE_FORM_DESC_HEIGHT.saturating_sub(1))
+    } else {
+        0
+    };
+    for i in 0..ISSUE_FORM_DESC_HEIGHT {
+        let row_idx = top + i;
+        let text = rows
+            .get(row_idx)
+            .map(|row| {
+                form.body.lines[row.line]
+                    .buffer
+                    .chars()
+                    .skip(row.start)
+                    .take(row.end - row.start)
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let mut spans = vec![Span::raw("   ")];
+        if focused && row_idx == cur_row {
+            spans.extend(cursor_spans(&text, cur_col));
+        } else {
+            spans.push(Span::raw(text));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// The centered `[ Create ]  [ Cancel ]` button row, with the focused
+/// button drawn in reversed video.
+fn issue_form_button_line(form: &IssueForm, t: &Theme, width: usize) -> Line<'static> {
+    const CREATE: &str = "[ Create ]";
+    const CANCEL: &str = "[ Cancel ]";
+    let gap = "  ";
+    let total = CREATE.len() + gap.len() + CANCEL.len();
+    let pad = " ".repeat(width.saturating_sub(total) / 2);
+
+    let button_style = |focused: bool| {
+        if focused {
+            Style::default()
+                .fg(t.accent)
+                .add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        }
+    };
+    Line::from(vec![
+        Span::raw(pad),
+        Span::styled(
+            CREATE,
+            button_style(form.field_idx == ISSUE_FORM_CREATE_ROW),
+        ),
+        Span::raw(gap),
+        Span::styled(
+            CANCEL,
+            button_style(form.field_idx == ISSUE_FORM_CANCEL_ROW),
+        ),
+    ])
 }
 
 /// Option popup for a form field: single-select (with the "—" clear row)
@@ -956,49 +1073,6 @@ fn draw_form_choice_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize, multi
             .title(format!(" {field_name} ({hint}) ")),
     );
     f.render_widget(list, area);
-}
-
-fn draw_form_body_popup(f: &mut Frame, app: &App, t: &Theme) {
-    let Some(form) = &app.issue_form else { return };
-    let area = centered(f.area(), BODY_POPUP_WIDTH, 18.min(f.area().height));
-    f.render_widget(Clear, area);
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let width = body_popup_width(f.area().width) as usize;
-
-    // Word-wrapped visual rows; keep the cursor's row visible.
-    let rows = wrap_lines(&form.body.lines, width);
-    let (cur_row, cur_col) = cursor_row(
-        &rows,
-        form.body.line,
-        form.body.lines[form.body.line].cursor,
-    );
-    let top = cur_row.saturating_sub(inner_height.saturating_sub(1));
-    let lines: Vec<Line> = rows
-        .iter()
-        .enumerate()
-        .skip(top)
-        .take(inner_height)
-        .map(|(i, row)| {
-            let text: String = form.body.lines[row.line]
-                .buffer
-                .chars()
-                .skip(row.start)
-                .take(row.end - row.start)
-                .collect();
-            if i == cur_row {
-                Line::from(cursor_spans(&text, cur_col))
-            } else {
-                Line::raw(text)
-            }
-        })
-        .collect();
-    let para = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(t.accent))
-            .title(" description (Enter newline · Esc done) "),
-    );
-    f.render_widget(para, area);
 }
 
 /// The inline comment section at the bottom of the detail pane
