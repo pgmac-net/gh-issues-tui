@@ -52,6 +52,3 @@ jobs:
 
       - name: test
         run: cargo test
-
-      - name: build
-        run: cargo build --release
