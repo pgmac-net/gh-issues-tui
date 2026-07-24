@@ -13,8 +13,9 @@ use crate::provider::types::{
 
 use super::app::{
     App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorTarget, Focus,
-    ISSUE_FORM_CREATE_ROW, InputKind, IssueForm, Mode, StateFilter, body_popup_width,
-    comment_pane_width, detail_split, priority_label_set, priority_set_options,
+    ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH, InputKind, InputState,
+    IssueForm, Mode, StateFilter, comment_pane_width, detail_split, issue_form_width,
+    priority_label_set, priority_set_options,
 };
 use super::theme::Theme;
 use super::ui;
@@ -446,7 +447,6 @@ fn handle_key(
         Mode::IssueForm => handle_issue_form_key(app, key, client, tx),
         Mode::IssueFormSelect(idx) => handle_form_select_key(app, key, idx),
         Mode::IssueFormMulti(idx) => handle_form_multi_key(app, key, idx),
-        Mode::IssueFormBody => handle_form_body_key(app, key),
         Mode::CommentEditor => handle_comment_editor_key(app, key, client, tx),
         Mode::PrioritySet => handle_priority_set_key(app, key, client, tx),
         Mode::LabelsSet => handle_labels_set_key(app, key, client, tx),
@@ -621,6 +621,36 @@ fn handle_labels_set_key(
     }
 }
 
+/// Next field in the new-issue form, wrapping from Cancel back to title.
+fn next_form_field(idx: usize) -> usize {
+    if idx >= ISSUE_FORM_CANCEL_ROW {
+        0
+    } else {
+        idx + 1
+    }
+}
+
+/// Previous field in the new-issue form, wrapping from title to Cancel.
+fn prev_form_field(idx: usize) -> usize {
+    if idx == 0 {
+        ISSUE_FORM_CANCEL_ROW
+    } else {
+        idx - 1
+    }
+}
+
+/// The wrap width the inline description box in the new-issue form is
+/// currently rendered at.
+fn form_desc_wrap_width() -> usize {
+    let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+    (issue_form_width(cols) as usize).saturating_sub(ISSUE_FORM_LABEL_WIDTH)
+}
+
+/// New-issue form: `Tab`/`Shift+Tab` move between fields and the
+/// Create/Cancel buttons (handled here regardless of focus); everything
+/// else dispatches on the focused row — title and description edit inline,
+/// choice fields open their picker popup on Enter, Create/Cancel activate
+/// on Enter or Space.
 fn handle_issue_form_key(
     app: &mut App,
     key: KeyEvent,
@@ -632,43 +662,64 @@ fn handle_issue_form_key(
         return;
     };
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Esc => {
             app.cancel_issue_form();
             app.status = Some("issue creation cancelled".into());
+            return;
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            form.field_idx = (form.field_idx + 1).min(ISSUE_FORM_CREATE_ROW);
+        KeyCode::Tab => {
+            form.field_idx = next_form_field(form.field_idx);
+            return;
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            form.field_idx = form.field_idx.saturating_sub(1);
-        }
-        KeyCode::Enter => {
-            let idx = form.field_idx;
-            match idx {
-                0 => {
-                    let current = form.title.clone();
-                    app.input.start(&current);
-                    app.mode = Mode::Input(InputKind::FormTitle);
-                }
-                1 => app.mode = Mode::IssueFormBody,
-                _ if IssueForm::is_multi_field(idx) => {
-                    let opts = form.field_options(idx);
-                    app.multi_selected = form.multi_set(idx).clone();
-                    app.start_picker(opts, 0);
-                    app.mode = Mode::IssueFormMulti(idx);
-                }
-                _ if IssueForm::is_select_field(idx) => {
-                    // "—" (none) is prepended; stored choices are offset by 1.
-                    let mut opts = form.field_options(idx);
-                    opts.insert(0, "\u{2014}".to_string());
-                    let initial = form.get_single(idx).map_or(0, |i| i + 1);
-                    app.start_picker(opts, initial);
-                    app.mode = Mode::IssueFormSelect(idx);
-                }
-                _ => submit_issue_form(app, client, tx),
-            }
+        KeyCode::BackTab => {
+            form.field_idx = prev_form_field(form.field_idx);
+            return;
         }
         _ => {}
+    }
+
+    let idx = form.field_idx;
+    match idx {
+        0 => {
+            if key.code == KeyCode::Enter {
+                form.field_idx = next_form_field(idx);
+            } else {
+                apply_input_editor_key(&mut form.title, key);
+            }
+        }
+        1 => {
+            apply_body_editor_key(&mut form.body, key, form_desc_wrap_width());
+        }
+        _ if IssueForm::is_multi_field(idx) => {
+            if key.code == KeyCode::Enter {
+                let opts = form.field_options(idx);
+                app.multi_selected = form.multi_set(idx).clone();
+                app.start_picker(opts, 0);
+                app.mode = Mode::IssueFormMulti(idx);
+            }
+        }
+        _ if IssueForm::is_select_field(idx) => {
+            if key.code == KeyCode::Enter {
+                // "—" (none) is prepended; stored choices are offset by 1.
+                let mut opts = form.field_options(idx);
+                opts.insert(0, "\u{2014}".to_string());
+                let initial = form.get_single(idx).map_or(0, |i| i + 1);
+                app.start_picker(opts, initial);
+                app.mode = Mode::IssueFormSelect(idx);
+            }
+        }
+        idx if idx == ISSUE_FORM_CREATE_ROW => {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                submit_issue_form(app, client, tx);
+            }
+        }
+        _ => {
+            // Cancel row.
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                app.cancel_issue_form();
+                app.status = Some("issue creation cancelled".into());
+            }
+        }
     }
 }
 
@@ -793,16 +844,29 @@ fn apply_body_editor_key(body: &mut BodyEditor, key: KeyEvent, wrap_width: usize
     true
 }
 
-fn handle_form_body_key(app: &mut App, key: KeyEvent) {
-    let Some(form) = &mut app.issue_form else {
-        app.mode = Mode::Normal;
-        return;
-    };
-    if key.code == KeyCode::Esc {
-        app.mode = Mode::IssueForm; // content kept
-        return;
+/// Keys shared by every single-line `InputState`: readline-style editing.
+/// Returns whether the key was consumed.
+fn apply_input_editor_key(input: &mut InputState, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Backspace => input.backspace(),
+        KeyCode::Delete => input.delete_char(),
+        KeyCode::Left if ctrl => input.word_left(),
+        KeyCode::Right if ctrl => input.word_right(),
+        KeyCode::Left => input.left(),
+        KeyCode::Right => input.right(),
+        KeyCode::Home => input.home(),
+        KeyCode::End => input.end(),
+        KeyCode::Char('a') if ctrl => input.home(),
+        KeyCode::Char('e') if ctrl => input.end(),
+        KeyCode::Char('w') if ctrl => input.delete_word_back(),
+        KeyCode::Char('u') if ctrl => input.kill_to_start(),
+        KeyCode::Char('k') if ctrl => input.kill_to_end(),
+        KeyCode::Char('d') if ctrl => input.delete_char(),
+        KeyCode::Char(c) if !ctrl => input.insert(c),
+        _ => return false,
     }
-    apply_body_editor_key(&mut form.body, key, body_wrap_width());
+    true
 }
 
 fn handle_comment_editor_key(
@@ -891,12 +955,6 @@ fn submit_comment(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<A
             );
         }
     }
-}
-
-/// The wrap width the body popup is currently rendered at.
-fn body_wrap_width() -> usize {
-    let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-    body_popup_width(cols) as usize
 }
 
 /// The wrap width the inline comment section is currently rendered at.
@@ -1289,7 +1347,6 @@ fn handle_input_key(
         KeyCode::Esc => {
             app.mode = match kind {
                 InputKind::FilterField(_) => Mode::FilterMenu,
-                InputKind::FormTitle => Mode::IssueForm,
                 _ => Mode::Normal,
             };
         }
@@ -1298,32 +1355,9 @@ fn handle_input_key(
             app.mode = Mode::Normal;
             submit_input(app, kind, value, client, tx);
         }
-        KeyCode::Backspace => app.input.backspace(),
-        KeyCode::Delete => app.input.delete_char(),
-        KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.word_left(),
-        KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.word_right(),
-        KeyCode::Left => app.input.left(),
-        KeyCode::Right => app.input.right(),
-        KeyCode::Home => app.input.home(),
-        KeyCode::End => app.input.end(),
-        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.home(),
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.end(),
-        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.delete_word_back();
+        _ => {
+            apply_input_editor_key(&mut app.input, key);
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.kill_to_start();
-        }
-        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.kill_to_end();
-        }
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.delete_char();
-        }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.insert(c);
-        }
-        _ => {}
     }
 }
 
@@ -1369,12 +1403,6 @@ fn submit_input(
             app.status = Some(format!("switching to {org}…"));
             app.switch_org(org);
             spawn_fetch(client, app, tx);
-        }
-        InputKind::FormTitle => {
-            if let Some(form) = &mut app.issue_form {
-                form.title = value.trim().to_string();
-            }
-            app.mode = Mode::IssueForm;
         }
         InputKind::GotoNumber => {
             let trimmed = value.trim().trim_start_matches('#').trim();
@@ -1704,6 +1732,145 @@ mod tests {
         handle_form_multi_key(&mut app, key(KeyCode::Enter), 3);
         assert_eq!(app.mode, Mode::IssueForm);
         assert!(app.issue_form.unwrap().labels.contains(&2));
+    }
+
+    fn issue_form_test_app() -> App {
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
+        app.issue_form = Some(IssueForm::new("alpha".into()));
+        app.mode = Mode::IssueForm;
+        app
+    }
+
+    #[test]
+    fn tab_and_back_tab_wrap_across_all_form_fields_and_buttons() {
+        let mut app = issue_form_test_app();
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        assert_eq!(app.issue_form.as_ref().unwrap().field_idx, 0);
+        handle_issue_form_key(&mut app, key(KeyCode::BackTab), &client, &tx);
+        assert_eq!(
+            app.issue_form.as_ref().unwrap().field_idx,
+            ISSUE_FORM_CANCEL_ROW,
+            "Shift+Tab from the first field wraps to Cancel"
+        );
+        handle_issue_form_key(&mut app, key(KeyCode::Tab), &client, &tx);
+        assert_eq!(
+            app.issue_form.as_ref().unwrap().field_idx,
+            0,
+            "Tab from Cancel wraps back to title"
+        );
+
+        for _ in 0..=ISSUE_FORM_CANCEL_ROW {
+            handle_issue_form_key(&mut app, key(KeyCode::Tab), &client, &tx);
+        }
+        assert_eq!(
+            app.issue_form.as_ref().unwrap().field_idx,
+            0,
+            "a full lap of Tab returns to the title field"
+        );
+    }
+
+    #[test]
+    fn title_field_edits_inline_and_enter_advances_focus() {
+        let mut app = issue_form_test_app();
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        for c in "hello".chars() {
+            handle_issue_form_key(&mut app, key(KeyCode::Char(c)), &client, &tx);
+        }
+        assert_eq!(app.issue_form.as_ref().unwrap().title.buffer, "hello");
+
+        handle_issue_form_key(&mut app, key(KeyCode::Enter), &client, &tx);
+        assert_eq!(
+            app.issue_form.as_ref().unwrap().field_idx,
+            1,
+            "Enter on the title field moves focus to description, not a newline"
+        );
+    }
+
+    #[test]
+    fn description_field_enter_inserts_newline_inline() {
+        let mut app = issue_form_test_app();
+        app.issue_form.as_mut().unwrap().field_idx = 1;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        for c in "line one".chars() {
+            handle_issue_form_key(&mut app, key(KeyCode::Char(c)), &client, &tx);
+        }
+        handle_issue_form_key(&mut app, key(KeyCode::Enter), &client, &tx);
+        for c in "line two".chars() {
+            handle_issue_form_key(&mut app, key(KeyCode::Char(c)), &client, &tx);
+        }
+
+        let form = app.issue_form.unwrap();
+        assert_eq!(form.body.text(), "line one\nline two");
+        assert_eq!(
+            form.field_idx, 1,
+            "Enter in the description field must not move focus"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_row_enter_submits_when_valid() {
+        let mut app = issue_form_test_app();
+        {
+            let form = app.issue_form.as_mut().unwrap();
+            form.title.start("a new issue");
+            form.field_idx = ISSUE_FORM_CREATE_ROW;
+            form.options = Some(FormOptions {
+                repo_id: "R_repo".into(),
+                labels: Vec::new(),
+                users: Vec::new(),
+                milestones: Vec::new(),
+                projects: Vec::new(),
+                issue_types: Vec::new(),
+            });
+        }
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_issue_form_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert!(
+            app.issue_form.is_none(),
+            "a valid submission (title set, options loaded) tears the form down \
+             immediately, before the create mutation is spawned"
+        );
+    }
+
+    #[test]
+    fn cancel_row_enter_and_space_discard_the_form() {
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        for cancel_key in [KeyCode::Enter, KeyCode::Char(' ')] {
+            let mut app = issue_form_test_app();
+            app.issue_form.as_mut().unwrap().field_idx = ISSUE_FORM_CANCEL_ROW;
+            handle_issue_form_key(&mut app, key(cancel_key), &client, &tx);
+            assert!(app.issue_form.is_none());
+            assert_eq!(app.mode, Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn esc_cancels_regardless_of_focused_field() {
+        let mut app = issue_form_test_app();
+        app.issue_form.as_mut().unwrap().field_idx = 1;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_issue_form_key(&mut app, key(KeyCode::Esc), &client, &tx);
+        assert!(app.issue_form.is_none());
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[test]

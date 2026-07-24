@@ -185,7 +185,7 @@ Sort keys: updated, created, closed, state, assignee, author, priority.
 
 ### Editing keys
 
-Every text input (search, filters, assignees, title, org, the new-issue title, and the description editor) opens as a small popup box and supports readline-style editing. The cursor is a block sitting **on** a character:
+Every text input (search, filters, assignees, title, org, and the comment/description editor) opens as a small popup box and supports readline-style editing; the new-issue form's title and description fields use the same editing keys but inline, in the form itself. The cursor is a block sitting **on** a character:
 
 | Key | Action |
 |-----|--------|
@@ -196,9 +196,9 @@ Every text input (search, filters, assignees, title, org, the new-issue title, a
 | `Ctrl+U` / `Ctrl+K` | delete to line start / to line end |
 | `Ctrl+D` / `Delete` | delete the char under the cursor |
 
-Single-line popups (search, filters, assignees, title, org, new-issue title) scroll horizontally to keep the cursor visible when the value is wider than the box; `Enter` submits, `Esc` cancels.
+Single-line popups (search, filters, assignees, title, org) and the new-issue form's inline title field scroll horizontally to keep the cursor visible when the value is wider than the box; `Enter` submits (on the new-issue title, `Enter` moves focus to the next field instead), `Esc` cancels.
 
-In the multi-line comment and description editors, text word-wraps at the editor's width, `↑`/`↓` move by *visual* (wrapped) row, `Enter` inserts a newline, and `Delete` at the end of a line joins the next line on. The new-issue description keeps its text on `Esc` and returns to the form.
+In the multi-line comment and description editors — including the new-issue form's inline description — text word-wraps at the editor's width, `↑`/`↓` move by *visual* (wrapped) row, `Enter` inserts a newline, and `Delete` at the end of a line joins the next line on.
 
 ### Adding a comment
 
@@ -214,7 +214,7 @@ The body and each comment render as lightweight markdown: `# ` headings, `**bold
 
 ### Creating issues
 
-`n` opens a New-Issue form for the selected repo (from its header or any of its issue rows), modelled on GitHub's New Issue page: **title**, **description** (multi-line editor: Enter inserts a newline, Esc keeps the text and returns to the form), **assignees** and **labels** (multi-select pickers — Space toggles, Enter accepts), and **type**, **priority**, **project**, **milestone** (single-select pickers, `—` clears). Picker options load per repo when the form opens: assignable users, repo labels, issue types (where the org has them), the repo's Projects (V2), and open milestones. Priority follows the `priority:<value>` label convention — the chosen label is added to the issue's labels. `Enter` on `[ Create issue ]` submits; the status line reports `created #N` and the list refetches. `Esc` cancels the form.
+`n` opens a New-Issue form for the selected repo (from its header or any of its issue rows) as a single inline form — one box, no per-field popups except for the pickers below. `Tab`/`Shift+Tab` move between fields and the `[ Create ]`/`[ Cancel ]` buttons at the bottom, wrapping at both ends. **Title** and **description** edit directly in the form (description is a small multi-line box: `Enter` inserts a newline; `Tab` leaves it). **Assignees** and **labels** (multi-select pickers — Space toggles, Enter accepts) and **type**, **priority**, **project**, **milestone** (single-select pickers, `—` clears) still open a picker popup on `Enter` — the one modal exception, since these option lists benefit from the pickers' type-ahead filter. Picker options load per repo when the form opens: assignable users, repo labels, issue types (where the org has them), the repo's Projects (V2), and open milestones. Priority follows the `priority:<value>` label convention — the chosen label is added to the issue's labels. `Enter`/`Space` on `[ Create ]` submits; the status line reports `created #N` and the list refetches. `Esc` anywhere, or `Enter`/`Space` on `[ Cancel ]`, discards the form.
 
 To create the *first* issue in a repo that shows no issues, flip the `hide empty repos` filter to `no` (`F` → last row → Enter) — the repo's `(0)` header appears and `n` works on it.
 
