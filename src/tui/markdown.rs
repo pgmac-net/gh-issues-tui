@@ -8,16 +8,34 @@
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
-/// Render `body` as styled markdown, one output line per input line.
-pub fn render(body: &str, t: &Theme) -> Vec<Line<'static>> {
+/// A URL and the display-column span it occupies within a rendered line.
+///
+/// `line` indexes the `Vec<Line>` returned alongside these spans; `col_start..col_end`
+/// are display columns (terminal cells) from the start of that rendered line. The
+/// hyperlink layer ([`super::linkmap`]) maps these onto wrapped, scrolled cells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkSpan {
+    pub line: usize,
+    pub col_start: usize,
+    pub col_end: usize,
+    pub url: String,
+}
+
+/// Render `body` as styled markdown, one output line per input line, and report
+/// every URL's position (bare `http(s)://` URLs and markdown `[label](url)`
+/// links) so the caller can make them clickable. Fenced code and headings are
+/// not scanned for links.
+pub fn render_with_links(body: &str, t: &Theme) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
     let mut out = Vec::with_capacity(body.lines().count());
+    let mut links = Vec::new();
     let mut in_fence = false;
     let mut fence_char = '`';
 
-    for raw in body.lines() {
+    for (idx, raw) in body.lines().enumerate() {
         let trimmed = raw.trim_start();
 
         if let Some(c) = fence_open_char(trimmed) {
@@ -36,10 +54,26 @@ pub fn render(body: &str, t: &Theme) -> Vec<Line<'static>> {
             continue;
         }
 
-        out.push(render_line(raw, trimmed, t));
+        let (line, locals) = render_line_links(raw, trimmed, t);
+        for l in locals {
+            links.push(LinkSpan {
+                line: idx,
+                col_start: l.start,
+                col_end: l.end,
+                url: l.url,
+            });
+        }
+        out.push(line);
     }
 
-    out
+    (out, links)
+}
+
+/// A link located within a single parsed span run: display-column range plus URL.
+struct Local {
+    start: usize,
+    end: usize,
+    url: String,
 }
 
 fn fence_open_char(trimmed: &str) -> Option<char> {
@@ -48,50 +82,71 @@ fn fence_open_char(trimmed: &str) -> Option<char> {
         .find(|&c| trimmed.chars().take_while(|&x| x == c).count() >= 3)
 }
 
-fn render_line(raw: &str, trimmed: &str, t: &Theme) -> Line<'static> {
+/// Render one non-fenced source line, returning the styled line plus any links
+/// found in its inline content (columns already offset past list/quote prefixes).
+/// Headings are not inline-parsed today, so they carry no links.
+fn render_line_links(raw: &str, trimmed: &str, t: &Theme) -> (Line<'static>, Vec<Local>) {
     if trimmed.is_empty() {
-        return Line::default();
+        return (Line::default(), Vec::new());
     }
 
     if let Some(rest) = heading_rest(trimmed) {
         let style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
-        return Line::styled(rest.to_string(), style);
+        return (Line::styled(rest.to_string(), style), Vec::new());
     }
 
     if is_hr(trimmed) {
-        return Line::styled("─".repeat(40), Style::default().fg(t.dim));
+        return (
+            Line::styled("─".repeat(40), Style::default().fg(t.dim)),
+            Vec::new(),
+        );
     }
 
     if let Some(rest) = trimmed
         .strip_prefix("> ")
         .or_else(|| trimmed.strip_prefix('>'))
     {
-        let mut spans = vec![Span::styled("▏ ", Style::default().fg(t.dim))];
-        spans.extend(parse_inline(rest.trim_start(), t));
-        return Line::from(spans);
+        let prefix = Span::styled("▏ ", Style::default().fg(t.dim));
+        return prefixed_line(&[prefix], rest.trim_start(), t);
     }
 
     let indent = &raw[..raw.len() - trimmed.len()];
 
     if let Some(rest) = unordered_rest(trimmed) {
-        let mut spans = vec![
+        let prefix = [
             Span::raw(indent.to_string()),
             Span::styled("• ", Style::default().fg(t.accent)),
         ];
-        spans.extend(parse_inline(rest, t));
-        return Line::from(spans);
+        return prefixed_line(&prefix, rest, t);
     }
 
     if let Some((marker, rest)) = ordered_rest(trimmed) {
-        let mut spans = vec![
+        let prefix = [
             Span::raw(indent.to_string()),
             Span::styled(format!("{marker} "), Style::default().fg(t.accent)),
         ];
-        spans.extend(parse_inline(rest, t));
-        return Line::from(spans);
+        return prefixed_line(&prefix, rest, t);
     }
 
-    Line::from(parse_inline(raw, t))
+    let (spans, locals) = parse_inline_links(raw, t);
+    (Line::from(spans), locals)
+}
+
+/// Build a line from fixed `prefix` spans followed by inline-parsed `text`,
+/// shifting each link's columns past the prefix width.
+fn prefixed_line(prefix: &[Span<'static>], text: &str, t: &Theme) -> (Line<'static>, Vec<Local>) {
+    let offset: usize = prefix
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    let (inline, mut locals) = parse_inline_links(text, t);
+    for l in &mut locals {
+        l.start += offset;
+        l.end += offset;
+    }
+    let mut spans: Vec<Span<'static>> = prefix.to_vec();
+    spans.extend(inline);
+    (Line::from(spans), locals)
 }
 
 fn heading_rest(trimmed: &str) -> Option<&str> {
@@ -149,11 +204,16 @@ fn link_style(t: &Theme) -> Style {
 }
 
 /// Inline span parser: bold (`**`/`__`), italic (`*`/`_`), inline code
-/// (`` ` ``), links (`[text](url)`, url dropped), and `\` escapes.
-fn parse_inline(text: &str, t: &Theme) -> Vec<Span<'static>> {
+/// (`` ` ``), links (`[text](url)`), bare `http(s)://` URLs, and `\` escapes.
+/// Also reports every link's display-column span so the label / URL text can be
+/// made clickable. Columns are relative to the start of the returned span run
+/// (the caller offsets past any list prefix).
+fn parse_inline_links(text: &str, t: &Theme) -> (Vec<Span<'static>>, Vec<Local>) {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut spans = Vec::new();
+    // (span index, url) for each clickable span; columns are resolved below.
+    let mut marks: Vec<(usize, String)> = Vec::new();
     let mut buf = String::new();
     let mut i = 0;
 
@@ -202,6 +262,10 @@ fn parse_inline(text: &str, t: &Theme) -> Vec<Span<'static>> {
                 if let Some((close_bracket, close_paren)) = find_link(&chars, i) {
                     flush(&mut spans, &mut buf);
                     let label: String = chars[i + 1..close_bracket].iter().collect();
+                    let url: String = chars[close_bracket + 2..close_paren].iter().collect();
+                    if !url.is_empty() {
+                        marks.push((spans.len(), url));
+                    }
                     spans.push(Span::styled(label, link_style(t)));
                     i = close_paren + 1;
                 } else {
@@ -210,8 +274,16 @@ fn parse_inline(text: &str, t: &Theme) -> Vec<Span<'static>> {
                 }
             }
             _ => {
-                buf.push(c);
-                i += 1;
+                if let Some(end) = bare_url_end(&chars, i) {
+                    flush(&mut spans, &mut buf);
+                    let url: String = chars[i..end].iter().collect();
+                    marks.push((spans.len(), url.clone()));
+                    spans.push(Span::styled(url, link_style(t)));
+                    i = end;
+                } else {
+                    buf.push(c);
+                    i += 1;
+                }
             }
         }
     }
@@ -220,7 +292,83 @@ fn parse_inline(text: &str, t: &Theme) -> Vec<Span<'static>> {
     if spans.is_empty() {
         spans.push(Span::raw(String::new()));
     }
-    spans
+
+    // Resolve each mark's column span from the cumulative width of prior spans.
+    let mut starts = Vec::with_capacity(spans.len() + 1);
+    let mut acc = 0usize;
+    for s in &spans {
+        starts.push(acc);
+        acc += UnicodeWidthStr::width(s.content.as_ref());
+    }
+    starts.push(acc);
+    let locals = marks
+        .into_iter()
+        .map(|(idx, url)| Local {
+            start: starts[idx],
+            end: starts[idx + 1],
+            url,
+        })
+        .collect();
+
+    (spans, locals)
+}
+
+/// If a bare `http(s)://` URL starts at `chars[i]`, return its end index
+/// (exclusive). The URL must sit on a boundary (not mid-word), extends to the
+/// next whitespace or URL-hostile character, and has trailing sentence
+/// punctuation trimmed (a closing `)` is kept only when the URL opened one).
+fn bare_url_end(chars: &[char], i: usize) -> Option<usize> {
+    if i > 0 && chars[i - 1].is_alphanumeric() {
+        return None;
+    }
+    let scheme_len = if chars[i..].starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/']) {
+        8
+    } else if chars[i..].starts_with(&['h', 't', 't', 'p', ':', '/', '/']) {
+        7
+    } else {
+        return None;
+    };
+
+    let body_start = i + scheme_len;
+    let mut end = body_start;
+    while end < chars.len() {
+        let c = chars[end];
+        if c.is_whitespace()
+            || matches!(
+                c,
+                '<' | '>' | '"' | '`' | '{' | '}' | '|' | '\\' | '^' | '[' | ']'
+            )
+        {
+            break;
+        }
+        end += 1;
+    }
+    if end == body_start {
+        return None; // scheme with no host
+    }
+
+    while end > body_start {
+        let c = chars[end - 1];
+        let trim = match c {
+            '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' => true,
+            // Trim a trailing `)` only when it is unbalanced (more closes than
+            // opens in the URL so far), so `Foo_(bar)` keeps its own paren but a
+            // wrapping `(url)` does not.
+            ')' => {
+                let opens = chars[i..end].iter().filter(|&&x| x == '(').count();
+                let closes = chars[i..end].iter().filter(|&&x| x == ')').count();
+                closes > opens
+            }
+            _ => false,
+        };
+        if trim {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+
+    Some(end)
 }
 
 fn flush(spans: &mut Vec<Span<'static>>, buf: &mut String) {
@@ -261,6 +409,11 @@ fn find_link(chars: &[char], start: usize) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Styled lines only — the link positions are exercised separately.
+    fn render(body: &str, t: &Theme) -> Vec<Line<'static>> {
+        render_with_links(body, t).0
+    }
 
     fn spans_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
@@ -387,5 +540,78 @@ mod tests {
         let lines = render("just a plain line", &t);
         assert_eq!(lines[0].spans.len(), 1);
         assert_eq!(spans_text(&lines[0]), "just a plain line");
+    }
+
+    #[test]
+    fn bare_url_is_detected_with_columns() {
+        let t = Theme::default();
+        let (lines, links) = render_with_links("see https://example.com/x now", &t);
+        assert_eq!(spans_text(&lines[0]), "see https://example.com/x now");
+        assert_eq!(links.len(), 1);
+        let l = &links[0];
+        assert_eq!(l.url, "https://example.com/x");
+        assert_eq!(l.line, 0);
+        // "see " is 4 cols; the URL is 21 cols wide.
+        assert_eq!(l.col_start, 4);
+        assert_eq!(l.col_end, 25);
+        // The URL span carries the link style.
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "https://example.com/x")
+            .unwrap();
+        assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn markdown_link_reports_url_over_label_columns() {
+        let t = Theme::default();
+        let (_, links) = render_with_links("see [the docs](https://example.com/x) here", &t);
+        assert_eq!(links.len(), 1);
+        let l = &links[0];
+        assert_eq!(l.url, "https://example.com/x");
+        // Label "the docs" sits at columns 4..12 (after "see ").
+        assert_eq!(l.col_start, 4);
+        assert_eq!(l.col_end, 12);
+    }
+
+    #[test]
+    fn bare_url_trailing_punctuation_is_trimmed() {
+        let t = Theme::default();
+        let (_, links) = render_with_links("visit https://example.com/path.", &t);
+        assert_eq!(links[0].url, "https://example.com/path");
+        // A closing paren is kept when the URL opened one.
+        let (_, balanced) = render_with_links("(https://en.wikipedia.org/wiki/Foo_(bar))", &t);
+        assert_eq!(balanced[0].url, "https://en.wikipedia.org/wiki/Foo_(bar)");
+    }
+
+    #[test]
+    fn url_inside_inline_code_is_not_linked() {
+        let t = Theme::default();
+        let (_, links) = render_with_links("run `curl https://example.com`", &t);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn url_inside_fence_is_not_linked() {
+        let t = Theme::default();
+        let (_, links) = render_with_links("```\nhttps://example.com\n```", &t);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn link_columns_offset_past_list_prefix() {
+        let t = Theme::default();
+        // "• " prefix is 2 cols, so a URL at the start of the item begins at col 2.
+        let (_, links) = render_with_links("- https://example.com", &t);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].col_start, 2);
+    }
+
+    #[test]
+    fn url_midword_is_not_detected() {
+        let t = Theme::default();
+        let (_, links) = render_with_links("xhttps://example.com", &t);
+        assert!(links.is_empty());
     }
 }

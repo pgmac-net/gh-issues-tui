@@ -1,5 +1,8 @@
+use std::num::NonZeroU16;
+
 use chrono::{Datelike, NaiveDate};
 use ratatui::Frame;
+use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -7,7 +10,10 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState, Wrap,
 };
+use unicode_width::UnicodeWidthStr;
 
+use super::linkmap::{self, LinkRect};
+use super::markdown::LinkSpan;
 use crate::provider::types::{Comment, Issue};
 
 use super::app::{
@@ -215,19 +221,18 @@ fn draw_detail_body(f: &mut Frame, app: &App, t: &Theme, issue: &Issue, area: Re
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 
-    let lines = body_lines(issue, selected, t);
-    let content_h = paragraph_height(&lines, inner_w);
+    let (lines, links) = body_lines_links(issue, selected, t);
+    let (wrapped, rects) = linkmap::wrap(&lines, &links, inner_w as usize);
+    let content_h = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
     let max_scroll = content_h.saturating_sub(inner_h);
     let scroll = app.body_scroll.min(max_scroll);
 
     f.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
+        Paragraph::new(wrapped).block(block).scroll((scroll, 0)),
         area,
     );
     render_region_scrollbar(f, t, area, content_h, inner_h, scroll);
+    apply_hyperlinks(f.buffer_mut(), inner_area(area), &rects, scroll);
 }
 
 /// The bottom region: the stacked comment cards, scrolled by `comments_scroll`,
@@ -271,16 +276,22 @@ fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused
 
     let card_width = inner_w as usize;
     let mut lines: Vec<Line> = Vec::new();
+    let mut links: Vec<LinkSpan> = Vec::new();
     for (i, c) in comments.iter().enumerate() {
-        lines.extend(comment_card_lines(c, selected == Some(i), card_width, t));
+        let (card, card_links) = comment_card_lines_links(c, selected == Some(i), card_width, t);
+        let base = lines.len();
+        for mut l in card_links {
+            l.line += base;
+            links.push(l);
+        }
+        lines.extend(card);
     }
+    let (wrapped, rects) = linkmap::wrap(&lines, &links, inner_w as usize);
+    let total = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
 
     let scroll = app.comments_scroll;
     f.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
+        Paragraph::new(wrapped).block(block).scroll((scroll, 0)),
         area,
     );
 
@@ -291,14 +302,69 @@ fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused
         let height = comment_height(&comments[i], inner_w);
         render_region_scrollbar(f, t, area, height, inner_h, scroll.saturating_sub(top));
     } else {
-        let total = paragraph_height(
-            &comments
-                .iter()
-                .flat_map(|c| comment_card_lines(c, false, card_width, t))
-                .collect::<Vec<_>>(),
-            inner_w,
-        );
         render_region_scrollbar(f, t, area, total, inner_h, scroll);
+    }
+    apply_hyperlinks(f.buffer_mut(), inner_area(area), &rects, scroll);
+}
+
+/// The content rectangle inside a bordered pane (one cell of border on each
+/// side). Used to place OSC 8 hyperlinks after a `Paragraph` has drawn.
+fn inner_area(area: Rect) -> Rect {
+    area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    })
+}
+
+/// Wrap each link's on-screen cells in an OSC 8 hyperlink escape so terminals
+/// make them clickable (Ctrl/Cmd+Click), opening the URL in the default
+/// browser. The visible glyph and style are preserved; `ForcedWidth` pins each
+/// touched cell's real display width so the escape bytes don't disturb ratatui's
+/// layout/diff. Rects are given in unscrolled content coordinates; `scroll` and
+/// the viewport clip them to what's visible.
+fn apply_hyperlinks(buf: &mut Buffer, inner: Rect, rects: &[LinkRect], scroll: u16) {
+    for r in rects {
+        let vrow = r.vrow as u16;
+        if vrow < scroll {
+            continue;
+        }
+        let row = vrow - scroll;
+        if row >= inner.height {
+            continue;
+        }
+        let y = inner.y + row;
+        let start = r.col_start as u16;
+        if start >= inner.width {
+            continue;
+        }
+        let end = (r.col_end as u16).min(inner.width);
+        if end <= start {
+            continue;
+        }
+        for x in start..end {
+            let is_first = x == start;
+            let is_last = x == end - 1;
+            if !is_first && !is_last {
+                continue; // interior cells stay inside the open link
+            }
+            let Some(cell) = buf.cell_mut((inner.x + x, y)) else {
+                continue;
+            };
+            let glyph = cell.symbol().to_string();
+            let width = UnicodeWidthStr::width(glyph.as_str()).max(1) as u16;
+            let mut sym = String::new();
+            if is_first {
+                sym.push_str(&format!("\x1b]8;id={};{}\x1b\\", r.id, r.url));
+            }
+            sym.push_str(&glyph);
+            if is_last {
+                sym.push_str("\x1b]8;;\x1b\\");
+            }
+            cell.set_symbol(&sym);
+            cell.set_diff_option(CellDiffOption::ForcedWidth(
+                NonZeroU16::new(width).unwrap_or(NonZeroU16::MIN),
+            ));
+        }
     }
 }
 
@@ -336,6 +402,17 @@ fn render_region_scrollbar(
 /// highlighted when the body is the selected region. Shared by the renderer
 /// and `body_content_height` so measured and drawn heights match.
 fn body_lines(issue: &Issue, selected: bool, t: &Theme) -> Vec<Line<'static>> {
+    body_lines_links(issue, selected, t).0
+}
+
+/// [`body_lines`] plus the URL positions in the description, with each link's
+/// line index offset past the metadata header so it points into the returned
+/// `Vec<Line>`.
+fn body_lines_links(
+    issue: &Issue,
+    selected: bool,
+    t: &Theme,
+) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
     let mut title_style = title_style(issue, t).add_modifier(Modifier::BOLD);
     if selected {
         title_style = title_style.fg(t.accent).add_modifier(Modifier::REVERSED);
@@ -384,8 +461,17 @@ fn body_lines(issue: &Issue, selected: bool, t: &Theme) -> Vec<Line<'static>> {
         )),
         Line::default(),
     ];
-    lines.extend(markdown::render(&issue.body, t));
-    lines
+    let base = lines.len();
+    let (md_lines, md_links) = markdown::render_with_links(&issue.body, t);
+    let links = md_links
+        .into_iter()
+        .map(|mut l| {
+            l.line += base;
+            l
+        })
+        .collect();
+    lines.extend(md_lines);
+    (lines, links)
 }
 
 /// One comment card: an author·timestamp header rule, the rendered body, a
@@ -397,6 +483,17 @@ fn comment_card_lines(
     card_width: usize,
     t: &Theme,
 ) -> Vec<Line<'static>> {
+    comment_card_lines_links(c, selected, card_width, t).0
+}
+
+/// [`comment_card_lines`] plus the URL positions in the comment body, with each
+/// link's line index offset past the header rule.
+fn comment_card_lines_links(
+    c: &Comment,
+    selected: bool,
+    card_width: usize,
+    t: &Theme,
+) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
     let header = format!(
         "── {} · {} ",
         c.author,
@@ -409,22 +506,29 @@ fn comment_card_lines(
         rule_style = Style::default().fg(t.accent);
     }
     let mut lines = vec![rule_line(&header, card_width, header_style)];
-    lines.extend(markdown::render(&c.body, t));
+    let base = lines.len();
+    let (md_lines, md_links) = markdown::render_with_links(&c.body, t);
+    let links = md_links
+        .into_iter()
+        .map(|mut l| {
+            l.line += base;
+            l
+        })
+        .collect();
+    lines.extend(md_lines);
     lines.push(rule_line("", card_width, rule_style));
     lines.push(Line::default());
-    lines
+    (lines, links)
 }
 
-/// Wrapped (visual) height of `lines` at inner width `width`. Uses ratatui's
-/// rendered-line-info so it matches exactly what `Paragraph` draws.
+/// Wrapped (visual) height of `lines` at inner width `width`, via the same
+/// [`linkmap`] wrapper the detail regions render with, so measured and drawn
+/// heights match exactly.
 fn paragraph_height(lines: &[Line<'static>], width: u16) -> u16 {
     if width == 0 {
         return 0;
     }
-    let count = Paragraph::new(lines.to_vec())
-        .wrap(Wrap { trim: false })
-        .line_count(width);
-    u16::try_from(count).unwrap_or(u16::MAX)
+    linkmap::wrapped_height(lines, width as usize)
 }
 
 /// Wrapped height of the body region's content (metadata + description) at
@@ -1569,6 +1673,66 @@ mod tests {
         // scrollbar thumb (█) is drawn for each.
         let out = detail_render_string(DetailSel::Comment(0));
         assert!(out.contains('█'), "expected scrollbar thumbs to be drawn");
+    }
+
+    /// Render a detail pane whose body and first comment each hold a URL, then
+    /// return every buffer cell symbol joined into one string (so the embedded
+    /// OSC 8 escape sequences are visible).
+    fn detail_hyperlink_symbols() -> String {
+        use crate::provider::types::RepoIssues;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut i = issue(vec![]);
+        i.body = "Visit https://example.com for the docs.".into();
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
+        app.state_filter = crate::tui::app::StateFilter::All;
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![i],
+        }]);
+        app.selected = 1;
+        app.open_detail();
+        app.detail_comments = Some(vec![test_comment(
+            "See [the site](https://comment.example.org)",
+        )]);
+
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app, &Theme::default())).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn detail_urls_are_wrapped_in_osc8_hyperlinks() {
+        let out = detail_hyperlink_symbols();
+        // The body's bare URL is bracketed by an OSC 8 open (…;URL\e\\) and close.
+        assert!(
+            out.contains(";https://example.com\x1b\\"),
+            "body URL not opened as a hyperlink"
+        );
+        // The markdown link's label is hyperlinked to its target URL.
+        assert!(
+            out.contains(";https://comment.example.org\x1b\\"),
+            "comment link target not opened as a hyperlink"
+        );
+        // The closing sequence is present.
+        assert!(out.contains("\x1b]8;;\x1b\\"), "no OSC 8 close sequence");
+        // The visible URL text is preserved (the escapes only bracket it).
+        assert!(out.contains("https://example.com"), "URL text was lost");
     }
 
     #[test]

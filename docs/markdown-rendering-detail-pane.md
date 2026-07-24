@@ -10,6 +10,10 @@ lightweight markdown instead of raw text: `#` headings, `**bold**`/`*italic*`,
 and numbered lists, `---` horizontal rules, and `[text](url)` links (shown as
 styled text — the URL is dropped, keeping the pane readable in a terminal).
 
+> **Superseded (#80, 2026-07-24):** URLs are no longer dropped — bare
+> `http(s)://` URLs and `[text](url)` labels are now clickable OSC 8 terminal
+> hyperlinks. See [`clickable-urls.md`](clickable-urls.md).
+
 ## Approach
 
 A small in-house renderer (`src/tui/markdown.rs`), not a dependency. Two
