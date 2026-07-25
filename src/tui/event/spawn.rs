@@ -94,9 +94,6 @@ pub(crate) fn spawn_pr_summary(client: &Provider, pr: PrRef, tx: &mpsc::Unbounde
     });
 }
 
-/// Run a selection-changing action, then live-update the detail pane: when
-/// the split is open and the selected issue changed, reset the pane and
-/// fetch the new issue's comments (stale responses are dropped by id in
 /// Spawn a mutation against the selected issue; reports done/failed via `tx`.
 pub(crate) fn with_issue<F, Fut>(
     app: &mut App,

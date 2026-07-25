@@ -18,7 +18,6 @@ pub(crate) fn prev_form_field(idx: usize) -> usize {
     }
 }
 
-/// The wrap width the inline description box in the new-issue form is
 /// Keys for the inline new-issue form (`Mode::IssueForm`).
 pub(crate) fn handle_issue_form_key(
     app: &mut App,
@@ -143,9 +142,6 @@ pub(crate) fn handle_form_multi_key(app: &mut App, key: KeyEvent, idx: usize) {
     }
 }
 
-/// Keys shared by every multi-line `BodyEditor`: readline-style editing plus
-/// visual-row up/down. Enter and Esc are each caller's own since they mean
-/// different things per mode (newline vs. keep/discard). Returns whether the
 /// Create the issue described by the form, then close it.
 pub(crate) fn submit_issue_form(
     app: &mut App,

@@ -125,7 +125,6 @@ pub(crate) fn detail_metrics() -> (u16, u16, u16) {
     )
 }
 
-/// Scroll the selected detail region by `lines` (negative = up), clamped to
 /// The PR summary popup's navigable rows at the live terminal width. Read
 /// off the same row model the popup draws, so a target's row index is
 /// exactly the row it highlights.

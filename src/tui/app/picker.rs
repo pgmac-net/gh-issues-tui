@@ -74,8 +74,6 @@ impl App {
         }
     }
 
-    /// Whether a background auto-refresh may fire now: no fetch already in
-    /// flight, no rate-limit lockout, and nothing being composed or
     /// Build the list of options shown when the user presses Enter on a
     /// select-style filter field (repo, assignee, author).
     /// The first entry is always `"—"` which means "no filter".

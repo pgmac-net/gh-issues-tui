@@ -183,7 +183,6 @@ impl App {
         }
     }
 
-    /// Open an option picker: set its options and initial highlight, and
     /// Whether the auto-refresh ticker may fire now: not while a fetch is
     /// in flight, rate-limited, or anything interactive is open (only the
     /// passive Normal and Help modes qualify).
