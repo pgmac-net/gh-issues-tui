@@ -1,9 +1,11 @@
-use std::sync::{Arc, Mutex};
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result};
+use crate::provider::error::{ProviderError, Result};
+use crate::provider::http::{
+    RateLimitStore, build_http_client, graphql_body, graphql_data, header_i64, join_error_messages,
+    parse_at,
+};
 use crate::provider::types::{
     CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueState, Label,
     NewIssueParams, PrRef, PrState, PrSummary, RateLimitData, RepoIssues, RepoLabel,
@@ -53,106 +55,71 @@ fn halve(current: u32, floor: u32) -> u32 {
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
-    rate_limit: Arc<Mutex<Option<RateLimitData>>>,
+    rate_limit: RateLimitStore,
 }
 
 impl Client {
     pub fn new(token: String) -> anyhow::Result<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
-        auth.set_sensitive(true);
-        headers.insert(reqwest::header::AUTHORIZATION, auth);
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("gh-issues/", env!("CARGO_PKG_VERSION")))
-            .default_headers(headers)
-            .build()?;
         Ok(Self {
-            http,
-            rate_limit: Arc::new(Mutex::new(None)),
+            http: build_http_client(&format!("Bearer {token}"), &[])?,
+            rate_limit: RateLimitStore::default(),
         })
     }
 
     /// Returns the most recently observed rate limit state.
     pub fn rate_limit(&self) -> Option<RateLimitData> {
-        *self.rate_limit.lock().unwrap()
+        self.rate_limit.get()
     }
 
+    /// GitHub reports the reset as epoch **seconds**, so it is stored as-is.
     fn update_rate_limit(&self, headers: &reqwest::header::HeaderMap) {
-        let remaining = headers
-            .get("x-ratelimit-remaining")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok());
-        let limit = headers
-            .get("x-ratelimit-limit")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok());
-        let reset = headers
-            .get("x-ratelimit-reset")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok());
+        let remaining = header_i64(headers, "x-ratelimit-remaining");
+        let limit = header_i64(headers, "x-ratelimit-limit");
+        let reset = header_i64(headers, "x-ratelimit-reset");
         if let (Some(remaining), Some(limit), Some(reset)) = (remaining, limit, reset) {
-            *self.rate_limit.lock().unwrap() = Some(RateLimitData {
-                remaining,
-                limit,
+            self.rate_limit.set(RateLimitData {
+                remaining: remaining.max(0) as u64,
+                limit: limit.max(0) as u64,
                 reset,
             });
         }
-    }
-
-    fn rate_limit_message(&self, data: &RateLimitData) -> String {
-        format!(
-            "{RATE_LIMIT_MSG_PREFIX} — {}/{} used, resets {}",
-            data.remaining,
-            data.limit,
-            data.reset_time()
-        )
     }
 
     async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
         let resp = self
             .http
             .post(GRAPHQL_URL)
-            .json(&json!({ "query": query, "variables": variables }))
+            .json(&graphql_body(query, variables))
             .send()
             .await?;
 
         self.update_rate_limit(resp.headers());
 
         let status = resp.status();
-        if status == reqwest::StatusCode::FORBIDDEN
-            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        if (status == reqwest::StatusCode::FORBIDDEN
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+            && let Some(data) = self.rate_limit.get()
+            && data.remaining == 0
         {
-            let rl = self.rate_limit.lock().unwrap();
-            if let Some(ref data) = *rl
-                && data.remaining == 0
-            {
-                return Err(ProviderError::RateLimited(self.rate_limit_message(data)));
-            }
+            return Err(ProviderError::RateLimited(self.rate_limit.message(None)));
         }
 
         let body: Value = resp.error_for_status()?.json().await?;
-        if let Some(errors) = body
-            .get("errors")
-            .filter(|e| !e.as_array().is_none_or(|a| a.is_empty()))
-        {
+        graphql_data(&body, |errors| {
             // The GraphQL API reports the primary rate limit as an HTTP 200
             // with a RATE_LIMITED error entry, not as a 403.
             if errors_contain_rate_limited(errors) {
-                let rl = self.rate_limit.lock().unwrap();
-                let msg = match *rl {
-                    Some(ref data) => self.rate_limit_message(data),
-                    None => format!("{RATE_LIMIT_MSG_PREFIX} (GraphQL)"),
-                };
-                return Err(ProviderError::RateLimited(msg));
+                return Some(ProviderError::RateLimited(
+                    self.rate_limit.message(Some("GraphQL")),
+                ));
             }
+            // Not a rate limit, but still not a plain API error — the caller
+            // retries this one with smaller pages.
             if errors_contain_resource_limited(errors) {
-                return Err(ProviderError::ResourceLimited(join_error_messages(errors)));
+                return Some(ProviderError::ResourceLimited(join_error_messages(errors)));
             }
-            return Err(ProviderError::Api(join_error_messages(errors)));
-        }
-        body.get("data")
-            .cloned()
-            .ok_or_else(|| ProviderError::Shape("missing data".into()))
+            None
+        })
     }
 
     /// Runs a GraphQL query built by `make_vars` from the current page
@@ -574,31 +541,6 @@ fn errors_contain_resource_limited(errors: &Value) -> bool {
             type_match || msg_match
         })
     })
-}
-
-/// Joins the `message` field of every entry in a GraphQL `errors` array into
-/// one readable string, instead of surfacing the raw JSON to the status line.
-fn join_error_messages(errors: &Value) -> String {
-    errors
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|e| e.get("message").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| errors.to_string())
-}
-
-fn parse_at<T: for<'de> Deserialize<'de>>(data: &Value, path: &[&str]) -> Result<T> {
-    let mut cur = data;
-    for seg in path {
-        cur = cur
-            .get(seg)
-            .ok_or_else(|| ProviderError::Shape(format!("missing {}", path.join("."))))?;
-    }
-    serde_json::from_value(cur.clone()).map_err(|e| ProviderError::Shape(e.to_string()))
 }
 
 fn login_at(v: &Value, ptr: &str) -> String {
@@ -1531,5 +1473,98 @@ mod tests {
         ] {
             assert!(PR_SUMMARY_QUERY.contains(field), "missing {field}");
         }
+    }
+
+    // ---- Characterisation goldens (issue #87) ---------------------------
+    //
+    // Rate-limit header parsing, the rate-limit message format, and
+    // `parse_at` all move to the shared provider layer in the dedup phase.
+    // They had no direct coverage, so pin them here first.
+
+    fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                reqwest::header::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn rate_limit_headers_are_read_in_seconds() {
+        let c = Client::new("t".into()).unwrap();
+        assert!(c.rate_limit().is_none(), "starts unset");
+
+        c.update_rate_limit(&headers(&[
+            ("x-ratelimit-remaining", "4321"),
+            ("x-ratelimit-limit", "5000"),
+            // GitHub reports the reset as epoch *seconds*, stored as-is.
+            ("x-ratelimit-reset", "1800000000"),
+        ]));
+
+        let rl = c.rate_limit().expect("rate limit recorded");
+        assert_eq!(rl.remaining, 4321);
+        assert_eq!(rl.limit, 5000);
+        assert_eq!(rl.reset, 1_800_000_000);
+    }
+
+    #[test]
+    fn rate_limit_ignores_partial_header_sets() {
+        let c = Client::new("t".into()).unwrap();
+        // All three must be present; a partial set leaves the state alone.
+        c.update_rate_limit(&headers(&[("x-ratelimit-remaining", "1")]));
+        assert!(c.rate_limit().is_none());
+
+        c.update_rate_limit(&headers(&[
+            ("x-ratelimit-remaining", "not-a-number"),
+            ("x-ratelimit-limit", "5000"),
+            ("x-ratelimit-reset", "1800000000"),
+        ]));
+        assert!(c.rate_limit().is_none(), "unparseable value is ignored");
+    }
+
+    #[test]
+    fn rate_limit_message_carries_the_shared_prefix_and_counts() {
+        use crate::provider::error::RATE_LIMIT_MSG_PREFIX;
+
+        let c = Client::new("t".into()).unwrap();
+        c.update_rate_limit(&headers(&[
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-limit", "5000"),
+            ("x-ratelimit-reset", "1800000000"),
+        ]));
+
+        let msg = c.rate_limit.message(None);
+        assert!(
+            msg.starts_with(RATE_LIMIT_MSG_PREFIX),
+            "event loop classifies by this prefix: {msg}"
+        );
+        assert!(msg.contains("0/5000 used"), "{msg}");
+        assert!(msg.contains(&c.rate_limit().unwrap().reset_time()), "{msg}");
+    }
+
+    #[test]
+    fn parse_at_walks_a_nested_path() {
+        let data = serde_json::json!({"a": {"b": {"c": 41}}});
+        let got: u64 = parse_at(&data, &["a", "b", "c"]).unwrap();
+        assert_eq!(got, 41);
+    }
+
+    #[test]
+    fn parse_at_reports_the_full_path_when_a_segment_is_missing() {
+        let data = serde_json::json!({"a": {"b": {}}});
+        let err = parse_at::<u64>(&data, &["a", "b", "c"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("a.b.c"), "error should name the path: {msg}");
+        assert!(matches!(err, ProviderError::Shape(_)));
+    }
+
+    #[test]
+    fn parse_at_reports_a_shape_error_on_type_mismatch() {
+        let data = serde_json::json!({"a": "not a number"});
+        let err = parse_at::<u64>(&data, &["a"]).unwrap_err();
+        assert!(matches!(err, ProviderError::Shape(_)));
     }
 }

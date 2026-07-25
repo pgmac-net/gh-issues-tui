@@ -6,6 +6,8 @@ pub use client::Client;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
+use crate::provider::priority;
+
 /// A Jira priority name → the `priority:<value>` label value the rest of the
 /// app understands. Jira has five levels; they fold onto the app's four
 /// (both `Low` and `Lowest` map to `low`).
@@ -42,22 +44,13 @@ pub const SYNTHETIC_PRIORITY_PREFIX: &str = "jira-priority:";
 /// The four synthetic `priority:*` labels, ordered urgent → low, as
 /// `(id, name)` pairs. Injected into `repo_labels`/`repo_form_options`.
 pub fn synthetic_priority_labels() -> Vec<(String, String)> {
-    ["urgent", "high", "medium", "low"]
-        .iter()
-        .map(|v| {
-            (
-                format!("{SYNTHETIC_PRIORITY_PREFIX}{v}"),
-                format!("priority:{v}"),
-            )
-        })
-        .collect()
+    priority::synthetic_priority_labels(SYNTHETIC_PRIORITY_PREFIX)
 }
 
 /// If `id` is a synthetic priority-label id, return the Jira priority name it
 /// stands for; otherwise `None` (a real label — Jira labels are plain strings).
 pub fn synthetic_priority_id_to_name(id: &str) -> Option<&'static str> {
-    id.strip_prefix(SYNTHETIC_PRIORITY_PREFIX)
-        .and_then(priority_value_to_name)
+    priority::strip_synthetic_prefix(SYNTHETIC_PRIORITY_PREFIX, id).and_then(priority_value_to_name)
 }
 
 /// Recursively flatten an Atlassian Document Format value to plain text. ADF is

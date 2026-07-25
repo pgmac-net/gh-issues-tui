@@ -1,10 +1,12 @@
-use std::sync::{Arc, Mutex};
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{priority_int_to_value, priority_value_to_int, synthetic_priority_id_to_int};
-use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result};
+use crate::provider::error::{ProviderError, Result};
+use crate::provider::http::{
+    RateLimitStore, build_http_client, graphql_body, graphql_data, header_i64, join_error_messages,
+    parse_at,
+};
 use crate::provider::types::{
     Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
     RepoIssues, RepoLabel,
@@ -18,43 +20,30 @@ const ISSUES_PAGE: u32 = 100;
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
-    rate_limit: Arc<Mutex<Option<RateLimitData>>>,
+    rate_limit: RateLimitStore,
 }
 
 impl Client {
     pub fn new(key: String) -> anyhow::Result<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
         // Personal API keys go in the Authorization header raw (no "Bearer").
-        let mut auth = reqwest::header::HeaderValue::from_str(&key)?;
-        auth.set_sensitive(true);
-        headers.insert(reqwest::header::AUTHORIZATION, auth);
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("gh-issues/", env!("CARGO_PKG_VERSION")))
-            .default_headers(headers)
-            .build()?;
         Ok(Self {
-            http,
-            rate_limit: Arc::new(Mutex::new(None)),
+            http: build_http_client(&key, &[])?,
+            rate_limit: RateLimitStore::default(),
         })
     }
 
     pub fn rate_limit(&self) -> Option<RateLimitData> {
-        *self.rate_limit.lock().unwrap()
+        self.rate_limit.get()
     }
 
+    /// Linear reports the reset as epoch **milliseconds**, so it is divided
+    /// down to the seconds `RateLimitData` stores.
     fn update_rate_limit(&self, headers: &reqwest::header::HeaderMap) {
-        let get = |name: &str| {
-            headers
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<i64>().ok())
-        };
-        let remaining = get("x-ratelimit-requests-remaining");
-        let limit = get("x-ratelimit-requests-limit");
-        // Linear reports the reset as epoch milliseconds.
-        let reset_ms = get("x-ratelimit-requests-reset");
+        let remaining = header_i64(headers, "x-ratelimit-requests-remaining");
+        let limit = header_i64(headers, "x-ratelimit-requests-limit");
+        let reset_ms = header_i64(headers, "x-ratelimit-requests-reset");
         if let (Some(remaining), Some(limit), Some(reset_ms)) = (remaining, limit, reset_ms) {
-            *self.rate_limit.lock().unwrap() = Some(RateLimitData {
+            self.rate_limit.set(RateLimitData {
                 remaining: remaining.max(0) as u64,
                 limit: limit.max(0) as u64,
                 reset: reset_ms / 1000,
@@ -66,42 +55,26 @@ impl Client {
         let resp = self
             .http
             .post(API_URL)
-            .json(&json!({ "query": query, "variables": variables }))
+            .json(&graphql_body(query, variables))
             .send()
             .await?;
 
         self.update_rate_limit(resp.headers());
 
-        let status = resp.status();
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let msg = match *self.rate_limit.lock().unwrap() {
-                Some(ref d) => format!(
-                    "{RATE_LIMIT_MSG_PREFIX} — {}/{} used, resets {}",
-                    d.remaining,
-                    d.limit,
-                    d.reset_time()
-                ),
-                None => RATE_LIMIT_MSG_PREFIX.to_string(),
-            };
-            return Err(ProviderError::RateLimited(msg));
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(ProviderError::RateLimited(self.rate_limit.message(None)));
         }
 
         let body: Value = resp.error_for_status()?.json().await?;
-        if let Some(errors) = body
-            .get("errors")
-            .filter(|e| !e.as_array().is_none_or(|a| a.is_empty()))
-        {
-            if errors_contain_ratelimit(errors) {
-                return Err(ProviderError::RateLimited(format!(
-                    "{RATE_LIMIT_MSG_PREFIX} (Linear) — {}",
+        graphql_data(&body, |errors| {
+            errors_contain_ratelimit(errors).then(|| {
+                ProviderError::RateLimited(format!(
+                    "{} (Linear) — {}",
+                    crate::provider::error::RATE_LIMIT_MSG_PREFIX,
                     join_error_messages(errors)
-                )));
-            }
-            return Err(ProviderError::Api(join_error_messages(errors)));
-        }
-        body.get("data")
-            .cloned()
-            .ok_or_else(|| ProviderError::Shape("missing data".into()))
+                ))
+            })
+        })
     }
 
     /// Fetch every team as a group, each with its issues. `org` is ignored —
@@ -502,29 +475,6 @@ fn errors_contain_ratelimit(errors: &Value) -> bool {
     })
 }
 
-fn join_error_messages(errors: &Value) -> String {
-    errors
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|e| e.get("message").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| errors.to_string())
-}
-
-fn parse_at<T: for<'de> Deserialize<'de>>(data: &Value, path: &[&str]) -> Result<T> {
-    let mut cur = data;
-    for seg in path {
-        cur = cur
-            .get(seg)
-            .ok_or_else(|| ProviderError::Shape(format!("missing {}", path.join("."))))?;
-    }
-    serde_json::from_value(cur.clone()).map_err(|e| ProviderError::Shape(e.to_string()))
-}
-
 fn from_nodes<T: for<'de> Deserialize<'de>>(v: &Value, ptr: &str) -> Result<T> {
     let nodes = v
         .pointer(ptr)
@@ -864,5 +814,55 @@ mod tests {
     fn join_error_messages_reads_message_fields() {
         let errors = json!([{"message": "first"}, {"message": "second"}]);
         assert_eq!(join_error_messages(&errors), "first; second");
+    }
+
+    // ---- Characterisation goldens (issue #87) ---------------------------
+    //
+    // Linear reports its reset as epoch *milliseconds* while the shared
+    // `RateLimitData` stores seconds. That conversion is easy to lose when
+    // the rate-limit store moves to the provider layer, and had no test.
+
+    fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                reqwest::header::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn rate_limit_reset_converts_milliseconds_to_seconds() {
+        let c = Client::new("k".into()).unwrap();
+        c.update_rate_limit(&headers(&[
+            ("x-ratelimit-requests-remaining", "900"),
+            ("x-ratelimit-requests-limit", "1500"),
+            ("x-ratelimit-requests-reset", "1800000000123"),
+        ]));
+
+        let rl = c.rate_limit().expect("rate limit recorded");
+        assert_eq!(rl.remaining, 900);
+        assert_eq!(rl.limit, 1500);
+        assert_eq!(rl.reset, 1_800_000_000, "millis must be divided by 1000");
+    }
+
+    #[test]
+    fn rate_limit_clamps_negative_counts_to_zero() {
+        let c = Client::new("k".into()).unwrap();
+        c.update_rate_limit(&headers(&[
+            ("x-ratelimit-requests-remaining", "-5"),
+            ("x-ratelimit-requests-limit", "1500"),
+            ("x-ratelimit-requests-reset", "1800000000000"),
+        ]));
+        assert_eq!(c.rate_limit().unwrap().remaining, 0);
+    }
+
+    #[test]
+    fn rate_limit_ignores_partial_header_sets() {
+        let c = Client::new("k".into()).unwrap();
+        c.update_rate_limit(&headers(&[("x-ratelimit-requests-remaining", "900")]));
+        assert!(c.rate_limit().is_none());
     }
 }

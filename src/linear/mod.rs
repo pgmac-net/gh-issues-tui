@@ -3,6 +3,8 @@ pub mod client;
 
 pub use client::Client;
 
+use crate::provider::priority;
+
 /// Prefix marking a synthetic `priority:*` label id. Linear priority is a
 /// native field, not a label, but the app's priority picker and new-issue
 /// form work in terms of `priority:*` labels — so the Linear provider
@@ -15,22 +17,13 @@ pub const SYNTHETIC_PRIORITY_PREFIX: &str = "linear-priority:";
 /// `(id, name)` pairs. Injected into `repo_labels` and `repo_form_options` so
 /// the picker and form see them.
 pub fn synthetic_priority_labels() -> Vec<(String, String)> {
-    ["urgent", "high", "medium", "low"]
-        .iter()
-        .map(|v| {
-            (
-                format!("{SYNTHETIC_PRIORITY_PREFIX}{v}"),
-                format!("priority:{v}"),
-            )
-        })
-        .collect()
+    priority::synthetic_priority_labels(SYNTHETIC_PRIORITY_PREFIX)
 }
 
 /// If `id` is a synthetic priority-label id, return its Linear native
 /// priority integer; otherwise `None` (a real Linear label id).
 pub fn synthetic_priority_id_to_int(id: &str) -> Option<u8> {
-    id.strip_prefix(SYNTHETIC_PRIORITY_PREFIX)
-        .and_then(priority_value_to_int)
+    priority::strip_synthetic_prefix(SYNTHETIC_PRIORITY_PREFIX, id).and_then(priority_value_to_int)
 }
 
 /// Linear's native priority integer → the `priority:<value>` label value the
