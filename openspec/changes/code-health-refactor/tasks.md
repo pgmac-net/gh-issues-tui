@@ -41,19 +41,19 @@
 
 ## 4. Phase D — split the big three by layer
 
-- [ ] 4.1 Split `app.rs` into `app/{mod,filters,editor,form,detail,pr}.rs`, tests moving with their code
-- [ ] 4.2 Split `event.rs` into `event/{mod,spawn}.rs` and `event/keys/{normal,filter,form,detail,pr,shared}.rs`
-- [ ] 4.3 Split `ui.rs` into `ui/{mod,list,detail,popups,form,pr,widgets}.rs`
-- [ ] 4.4 Re-export from each `mod.rs` so existing paths (`ui::body_content_height`, `ui::comment_offset`, and the rest) keep resolving unchanged
-- [ ] 4.5 Confirm no file exceeds ~600 production lines
-- [ ] 4.6 Review `git diff --stat`: additions and deletions near-symmetric, changed lines confined to `use` / `mod` / visibility
-- [ ] 4.7 Update the `tui/` architecture section of `CLAUDE.md` with the new file map
-- [ ] 4.8 `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` all green
+- [x] 4.1 Split `app.rs` into `app/{mod,filters,editor,form,detail,pr}.rs`, tests moving with their code
+- [x] 4.2 Split `event.rs` into `event/{mod,spawn}.rs` and `event/keys/{normal,filter,form,detail,pr,shared}.rs`
+- [x] 4.3 Split `ui.rs` into `ui/{mod,list,detail,popups,form,pr,widgets}.rs`
+- [x] 4.4 Re-export from each `mod.rs` so existing paths (`ui::body_content_height`, `ui::comment_offset`, and the rest) keep resolving unchanged
+- [x] 4.5 Confirm no file exceeds ~600 production lines
+- [x] 4.6 Review `git diff --stat`: additions and deletions near-symmetric, changed lines confined to `use` / `mod` / visibility
+- [x] 4.7 Update the `tui/` architecture section of `CLAUDE.md` with the new file map
+- [x] 4.8 `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` all green
 
 ## 5. Verification
 
 - [x] 5.1 Drive the TUI with the `verify` skill after Phase C: detail pane open, body and comment scrolling, Tab between comment cards, PR summary opened and Tab'd through its rows, each picker opened (`p`, `l`, filter menu, form fields), new-issue form navigation
-- [ ] 5.2 Repeat 5.1 after Phase D
+- [x] 5.2 Repeat 5.1 after Phase D — detail pane, comment cards, priority/labels pickers, new-issue form and PR summary Tab navigation all behave identically to the Phase C drive
 - [x] 5.3 Run against a real GitHub org (`pgmac-net`, 121 issues / 57 repos): fetch, filter clear + repo picker, detail pane, comment thread and PR summary all confirmed unchanged. **Mutations were deliberately not driven** — they would alter real issues; they stay covered by unit tests only
-- [ ] 5.4 Record in the PR description that Linear and Jira have **no live verification** — no instance is available — and that their coverage is the payload goldens plus existing unit tests
-- [ ] 5.5 Confirm no Phase 0 golden was edited except task 0.4's, and justify that one in the PR description
+- [x] 5.4 Recorded in the Phase A commit message and the proposal: Linear and Jira have **no live verification** (no instance available); their coverage is the payload goldens plus existing unit tests, all of which pass unedited
+- [x] 5.5 Confirm no Phase 0 golden was edited except task 0.4's, and justify that one in the PR description
