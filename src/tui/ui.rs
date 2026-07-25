@@ -8,61 +8,53 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
+    ScrollbarState,
 };
 use unicode_width::UnicodeWidthStr;
 
 use super::linkmap::{self, LinkRect};
 use super::markdown::LinkSpan;
-use crate::provider::types::{Comment, Issue};
+use crate::provider::types::{Comment, Issue, PrState, PrSummary, WorkflowRunInfo};
 
 use super::app::{
     App, CommentFocus, ConfirmChoice, DetailSel, FILTER_FIELDS, Focus, INPUT_POPUP_WIDTH,
     ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_DESC_HEIGHT, ISSUE_FORM_FIELDS,
-    ISSUE_FORM_LABEL_WIDTH, ISSUE_FORM_WIDTH, InputKind, IssueForm, Mode, Row, comment_pane_width,
-    cursor_row, detail_split, input_popup_width, input_scroll_skip, issue_form_width, wrap_lines,
+    ISSUE_FORM_LABEL_WIDTH, ISSUE_FORM_WIDTH, InputKind, IssueForm, Mode, PrTarget, Row,
+    cursor_row, input_popup_width, input_scroll_skip, issue_form_width, wrap_lines,
 };
+use super::layout;
 use super::markdown;
 use super::theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
-    let [main, info, bottom] = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(f.area());
+    let frame = layout::frame(f.area());
+    let panes = layout::panes(frame.main, app.detail_open);
 
-    if app.detail_open {
-        let [left, right] =
-            Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                .areas(main);
-        draw_list(f, app, t, left);
-        draw_detail(f, app, t, right);
-    } else {
-        draw_list(f, app, t, main);
+    draw_list(f, app, t, panes.list);
+    if let Some(detail) = panes.detail {
+        draw_detail(f, app, t, detail);
     }
-    draw_info_bar(f, app, t, info);
-    draw_bottom_line(f, app, t, bottom);
+    draw_info_bar(f, app, t, frame.info);
+    draw_bottom_line(f, app, t, frame.bottom);
 
     match app.mode {
         Mode::FilterMenu => draw_filter_menu(f, app, t),
-        Mode::SelectField(idx) => draw_select_popup(f, app, t, idx, false),
-        Mode::SelectFieldMulti(idx) => draw_select_popup(f, app, t, idx, true),
+        Mode::SelectField(idx) => draw_picker(f, app, t, PickerSpec::filter_field(idx, false)),
+        Mode::SelectFieldMulti(idx) => draw_picker(f, app, t, PickerSpec::filter_field(idx, true)),
         Mode::Calendar(idx) => draw_calendar_popup(f, app, t, idx),
         Mode::IssueForm => draw_issue_form(f, app, t),
         Mode::IssueFormSelect(idx) => {
             draw_issue_form(f, app, t);
-            draw_form_choice_popup(f, app, t, idx, false);
+            draw_picker(f, app, t, PickerSpec::form_field(idx, false));
         }
         Mode::IssueFormMulti(idx) => {
             draw_issue_form(f, app, t);
-            draw_form_choice_popup(f, app, t, idx, true);
+            draw_picker(f, app, t, PickerSpec::form_field(idx, true));
         }
         Mode::Input(kind) => draw_input_popup(f, app, t, kind),
-        Mode::PrioritySet => draw_priority_popup(f, app, t),
-        Mode::LabelsSet => draw_labels_popup(f, app, t),
-        Mode::PrPicker => draw_pr_picker_popup(f, app, t),
+        Mode::PrioritySet => draw_picker(f, app, t, PickerSpec::priority()),
+        Mode::LabelsSet => draw_picker(f, app, t, PickerSpec::labels()),
+        Mode::PrPicker => draw_picker(f, app, t, PickerSpec::pr_links()),
         Mode::PrSummary => draw_pr_summary_popup(f, app, t),
         Mode::ConfirmState => draw_confirm_popup(f, app, t),
         Mode::Help => draw_help(f, t),
@@ -200,13 +192,11 @@ fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     };
 
     let focused = app.focus == Focus::Detail;
-    let (body_h, comments_h) = detail_split(area.height);
-    let [body_area, comments_area] =
-        Layout::vertical([Constraint::Length(body_h), Constraint::Length(comments_h)]).areas(area);
+    let regions = layout::detail_regions(area);
 
-    draw_detail_body(f, app, t, issue, body_area, focused);
-    if comments_h > 0 {
-        draw_detail_comments(f, app, t, comments_area, focused);
+    draw_detail_body(f, app, t, issue, regions.body, focused);
+    if let Some(comments) = regions.comments {
+        draw_detail_comments(f, app, t, comments, focused);
     }
 }
 
@@ -776,57 +766,96 @@ fn picker_height(f: &Frame, rows: usize) -> u16 {
     (rows.max(1) as u16 + 2).min(f.area().height)
 }
 
-fn draw_select_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize, multi: bool) {
-    let field_name = FILTER_FIELDS[idx];
-    let items = picker_items(app, t, multi, "clear");
-    let area = centered(f.area(), 50, picker_height(f, items.len()));
-    f.render_widget(Clear, area);
-    let hint = if multi {
-        "type filters · Space toggles · Enter accepts"
-    } else {
-        "type to filter · Enter picks · Esc cancels"
-    };
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" select {field_name} ({hint}) ")),
-    );
-    f.render_widget(list, area);
+/// Default popup width for every picker but the PR one, which needs more
+/// room for `owner/repo#number` entries.
+const PICKER_WIDTH: u16 = 50;
+const PR_PICKER_WIDTH: u16 = 60;
+
+/// What distinguishes one picker popup from another. Everything else — the
+/// item list, the centring, the border — is identical across all of them.
+struct PickerSpec {
+    /// Full border title, including its surrounding spaces. Longer than the
+    /// popup is wide in most cases; the border clips it.
+    title: String,
+    width: u16,
+    /// Space toggles and items carry `[ ]`/`[x]` marks.
+    multi: bool,
+    /// Wording for the leading "clear this field" entry.
+    clear_label: &'static str,
 }
 
-fn draw_priority_popup(f: &mut Frame, app: &App, t: &Theme) {
-    let items = picker_items(app, t, false, "clear");
-    let area = centered(f.area(), 50, picker_height(f, items.len()));
-    f.render_widget(Clear, area);
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" set priority (type to filter · Enter sets · Esc cancels) "),
-    );
-    f.render_widget(list, area);
+impl PickerSpec {
+    /// A standard-width picker clearing to "clear".
+    fn new(title: impl Into<String>, multi: bool) -> Self {
+        Self {
+            title: title.into(),
+            width: PICKER_WIDTH,
+            multi,
+            clear_label: "clear",
+        }
+    }
+
+    /// Picker for a filter field (`Mode::SelectField` / `SelectFieldMulti`).
+    fn filter_field(idx: usize, multi: bool) -> Self {
+        let field_name = FILTER_FIELDS[idx];
+        let hint = if multi {
+            "type filters · Space toggles · Enter accepts"
+        } else {
+            "type to filter · Enter picks · Esc cancels"
+        };
+        Self::new(format!(" select {field_name} ({hint}) "), multi)
+    }
+
+    /// Picker for a new-issue form field (`Mode::IssueFormSelect` /
+    /// `IssueFormMulti`). These clear to "none" rather than "clear".
+    fn form_field(idx: usize, multi: bool) -> Self {
+        let field_name = ISSUE_FORM_FIELDS[idx];
+        let hint = if multi {
+            "type filters · Space toggles · Enter accepts"
+        } else {
+            "type filters · Enter picks · Esc cancels"
+        };
+        Self {
+            clear_label: "none",
+            ..Self::new(format!(" {field_name} ({hint}) "), multi)
+        }
+    }
+
+    /// Setting the selected issue's priority (`Mode::PrioritySet`).
+    fn priority() -> Self {
+        Self::new(
+            " set priority (type to filter · Enter sets · Esc cancels) ",
+            false,
+        )
+    }
+
+    /// Editing the selected issue's labels (`Mode::LabelsSet`).
+    fn labels() -> Self {
+        Self::new(
+            " set labels (type to filter · Space toggles · Enter accepts · Esc cancels) ",
+            true,
+        )
+    }
+
+    /// Choosing among several linked PRs (`Mode::PrPicker`).
+    fn pr_links() -> Self {
+        Self {
+            width: PR_PICKER_WIDTH,
+            ..Self::new(
+                " linked PRs (type to filter · Enter picks · Esc cancels) ",
+                false,
+            )
+        }
+    }
 }
 
-fn draw_labels_popup(f: &mut Frame, app: &App, t: &Theme) {
-    let items = picker_items(app, t, true, "clear");
-    let area = centered(f.area(), 50, picker_height(f, items.len()));
+/// The one picker popup. Every `Mode` that shows a list of choices renders
+/// through here; only the [`PickerSpec`] differs.
+fn draw_picker(f: &mut Frame, app: &App, t: &Theme, spec: PickerSpec) {
+    let items = picker_items(app, t, spec.multi, spec.clear_label);
+    let area = centered(f.area(), spec.width, picker_height(f, items.len()));
     f.render_widget(Clear, area);
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" set labels (type to filter · Space toggles · Enter accepts · Esc cancels) "),
-    );
-    f.render_widget(list, area);
-}
-
-fn draw_pr_picker_popup(f: &mut Frame, app: &App, t: &Theme) {
-    let items = picker_items(app, t, false, "clear");
-    let area = centered(f.area(), 60, picker_height(f, items.len()));
-    f.render_widget(Clear, area);
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" linked PRs (type to filter · Enter picks · Esc cancels) "),
-    );
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(spec.title));
     f.render_widget(list, area);
 }
 
@@ -840,132 +869,224 @@ fn conclusion_style(conclusion: Option<&str>, t: &Theme) -> (&'static str, Color
     }
 }
 
+/// Outer width of the PR summary popup, before its borders.
+const PR_SUMMARY_WIDTH: u16 = 76;
+
+/// The PR summary popup's inner text width for a frame `frame_width` wide.
+/// Shared by the renderer and the key handler so both measure the same rows.
+pub fn pr_summary_inner_width(frame_width: u16) -> u16 {
+    PR_SUMMARY_WIDTH.min(frame_width).saturating_sub(2)
+}
+
+/// The PR summary popup's outer area within `frame`.
+fn pr_summary_area(frame: Rect) -> Rect {
+    centered(frame, PR_SUMMARY_WIDTH, (frame.height * 3 / 4).max(12))
+}
+
+/// One drawn row of the PR summary popup: the line as rendered, plus the URL
+/// it opens when it is a navigable row.
+///
+/// This is the popup's single source of truth. The renderer draws
+/// `rows[i].line`; [`pr_targets`] reports position `i` for every row carrying
+/// a URL. The two cannot disagree, because there is only one sequence.
+pub struct PrRow {
+    pub line: Line<'static>,
+    pub url: Option<String>,
+}
+
+/// Build the popup's rows, already wrapped to `width`.
+///
+/// Wrapping happens here rather than in the `Paragraph` so that a row index
+/// means the same thing to the renderer and to the key handler — the house
+/// rule the detail pane already follows (see [`super::linkmap`]). A logical
+/// line that wraps contributes several rows; only its first carries the URL,
+/// so selecting it scrolls to where the item starts.
+pub fn pr_summary_rows(
+    summary: Option<&Result<PrSummary, String>>,
+    t: &Theme,
+    width: u16,
+) -> Vec<PrRow> {
+    let tagged = pr_summary_logical_rows(summary, t);
+    let mut out = Vec::new();
+    for (line, url) in tagged {
+        let (wrapped, _) = linkmap::wrap(&[line], &[], width as usize);
+        for (i, line) in wrapped.into_iter().enumerate() {
+            out.push(PrRow {
+                line,
+                // Only the first wrapped row of an item is its target.
+                url: if i == 0 { url.clone() } else { None },
+            });
+        }
+    }
+    out
+}
+
+/// The navigable rows of the PR summary popup, as positions in
+/// [`pr_summary_rows`]' output. Derived, never separately computed.
+pub fn pr_targets(summary: Option<&Result<PrSummary, String>>, width: u16) -> Vec<PrTarget> {
+    // Styling does not affect row count or URLs, so the default theme is a
+    // sound basis for measurement — the same convention `body_content_height`
+    // uses.
+    pr_summary_rows(summary, &Theme::default(), width)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, row)| {
+            row.url.map(|url| PrTarget {
+                url,
+                line: i as u16,
+            })
+        })
+        .collect()
+}
+
+/// The popup's unwrapped lines, each tagged with the URL it opens (if any).
+fn pr_summary_logical_rows(
+    summary: Option<&Result<PrSummary, String>>,
+    t: &Theme,
+) -> Vec<(Line<'static>, Option<String>)> {
+    let plain = |line: Line<'static>| (line, None);
+
+    let s = match summary {
+        None => {
+            return vec![plain(Line::styled(
+                "loading PR summary…",
+                Style::default().fg(t.dim),
+            ))];
+        }
+        Some(Err(e)) => {
+            return vec![plain(Line::styled(
+                format!("failed: {e}"),
+                Style::default().fg(t.error),
+            ))];
+        }
+        Some(Ok(s)) => s,
+    };
+
+    let mut rows: Vec<(Line<'static>, Option<String>)> = Vec::new();
+
+    // The PR header itself is the first navigable row.
+    rows.push((
+        Line::from(vec![
+            Span::styled(format!("{} ", s.pr.label()), Style::default().fg(t.dim)),
+            Span::styled(
+                s.title.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Some(s.pr.url()),
+    ));
+    rows.push(plain(Line::from(vec![
+        Span::styled(
+            if s.is_draft {
+                "draft ".to_string()
+            } else {
+                format!("{} ", s.state)
+            },
+            Style::default().fg(match s.state {
+                PrState::Merged => t.assignee,
+                PrState::Open => t.open,
+                PrState::Closed => t.closed,
+            }),
+        ),
+        Span::styled(
+            format!(
+                "{} ← {}   +{}/-{} · {} files",
+                s.base_ref, s.head_ref, s.additions, s.deletions, s.changed_files
+            ),
+            Style::default().fg(t.dim),
+        ),
+    ])));
+    rows.push(plain(Line::default()));
+
+    for l in s.body.lines() {
+        rows.push(plain(Line::raw(l.to_string())));
+    }
+    rows.push(plain(Line::default()));
+
+    let review_line = match s.reviews.decision {
+        Some(d) => format!("{d}"),
+        None => "no reviews yet".to_string(),
+    };
+    rows.push(plain(Line::from(vec![
+        Span::styled("reviews: ", Style::default().fg(t.accent)),
+        Span::raw(format!(
+            "{review_line} · {} approved, {} changes requested, {} commented",
+            s.reviews.approved, s.reviews.changes_requested, s.reviews.commented
+        )),
+    ])));
+    rows.push(plain(Line::from(vec![
+        Span::styled("comments: ", Style::default().fg(t.accent)),
+        Span::raw(format!(
+            "{} · {} review threads",
+            s.comment_count, s.review_thread_count
+        )),
+    ])));
+    rows.push(plain(Line::default()));
+
+    rows.push(plain(Line::from(vec![
+        Span::styled("checks: ", Style::default().fg(t.accent)),
+        Span::raw(s.checks.state.clone().unwrap_or_else(|| "none".into())),
+    ])));
+    for c in &s.checks.contexts {
+        let (sym, color) = conclusion_style(Some(c.conclusion.as_str()), t);
+        rows.push((
+            Line::from(vec![
+                Span::styled(format!("  {sym} "), Style::default().fg(color)),
+                Span::raw(c.name.clone()),
+            ]),
+            Some(c.url.clone()),
+        ));
+    }
+
+    let mut run_section = |heading: Line<'static>, runs: &[WorkflowRunInfo]| {
+        if runs.is_empty() {
+            return;
+        }
+        rows.push(plain(Line::default()));
+        rows.push(plain(heading));
+        for r in runs {
+            let (sym, color) = conclusion_style(r.conclusion.as_deref(), t);
+            rows.push((
+                Line::from(vec![
+                    Span::styled(format!("  {sym} "), Style::default().fg(color)),
+                    Span::raw(format!("{} #{} ({})", r.workflow, r.run_number, r.event)),
+                ]),
+                Some(r.url.clone()),
+            ));
+        }
+    };
+
+    run_section(
+        Line::styled("PR workflow runs:", Style::default().fg(t.accent)),
+        &s.pr_runs,
+    );
+    run_section(
+        Line::styled(
+            format!("── default branch ({}) ──", s.default_branch_name),
+            Style::default().fg(t.accent),
+        ),
+        &s.default_branch_runs,
+    );
+
+    rows
+}
+
 fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
-    let area = centered(f.area(), 76, (f.area().height * 3 / 4).max(12));
+    let area = pr_summary_area(f.area());
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.accent))
         .title(" PR summary (j/k scroll · Tab select · o open · r refresh · Esc close) ");
 
-    let mut lines: Vec<Line> = match &app.pr_summary {
-        None => vec![Line::styled(
-            "loading PR summary…",
-            Style::default().fg(t.dim),
-        )],
-        Some(Err(e)) => vec![Line::styled(
-            format!("failed: {e}"),
-            Style::default().fg(t.error),
-        )],
-        Some(Ok(s)) => {
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::styled(format!("{} ", s.pr.label()), Style::default().fg(t.dim)),
-                    Span::styled(
-                        s.title.clone(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        if s.is_draft {
-                            "draft ".to_string()
-                        } else {
-                            format!("{} ", s.state)
-                        },
-                        Style::default().fg(match s.state {
-                            crate::provider::types::PrState::Merged => t.assignee,
-                            crate::provider::types::PrState::Open => t.open,
-                            crate::provider::types::PrState::Closed => t.closed,
-                        }),
-                    ),
-                    Span::styled(
-                        format!(
-                            "{} ← {}   +{}/-{} · {} files",
-                            s.base_ref, s.head_ref, s.additions, s.deletions, s.changed_files
-                        ),
-                        Style::default().fg(t.dim),
-                    ),
-                ]),
-                Line::default(),
-            ];
-
-            for l in s.body.lines() {
-                lines.push(Line::raw(l.to_string()));
-            }
-            lines.push(Line::default());
-
-            let review_line = match s.reviews.decision {
-                Some(d) => format!("{d}"),
-                None => "no reviews yet".to_string(),
-            };
-            lines.push(Line::from(vec![
-                Span::styled("reviews: ", Style::default().fg(t.accent)),
-                Span::raw(format!(
-                    "{review_line} · {} approved, {} changes requested, {} commented",
-                    s.reviews.approved, s.reviews.changes_requested, s.reviews.commented
-                )),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("comments: ", Style::default().fg(t.accent)),
-                Span::raw(format!(
-                    "{} · {} review threads",
-                    s.comment_count, s.review_thread_count
-                )),
-            ]));
-            lines.push(Line::default());
-
-            lines.push(Line::from(vec![
-                Span::styled("checks: ", Style::default().fg(t.accent)),
-                Span::raw(s.checks.state.clone().unwrap_or_else(|| "none".into())),
-            ]));
-            for c in &s.checks.contexts {
-                let (sym, color) = conclusion_style(Some(c.conclusion.as_str()), t);
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {sym} "), Style::default().fg(color)),
-                    Span::raw(c.name.clone()),
-                ]));
-            }
-
-            if !s.pr_runs.is_empty() {
-                lines.push(Line::default());
-                lines.push(Line::styled(
-                    "PR workflow runs:",
-                    Style::default().fg(t.accent),
-                ));
-                for r in &s.pr_runs {
-                    let (sym, color) = conclusion_style(r.conclusion.as_deref(), t);
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {sym} "), Style::default().fg(color)),
-                        Span::raw(format!("{} #{} ({})", r.workflow, r.run_number, r.event)),
-                    ]));
-                }
-            }
-
-            if !s.default_branch_runs.is_empty() {
-                lines.push(Line::default());
-                lines.push(Line::styled(
-                    format!("── default branch ({}) ──", s.default_branch_name),
-                    Style::default().fg(t.accent),
-                ));
-                for r in &s.default_branch_runs {
-                    let (sym, color) = conclusion_style(r.conclusion.as_deref(), t);
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {sym} "), Style::default().fg(color)),
-                        Span::raw(format!("{} #{} ({})", r.workflow, r.run_number, r.event)),
-                    ]));
-                }
-            }
-
-            lines
-        }
-    };
+    let width = pr_summary_inner_width(f.area().width);
+    let rows = pr_summary_rows(app.pr_summary.as_ref(), t, width);
+    let mut lines: Vec<Line> = rows.into_iter().map(|r| r.line).collect();
 
     // Highlight the selected row (`Tab`/`Shift+Tab`) by patching a
     // background onto each of its spans' existing styles, preserving their
     // foreground colours and modifiers.
-    if let Some(sel_line) = app
-        .pr_targets()
+    if let Some(sel_line) = pr_targets(app.pr_summary.as_ref(), width)
         .get(app.pr_sel)
         .map(|target| target.line as usize)
         && let Some(l) = lines.get_mut(sel_line)
@@ -979,9 +1100,10 @@ fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
         );
     }
 
+    // Wrapping is already applied by `pr_summary_rows`, so the Paragraph must
+    // not wrap again — otherwise a drawn row would stop matching its index.
     let para = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: false })
         .scroll((app.pr_scroll, 0));
     f.render_widget(para, area);
 }
@@ -1161,31 +1283,13 @@ fn issue_form_button_line(form: &IssueForm, t: &Theme, width: usize) -> Line<'st
 
 /// Option popup for a form field: single-select (with the "—" clear row)
 /// or multi-select (Space toggles, checkbox markers).
-fn draw_form_choice_popup(f: &mut Frame, app: &App, t: &Theme, idx: usize, multi: bool) {
-    let field_name = ISSUE_FORM_FIELDS[idx];
-    let items = picker_items(app, t, multi, "none");
-    let area = centered(f.area(), 50, picker_height(f, items.len()));
-    f.render_widget(Clear, area);
-    let hint = if multi {
-        "type filters · Space toggles · Enter accepts"
-    } else {
-        "type filters · Enter picks · Esc cancels"
-    };
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {field_name} ({hint}) ")),
-    );
-    f.render_widget(list, area);
-}
-
 /// The inline comment section at the bottom of the detail pane
 /// (`Mode::CommentEditor`): a multi-line editor with a `[ Save ]  [ Cancel ]`
 /// button row, the focused element highlighted. Width matches
 /// `comment_pane_width` so the renderer and the key handler's up/down
 /// visual-row navigation agree on wrap geometry.
 fn draw_comment_section(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let width = comment_pane_width(f.area().width) as usize;
+    let width = layout::detail_inner_width(f.area().width) as usize;
     // One row reserved for the button line at the bottom of the block.
     let inner_height = area.height.saturating_sub(2) as usize;
     let text_height = inner_height.saturating_sub(1);
@@ -1638,7 +1742,7 @@ mod tests {
         ]);
         app.detail_sel = sel;
         if let DetailSel::Comment(idx) = sel {
-            let w = comment_pane_width(100);
+            let w = layout::detail_inner_width(100);
             app.comments_scroll = comment_offset(app.detail_comments.as_ref().unwrap(), idx, w);
         }
 
@@ -1781,5 +1885,587 @@ mod tests {
             content.contains(concat!("v", env!("CARGO_PKG_VERSION"))),
             "version not found in help popup"
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // Characterisation goldens (issue #87).
+    //
+    // These pin what the screen actually looks like today, so the refactor
+    // phases that follow have something to preserve. They read geometry back
+    // out of the rendered buffer rather than recomputing it from the same
+    // constants the renderer used — a test that repeats the production
+    // arithmetic proves only that the arithmetic was copied correctly.
+    //
+    // Do not edit these to make a refactor pass. A golden that needs to
+    // change means behaviour changed; investigate that first.
+    // ----------------------------------------------------------------------
+
+    fn test_app() -> App {
+        App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        )
+    }
+
+    /// Render the whole UI — mode dispatch included — into a `TestBackend`.
+    fn render_app(app: &App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app, &Theme::default())).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// A bordered box found in the rendered buffer, with its rows as strings.
+    #[derive(Debug)]
+    struct PopupBox {
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        rows: Vec<String>,
+    }
+
+    impl PopupBox {
+        /// The whole box as one string, for substring assertions.
+        fn text(&self) -> String {
+            self.rows.join("\n")
+        }
+    }
+
+    fn cell_at(buf: &ratatui::buffer::Buffer, x: u16, y: u16) -> String {
+        buf[(x, y)].symbol().to_string()
+    }
+
+    /// Locate the topmost overlay popup: the bordered box whose top-left
+    /// corner sits furthest right. Overlays here are centred and narrower
+    /// than whatever they cover, so the most-indented corner is the one
+    /// drawn last. The list pane's own corner at x = 0 is never a candidate.
+    fn popup_box(buf: &ratatui::buffer::Buffer) -> PopupBox {
+        let area = *buf.area();
+        let mut best: Option<(u16, u16)> = None;
+        for y in 0..area.height {
+            for x in 1..area.width {
+                if cell_at(buf, x, y) == "┌" && best.is_none_or(|(bx, _)| x > bx) {
+                    best = Some((x, y));
+                }
+            }
+        }
+        let (x, y) = best.expect("no popup box found in buffer");
+
+        let mut width = 1;
+        while x + width < area.width && cell_at(buf, x + width, y) != "┐" {
+            width += 1;
+        }
+        width += 1; // include the closing corner
+
+        let mut height = 1;
+        while y + height < area.height && cell_at(buf, x, y + height) != "└" {
+            height += 1;
+        }
+        height += 1; // include the bottom border row
+
+        let rows = (y..y + height)
+            .map(|row| (x..x + width).map(|col| cell_at(buf, col, row)).collect())
+            .collect();
+
+        PopupBox {
+            x,
+            y,
+            width,
+            height,
+            rows,
+        }
+    }
+
+    /// An app sitting in `mode` with a loaded picker: three options behind a
+    /// leading clear entry, the second real option highlighted.
+    fn picker_app(mode: Mode) -> App {
+        let mut app = test_app();
+        app.start_picker(
+            vec!["—".into(), "alpha".into(), "beta".into(), "gamma".into()],
+            2,
+        );
+        app.mode = mode;
+        app
+    }
+
+    #[test]
+    fn golden_filter_select_popup() {
+        let app = picker_app(Mode::SelectField(1));
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        assert_eq!(popup.width, 50, "filter select popup width");
+        let text = popup.text();
+        // Field name comes from FILTER_FIELDS[1].
+        assert!(
+            text.contains("select repo (type to filter · Enter picks"),
+            "title missing: {text}"
+        );
+        // Filter pickers label the clear entry "clear".
+        assert!(text.contains("— clear —"), "clear entry missing: {text}");
+        assert!(text.contains("alpha"), "options missing: {text}");
+        // Single-select draws no checkbox marks.
+        assert!(!text.contains("[ ]"), "unexpected multi marks: {text}");
+    }
+
+    #[test]
+    fn golden_filter_select_multi_popup() {
+        let mut app = picker_app(Mode::SelectFieldMulti(4));
+        app.multi_selected.insert(2); // "beta"
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        assert_eq!(popup.width, 50, "filter multi popup width");
+        let text = popup.text();
+        assert!(
+            text.contains("select priority (type filters · Space toggles"),
+            "title missing: {text}"
+        );
+        assert!(text.contains("[x] beta"), "checked mark missing: {text}");
+        assert!(text.contains("[ ] alpha"), "unchecked mark missing: {text}");
+    }
+
+    #[test]
+    fn golden_priority_set_popup() {
+        let app = picker_app(Mode::PrioritySet);
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        assert_eq!(popup.width, 50, "priority popup width");
+        let text = popup.text();
+        assert!(
+            text.contains("set priority (type to filter · Enter sets"),
+            "title missing: {text}"
+        );
+        assert!(!text.contains("[ ]"), "unexpected multi marks: {text}");
+    }
+
+    #[test]
+    fn golden_labels_set_popup() {
+        let mut app = picker_app(Mode::LabelsSet);
+        app.multi_selected.insert(1); // "alpha"
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        assert_eq!(popup.width, 50, "labels popup width");
+        let text = popup.text();
+        assert!(
+            text.contains("set labels (type to filter · Space toggles"),
+            "title missing: {text}"
+        );
+        assert!(text.contains("[x] alpha"), "checked mark missing: {text}");
+    }
+
+    #[test]
+    fn golden_pr_picker_popup() {
+        let app = picker_app(Mode::PrPicker);
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        // The PR picker is the one wider popup.
+        assert_eq!(popup.width, 60, "PR picker popup width");
+        let text = popup.text();
+        assert!(
+            text.contains("linked PRs (type to filter · Enter picks · Esc cancels)"),
+            "title missing: {text}"
+        );
+    }
+
+    #[test]
+    fn golden_issue_form_select_popup() {
+        let mut app = picker_app(Mode::IssueFormSelect(4));
+        app.issue_form = Some(IssueForm::new("repo".into()));
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        assert_eq!(popup.width, 50, "form select popup width");
+        let text = popup.text();
+        // Field name comes from ISSUE_FORM_FIELDS[4], with no "select" prefix.
+        assert!(text.contains(" type ("), "title missing: {text}");
+        assert!(
+            text.contains("type filters · Enter picks · Esc cancels"),
+            "single-select hint missing: {text}"
+        );
+        // Form pickers label the clear entry "none", not "clear".
+        assert!(text.contains("— none —"), "none entry missing: {text}");
+        assert!(!text.contains("— clear —"), "wrong clear label: {text}");
+    }
+
+    #[test]
+    fn golden_issue_form_multi_popup() {
+        let mut app = picker_app(Mode::IssueFormMulti(3));
+        app.issue_form = Some(IssueForm::new("repo".into()));
+        app.multi_selected.insert(3); // "gamma"
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        assert_eq!(popup.width, 50, "form multi popup width");
+        let text = popup.text();
+        assert!(
+            text.contains(" labels (type filters · Space toggles"),
+            "title missing: {text}"
+        );
+        assert!(text.contains("[x] gamma"), "checked mark missing: {text}");
+    }
+
+    /// Pickers are centred on the frame and sized to their content: one row
+    /// per option plus the two border rows.
+    #[test]
+    fn golden_picker_is_centred_and_sized_to_content() {
+        let popup = popup_box(&render_app(&picker_app(Mode::SelectField(1)), 100, 30));
+        // 4 options + 2 borders.
+        assert_eq!(popup.height, 6, "picker height");
+        assert_eq!(popup.width, 50, "picker width");
+        assert_eq!(popup.x, (100 - popup.width) / 2, "picker not centred in x");
+        assert_eq!(popup.y, (30 - popup.height) / 2, "picker not centred in y");
+    }
+
+    /// Picker titles are longer than the popups are wide, so the border
+    /// clips them. That clipping is the current appearance and any change to
+    /// popup width or title wording moves it.
+    #[test]
+    fn golden_picker_titles_clip_at_the_border() {
+        let cases = [
+            (
+                Mode::SelectField(1),
+                "┌ select repo (type to filter · Enter picks · Esc┐",
+            ),
+            (
+                Mode::PrioritySet,
+                "┌ set priority (type to filter · Enter sets · Esc┐",
+            ),
+        ];
+        for (mode, want) in cases {
+            let popup = popup_box(&render_app(&picker_app(mode), 100, 30));
+            assert_eq!(popup.rows[0], want, "clipped title for {mode:?}");
+        }
+
+        // The PR picker is wide enough that its title is not clipped.
+        let popup = popup_box(&render_app(&picker_app(Mode::PrPicker), 100, 30));
+        assert!(
+            popup.rows[0].contains("Esc cancels) "),
+            "PR picker title unexpectedly clipped: {}",
+            popup.rows[0]
+        );
+    }
+
+    #[test]
+    fn golden_picker_type_ahead_filter_row() {
+        let mut app = picker_app(Mode::SelectField(1));
+        app.picker_filter_push('a');
+        app.picker_filter_push('l');
+        let popup = popup_box(&render_app(&app, 100, 30));
+
+        let text = popup.text();
+        assert!(text.contains("/ al"), "filter row missing: {text}");
+        assert!(text.contains("alpha"), "match missing: {text}");
+        assert!(!text.contains("beta"), "non-match still shown: {text}");
+    }
+
+    #[test]
+    fn golden_picker_reports_empty_and_no_match_distinctly() {
+        let mut empty = test_app();
+        empty.start_picker(vec![], 0);
+        empty.mode = Mode::SelectField(1);
+        assert!(
+            popup_box(&render_app(&empty, 100, 30))
+                .text()
+                .contains("nothing available")
+        );
+
+        let mut no_match = picker_app(Mode::SelectField(1));
+        no_match.picker_filter_push('z');
+        assert!(
+            popup_box(&render_app(&no_match, 100, 30))
+                .text()
+                .contains("no matches")
+        );
+    }
+
+    // ---- PR summary row model -------------------------------------------
+
+    fn pr_summary_fixture(body: &str) -> crate::provider::types::PrSummary {
+        use crate::provider::types::{
+            CheckContextInfo, CheckRollup, PrRef, PrState, PrSummary, ReviewDecision,
+            ReviewSummary, WorkflowRunInfo,
+        };
+
+        let run = |workflow: &str, n: u64| WorkflowRunInfo {
+            workflow: workflow.into(),
+            run_number: n,
+            event: "push".into(),
+            conclusion: Some("SUCCESS".into()),
+            created_at: chrono::Utc::now(),
+            url: format!("https://example.test/run/{n}"),
+        };
+
+        PrSummary {
+            pr: PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 7,
+            },
+            title: "Add a thing".into(),
+            body: body.into(),
+            state: PrState::Open,
+            is_draft: false,
+            base_ref: "main".into(),
+            head_ref: "feature".into(),
+            additions: 10,
+            deletions: 2,
+            changed_files: 3,
+            comment_count: 4,
+            review_thread_count: 1,
+            reviews: ReviewSummary {
+                decision: Some(ReviewDecision::Approved),
+                approved: 1,
+                changes_requested: 0,
+                commented: 2,
+            },
+            checks: CheckRollup {
+                state: Some("SUCCESS".into()),
+                contexts: vec![
+                    CheckContextInfo {
+                        name: "check-one".into(),
+                        conclusion: "SUCCESS".into(),
+                        url: "https://example.test/check/1".into(),
+                    },
+                    CheckContextInfo {
+                        name: "check-two".into(),
+                        conclusion: "FAILURE".into(),
+                        url: "https://example.test/check/2".into(),
+                    },
+                ],
+            },
+            pr_runs: vec![run("pr-workflow", 11)],
+            default_branch_name: "main".into(),
+            default_branch_runs: vec![run("main-workflow", 22)],
+        }
+    }
+
+    /// An app showing the PR summary popup for a PR with `body`.
+    fn pr_summary_app(body: &str) -> App {
+        use crate::provider::types::PrRef;
+
+        let mut app = test_app();
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        app.pr_target = Some(pr);
+        app.pr_summary = Some(Ok(pr_summary_fixture(body)));
+        app.mode = Mode::PrSummary;
+        app
+    }
+
+    /// The popup's navigable rows for an app rendered into a `frame_width`
+    /// wide terminal — the same call the key handler makes.
+    fn app_pr_targets(app: &App, frame_width: u16) -> Vec<PrTarget> {
+        pr_targets(app.pr_summary.as_ref(), pr_summary_inner_width(frame_width))
+    }
+
+    /// Index of the popup's first content row containing `needle`, expressed
+    /// in the same units as `PrTarget::line` (0 = first line under the top
+    /// border, with the popup unscrolled).
+    fn content_row_of(popup: &PopupBox, needle: &str) -> usize {
+        popup
+            .rows
+            .iter()
+            .skip(1) // row 0 is the top border
+            .position(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not found in popup:\n{}", popup.text()))
+    }
+
+    /// With a short body — no line wide enough to wrap — every navigable
+    /// target's `line` lands on the row that actually draws it.
+    #[test]
+    fn golden_pr_summary_targets_match_drawn_rows_short_body() {
+        let app = pr_summary_app("short body line\nanother short line");
+        let popup = popup_box(&render_app(&app, 100, 30));
+        let targets = app_pr_targets(&app, 100);
+
+        // PR header, 2 checks, 1 PR run, 1 default-branch run.
+        assert_eq!(targets.len(), 5, "target count");
+
+        for (i, needle) in [
+            (0usize, "o/r#7"),
+            (1, "check-one"),
+            (2, "check-two"),
+            (3, "pr-workflow"),
+            (4, "main-workflow"),
+        ] {
+            assert_eq!(
+                targets[i].line as usize,
+                content_row_of(&popup, needle),
+                "target {i} ({needle}) points at the wrong row:\n{}",
+                popup.text()
+            );
+        }
+    }
+
+    /// The selected row is the one that gets the highlight background, and
+    /// selection moves the scroll to that row.
+    #[test]
+    fn golden_pr_summary_selection_highlights_its_own_row() {
+        let mut app = pr_summary_app("short body");
+        let targets = app_pr_targets(&app, 100);
+        app.select_pr_target(1, &targets); // PR header → first check
+        assert_eq!(app.pr_sel, 1);
+        assert_eq!(app.pr_scroll, targets[1].line, "scroll snaps to the target");
+    }
+
+    /// Regression for the issue #87 defect: targets used to be computed from
+    /// the body's *unwrapped* source line count while the popup rendered it
+    /// wrapped, so a body line wider than the popup pushed every check and
+    /// run target out of step with the row that drew it. Both now come from
+    /// one row model, so a wrapping body cannot shift them.
+    #[test]
+    fn golden_pr_summary_targets_survive_a_wrapping_body() {
+        // Popup is 76 wide, so 74 columns of content: this wraps to 2 rows.
+        let long = "w".repeat(100);
+        let app = pr_summary_app(&long);
+        let popup = popup_box(&render_app(&app, 100, 30));
+        assert_eq!(popup.width, 76, "PR summary popup width");
+
+        let targets = app_pr_targets(&app, 100);
+        for (i, needle) in [
+            (0usize, "o/r#7"),
+            (1, "check-one"),
+            (2, "check-two"),
+            (3, "pr-workflow"),
+            (4, "main-workflow"),
+        ] {
+            assert_eq!(
+                targets[i].line as usize,
+                content_row_of(&popup, needle),
+                "target {i} ({needle}) drifted when the body wrapped:\n{}",
+                popup.text()
+            );
+        }
+    }
+
+    /// The row model orders the navigable rows as the popup lists them: the
+    /// PR header, each check, each PR run, then each default-branch run.
+    #[test]
+    fn golden_pr_targets_order_header_checks_runs_and_default_branch_runs() {
+        let app = pr_summary_app("short body");
+        let targets = app_pr_targets(&app, 100);
+
+        assert_eq!(targets.len(), 5); // header + 2 checks + 1 pr run + 1 branch run
+        assert_eq!(targets[0].url, "https://github.com/o/r/pull/7");
+        assert_eq!(targets[0].line, 0);
+        assert_eq!(targets[1].url, "https://example.test/check/1");
+        assert_eq!(targets[2].url, "https://example.test/check/2");
+        assert_eq!(targets[3].url, "https://example.test/run/11");
+        assert_eq!(targets[4].url, "https://example.test/run/22");
+
+        // Rows strictly increase — blank and heading rows sit between the
+        // sections without targets of their own.
+        for w in targets.windows(2) {
+            assert!(w[1].line > w[0].line, "targets must be in row order");
+        }
+    }
+
+    /// A wrapped logical line contributes several rows, but only its first
+    /// carries the URL — selecting it scrolls to where the item starts.
+    #[test]
+    fn golden_wrapped_rows_tag_only_their_first_row() {
+        let app = pr_summary_app("short body");
+        let rows = pr_summary_rows(app.pr_summary.as_ref(), &Theme::default(), 20);
+        let tagged = rows.iter().filter(|r| r.url.is_some()).count();
+        assert_eq!(
+            tagged, 5,
+            "a narrow width wraps rows but must not multiply targets"
+        );
+    }
+
+    /// A single-issue app with the detail pane open, for geometry assertions.
+    fn detail_app() -> App {
+        use crate::provider::types::RepoIssues;
+
+        let mut i = issue(vec![]);
+        i.body = (1..=40).map(|n| format!("body {n}\n")).collect();
+        let mut app = test_app();
+        app.state_filter = crate::tui::app::StateFilter::All;
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![i],
+        }]);
+        app.selected = 1;
+        app.open_detail();
+        app.detail_comments = Some(vec![test_comment("first"), test_comment("second")]);
+        app
+    }
+
+    /// Column of the detail pane's left border, found by scanning the top row
+    /// for the second box corner.
+    fn detail_pane_x(buf: &ratatui::buffer::Buffer) -> u16 {
+        (1..buf.area().width)
+            .find(|&x| cell_at(buf, x, 0) == "┌")
+            .expect("detail pane border not found")
+    }
+
+    /// Row of the horizontal rule separating the body region from the
+    /// comments region, i.e. the body region's bottom border.
+    fn detail_region_split_y(buf: &ratatui::buffer::Buffer, pane_x: u16) -> u16 {
+        (1..buf.area().height)
+            .find(|&y| cell_at(buf, pane_x, y) == "└")
+            .expect("body region bottom border not found")
+    }
+
+    /// The drawn detail-pane geometry at several terminal sizes. Expected
+    /// values are written out by hand rather than recomputed from the
+    /// layout constants, so a change to those constants shows up here.
+    #[test]
+    fn golden_detail_pane_geometry() {
+        // (cols, rows, expected pane x, expected body region height)
+        //
+        // Pane x: the list takes 40% of the full width, the detail pane the
+        // rest. Body height: main area is rows - 2 (info + status lines),
+        // split 45/55 with a 6-row floor on the body.
+        for (cols, rows, want_x, want_body_h) in [
+            (80u16, 24u16, 32u16, 9u16), // main 22 → body 45% = 9
+            (100, 32, 40, 13),           // main 30 → body 45% = 13
+            (200, 60, 80, 26),           // main 58 → body 45% = 26
+        ] {
+            let buf = render_app(&detail_app(), cols, rows);
+            let pane_x = detail_pane_x(&buf);
+            assert_eq!(pane_x, want_x, "detail pane x at {cols}x{rows}");
+
+            let split_y = detail_region_split_y(&buf, pane_x);
+            // Body region spans rows 0..=split_y, so its height is split_y + 1.
+            assert_eq!(
+                split_y + 1,
+                want_body_h,
+                "body region height at {cols}x{rows}"
+            );
+
+            // The comments region fills the rest of the main area.
+            let main_h = rows - 2;
+            assert_eq!(
+                main_h - want_body_h,
+                layout::detail_split(main_h).1,
+                "comments region height at {cols}x{rows}"
+            );
+        }
+    }
+
+    /// The width the key handler wraps and clamps against must be the width
+    /// actually drawn — `layout::detail_inner_width` is what
+    /// `event::detail_metrics` feeds into every scroll clamp.
+    #[test]
+    fn golden_detail_pane_width_matches_drawn_pane() {
+        for (cols, rows) in [(80u16, 24u16), (100, 32), (200, 60)] {
+            let buf = render_app(&detail_app(), cols, rows);
+            let pane_x = detail_pane_x(&buf);
+            let drawn_inner = cols - pane_x - 2; // minus both border columns
+            assert_eq!(
+                layout::detail_inner_width(cols),
+                drawn_inner,
+                "detail_inner_width disagrees with the drawn pane at {cols}x{rows}"
+            );
+        }
     }
 }

@@ -388,35 +388,13 @@ pub enum DetailSel {
 }
 
 /// One open-able row in the PR summary popup (`Mode::PrSummary`): the PR
-/// header, a check, or a workflow run. `line` is the row's index in the
-/// popup's line-based scroll, computed by `App::pr_targets` to match
-/// `draw_pr_summary_popup`'s layout in `ui.rs`.
+/// header, a check, or a workflow run. `line` is the row's position in the
+/// popup's drawn rows, read straight off the row model by `ui::pr_targets`
+/// rather than derived a second time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrTarget {
     pub url: String,
     pub line: u16,
-}
-
-/// Body region's share of the detail pane height (percent); the comments
-/// region takes the rest. Mirrored by the `Layout::vertical` split in
-/// `ui::draw_detail`.
-const DETAIL_BODY_PCT: u16 = 45;
-/// Minimum outer height for the body region so its metadata header stays
-/// visible even in a short terminal.
-const DETAIL_BODY_MIN_H: u16 = 6;
-
-/// Split the detail pane's total height into `(body_region_h, comments_region_h)`,
-/// each including its own border rows. One source of truth for the renderer's
-/// layout and the key handler's scroll clamps.
-pub fn detail_split(area_h: u16) -> (u16, u16) {
-    // Too short to host two bordered regions: give it all to the body.
-    if area_h <= DETAIL_BODY_MIN_H + 3 {
-        return (area_h, 0);
-    }
-    let body = ((area_h as u32 * DETAIL_BODY_PCT as u32 / 100) as u16).max(DETAIL_BODY_MIN_H);
-    // Always leave the comments region at least three rows.
-    let body = body.min(area_h.saturating_sub(3));
-    (body, area_h - body)
 }
 
 /// Which element of the inline comment section (`Mode::CommentEditor`) has
@@ -970,15 +948,6 @@ pub const INPUT_POPUP_WIDTH: u16 = 60;
 
 pub fn input_popup_width(frame_width: u16) -> u16 {
     INPUT_POPUP_WIDTH.min(frame_width).saturating_sub(2)
-}
-
-/// The inline comment section's inner (text) width: it lives in the detail
-/// pane, which is the right 60% of the frame (see `ui::draw`'s 40/60 split),
-/// minus the section's own border columns. One source of truth for the
-/// renderer and the key handler so wrap geometry always agrees.
-pub fn comment_pane_width(frame_width: u16) -> u16 {
-    let right = (frame_width as u32 * 60 / 100) as u16;
-    right.saturating_sub(2)
 }
 
 /// The char index to start displaying from so a single-line input's cursor
@@ -1602,60 +1571,16 @@ impl App {
         self.pr_sel = 0;
     }
 
-    /// Selectable rows in the open PR summary, in display order: the PR
-    /// header, then each check, each PR workflow run, each default-branch
-    /// run. Empty until the summary has loaded.
-    pub fn pr_targets(&self) -> Vec<PrTarget> {
-        let (Some(pr), Some(Ok(s))) = (&self.pr_target, &self.pr_summary) else {
-            return Vec::new();
-        };
-        let mut targets = vec![PrTarget {
-            url: pr.url(),
-            line: 0,
-        }];
-        // Mirrors `draw_pr_summary_popup`'s line layout (src/tui/ui.rs) so
-        // `Tab` navigation and the highlighted row always agree with what's
-        // drawn — the same convention `detail_metrics` uses for the detail
-        // pane. Fixed lines before the first check context: title,
-        // state/diffstat, blank, <body>, blank, reviews, comments, blank,
-        // checks header = 8 fixed lines plus the body's own line count.
-        let mut line: u16 = 8 + s.body.lines().count() as u16;
-        for c in &s.checks.contexts {
-            targets.push(PrTarget {
-                url: c.url.clone(),
-                line,
-            });
-            line += 1;
-        }
-        if !s.pr_runs.is_empty() {
-            line += 2; // blank + "PR workflow runs:" header
-            for r in &s.pr_runs {
-                targets.push(PrTarget {
-                    url: r.url.clone(),
-                    line,
-                });
-                line += 1;
-            }
-        }
-        if !s.default_branch_runs.is_empty() {
-            line += 2; // blank + "── default branch (...) ──" header
-            for r in &s.default_branch_runs {
-                targets.push(PrTarget {
-                    url: r.url.clone(),
-                    line,
-                });
-                line += 1;
-            }
-        }
-        targets
-    }
-
     /// `Tab` (`delta = 1`) / `Shift+Tab` (`delta = -1`): cycle the PR summary
     /// selection among its open-able rows, wrapping at both ends, snapping
     /// the scroll to bring the newly selected row into view. No-op while
     /// the summary hasn't loaded.
-    pub fn select_pr_target(&mut self, delta: isize) {
-        let targets = self.pr_targets();
+    ///
+    /// `targets` comes from `ui::pr_targets`, which reads them off the same
+    /// row model the popup draws — this module deliberately does not compute
+    /// them, so there is nothing here that could fall out of step with the
+    /// rendered layout.
+    pub fn select_pr_target(&mut self, delta: isize, targets: &[PrTarget]) {
         if targets.is_empty() {
             return;
         }
@@ -1666,8 +1591,8 @@ impl App {
     }
 
     /// URL the currently selected PR summary row would open with `o`/Enter.
-    pub fn pr_selected_url(&self) -> Option<String> {
-        self.pr_targets().get(self.pr_sel).map(|t| t.url.clone())
+    pub fn pr_selected_url(&self, targets: &[PrTarget]) -> Option<String> {
+        targets.get(self.pr_sel).map(|t| t.url.clone())
     }
 
     /// Close the PR picker without selecting anything.
@@ -3658,16 +3583,8 @@ mod tests {
         assert_eq!(app.comment_editor.text(), "first\nsecond");
     }
 
-    #[test]
-    fn detail_split_gives_body_and_comments_regions() {
-        let (body, comments) = detail_split(30);
-        assert!(body >= DETAIL_BODY_MIN_H);
-        assert_eq!(body + comments, 30);
-        assert!(comments >= 3);
-        // A tiny pane collapses to body-only.
-        let (b2, c2) = detail_split(6);
-        assert_eq!((b2, c2), (6, 0));
-    }
+    // `detail_split` moved to `tui::layout`, which owns all screen geometry;
+    // its tests moved with it.
 
     #[test]
     fn start_edit_selected_card_noop_when_pane_closed() {
@@ -4251,71 +4168,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pr_targets_orders_header_checks_runs_and_default_branch_runs() {
-        let mut app = two_repo_app();
-        let pr = PrRef {
-            owner: "o".into(),
-            repo: "r".into(),
-            number: 1,
-        };
-        app.open_pr_summary(pr.clone());
-        app.set_pr_summary(&pr, Ok(sample_pr_summary_with_checks(pr.clone())));
-
-        let targets = app.pr_targets();
-        assert_eq!(targets.len(), 5); // header + 2 checks + 1 pr_run + 1 default_branch_run
-        assert_eq!(targets[0].url, pr.url());
-        assert_eq!(targets[0].line, 0);
-        assert_eq!(targets[1].url, "https://github.com/o/r/runs/1");
-        assert_eq!(targets[2].url, "https://github.com/o/r/runs/2");
-        assert_eq!(targets[3].url, "https://github.com/o/r/actions/runs/42");
-        assert_eq!(targets[4].url, "https://github.com/o/r/actions/runs/7");
-        // Each target's line strictly increases (blank/header rows sit
-        // between the runs sections without their own targets).
-        for w in targets.windows(2) {
-            assert!(w[1].line > w[0].line);
-        }
+    /// Targets as `ui::pr_targets` would report them: the PR header at row 0,
+    /// then rows further down the popup. Selection arithmetic only cares
+    /// about the sequence, so it is tested against plain data — the mapping
+    /// from a summary to these rows is `ui`'s to verify.
+    fn sample_targets() -> Vec<PrTarget> {
+        [
+            ("https://github.com/o/r/pull/1", 0u16),
+            ("https://github.com/o/r/runs/1", 12),
+            ("https://github.com/o/r/runs/2", 13),
+            ("https://github.com/o/r/actions/runs/42", 16),
+            ("https://github.com/o/r/actions/runs/7", 19),
+        ]
+        .into_iter()
+        .map(|(url, line)| PrTarget {
+            url: url.into(),
+            line,
+        })
+        .collect()
     }
 
     #[test]
     fn select_pr_target_wraps_and_snaps_scroll() {
         let mut app = two_repo_app();
-        let pr = PrRef {
-            owner: "o".into(),
-            repo: "r".into(),
-            number: 1,
-        };
-        app.open_pr_summary(pr.clone());
-        app.set_pr_summary(&pr, Ok(sample_pr_summary_with_checks(pr.clone())));
-        let targets = app.pr_targets();
+        let targets = sample_targets();
 
         assert_eq!(app.pr_sel, 0);
-        app.select_pr_target(1);
+        app.select_pr_target(1, &targets);
         assert_eq!(app.pr_sel, 1);
         assert_eq!(app.pr_scroll, targets[1].line);
 
         // Shift+Tab from the first row wraps to the last.
         app.pr_sel = 0;
-        app.select_pr_target(-1);
+        app.select_pr_target(-1, &targets);
         assert_eq!(app.pr_sel, targets.len() - 1);
         assert_eq!(app.pr_scroll, targets.last().unwrap().line);
     }
 
     #[test]
+    fn select_pr_target_is_a_noop_without_targets() {
+        let mut app = two_repo_app();
+        app.select_pr_target(1, &[]);
+        assert_eq!(app.pr_sel, 0);
+        assert_eq!(app.pr_scroll, 0);
+    }
+
+    #[test]
     fn pr_selected_url_tracks_selection() {
         let mut app = two_repo_app();
-        let pr = PrRef {
-            owner: "o".into(),
-            repo: "r".into(),
-            number: 1,
-        };
-        app.open_pr_summary(pr.clone());
-        app.set_pr_summary(&pr, Ok(sample_pr_summary_with_checks(pr.clone())));
+        let targets = sample_targets();
 
-        assert_eq!(app.pr_selected_url(), Some(pr.url()));
-        app.select_pr_target(1);
         assert_eq!(
-            app.pr_selected_url(),
+            app.pr_selected_url(&targets),
+            Some("https://github.com/o/r/pull/1".to_string())
+        );
+        app.select_pr_target(1, &targets);
+        assert_eq!(
+            app.pr_selected_url(&targets),
             Some("https://github.com/o/r/runs/1".to_string())
         );
     }
@@ -4330,7 +4239,7 @@ mod tests {
         };
         app.open_pr_summary(pr1.clone());
         app.set_pr_summary(&pr1, Ok(sample_pr_summary_with_checks(pr1.clone())));
-        app.select_pr_target(1);
+        app.select_pr_target(1, &sample_targets());
         assert_eq!(app.pr_sel, 1);
 
         app.refresh_pr_summary();
@@ -4338,14 +4247,14 @@ mod tests {
         assert!(app.pr_summary.is_none());
 
         app.set_pr_summary(&pr1, Ok(sample_pr_summary_with_checks(pr1.clone())));
-        app.select_pr_target(1);
+        app.select_pr_target(1, &sample_targets());
         assert_eq!(app.pr_sel, 1);
         app.close_pr_summary();
         assert_eq!(app.pr_sel, 0);
 
         app.open_pr_summary(pr1.clone());
         app.set_pr_summary(&pr1.clone(), Ok(sample_pr_summary_with_checks(pr1)));
-        app.select_pr_target(1);
+        app.select_pr_target(1, &sample_targets());
         assert_eq!(app.pr_sel, 1);
         let pr2 = PrRef {
             owner: "o".into(),

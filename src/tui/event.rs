@@ -14,9 +14,9 @@ use crate::provider::types::{
 use super::app::{
     App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorTarget, Focus,
     ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH, InputKind, InputState,
-    IssueForm, Mode, StateFilter, comment_pane_width, detail_split, issue_form_width,
-    priority_label_set, priority_set_options,
+    IssueForm, Mode, StateFilter, issue_form_width, priority_label_set, priority_set_options,
 };
+use super::layout;
 use super::theme::Theme;
 use super::ui;
 
@@ -480,6 +480,14 @@ fn handle_pr_picker_key(
     }
 }
 
+/// The PR summary popup's navigable rows at the live terminal width. Read off
+/// the same row model the popup draws, so a target's row index is exactly the
+/// row it highlights.
+fn pr_targets(app: &App) -> Vec<crate::tui::app::PrTarget> {
+    let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+    ui::pr_targets(app.pr_summary.as_ref(), ui::pr_summary_inner_width(cols))
+}
+
 fn handle_pr_summary_key(
     app: &mut App,
     key: KeyEvent,
@@ -494,10 +502,16 @@ fn handle_pr_summary_key(
         KeyCode::Char('k') | KeyCode::Up => {
             app.pr_scroll = app.pr_scroll.saturating_sub(1);
         }
-        KeyCode::Tab => app.select_pr_target(1),
-        KeyCode::BackTab => app.select_pr_target(-1),
+        KeyCode::Tab => {
+            let targets = pr_targets(app);
+            app.select_pr_target(1, &targets);
+        }
+        KeyCode::BackTab => {
+            let targets = pr_targets(app);
+            app.select_pr_target(-1, &targets);
+        }
         KeyCode::Char('o') | KeyCode::Enter => {
-            if let Some(url) = app.pr_selected_url() {
+            if let Some(url) = app.pr_selected_url(&pr_targets(app)) {
                 match open::that(&url) {
                     Ok(()) => app.status = Some(format!("opened {url}")),
                     Err(e) => app.status = Some(format!("open failed: {e}")),
@@ -959,24 +973,22 @@ fn submit_comment(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<A
 
 /// The wrap width the inline comment section is currently rendered at.
 fn comment_wrap_width() -> usize {
-    let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-    comment_pane_width(cols) as usize
+    layout::detail_inner_width(layout::from_terminal_size().width) as usize
 }
 
 /// The detail pane's current inner width and the body/comments regions'
-/// viewport heights, derived from the live terminal size. Mirrors `ui::draw`'s
-/// 40/60 horizontal split and `detail_split`'s vertical split so the key
-/// handler's scroll clamps agree with what is drawn.
+/// viewport heights. Asks `tui::layout` for the same regions `ui::draw`
+/// places, so the scroll clamps here cannot disagree with what is drawn.
 fn detail_metrics() -> (u16, u16, u16) {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let inner_w = comment_pane_width(cols);
-    // Main area = total rows minus the info + bottom status lines.
-    let main_h = rows.saturating_sub(2);
-    let (body_h, comments_h) = detail_split(main_h);
+    let frame = layout::frame(layout::from_terminal_size());
+    let Some(detail) = layout::panes(frame.main, true).detail else {
+        return (0, 0, 0);
+    };
+    let regions = layout::detail_regions(detail);
     (
-        inner_w,
-        body_h.saturating_sub(2),
-        comments_h.saturating_sub(2),
+        layout::inner_width(detail),
+        layout::inner_height(regions.body),
+        regions.comments.map_or(0, layout::inner_height),
     )
 }
 
