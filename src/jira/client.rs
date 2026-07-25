@@ -7,6 +7,7 @@ use super::{
     synthetic_priority_id_to_name, text_to_adf,
 };
 use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result};
+use crate::provider::http::build_http_client;
 use crate::provider::types::{
     Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
     RepoIssues, RepoLabel,
@@ -26,23 +27,11 @@ pub struct Client {
 
 impl Client {
     pub fn new(creds: JiraCreds) -> anyhow::Result<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
         // Jira Cloud uses HTTP Basic auth: base64(email:api_token).
         let basic = base64::engine::general_purpose::STANDARD
             .encode(format!("{}:{}", creds.email, creds.token));
-        let mut auth = reqwest::header::HeaderValue::from_str(&format!("Basic {basic}"))?;
-        auth.set_sensitive(true);
-        headers.insert(reqwest::header::AUTHORIZATION, auth);
-        headers.insert(
-            reqwest::header::ACCEPT,
-            reqwest::header::HeaderValue::from_static("application/json"),
-        );
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("gh-issues/", env!("CARGO_PKG_VERSION")))
-            .default_headers(headers)
-            .build()?;
         Ok(Self {
-            http,
+            http: build_http_client(&format!("Basic {basic}"), &[("accept", "application/json")])?,
             base_url: creds.base_url,
         })
     }
