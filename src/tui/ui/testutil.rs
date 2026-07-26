@@ -186,7 +186,7 @@ pub(super) fn popup_box(buf: &ratatui::buffer::Buffer) -> PopupBox {
 /// leading clear entry, the second real option highlighted.
 pub(super) fn picker_app(mode: Mode) -> App {
     let mut app = test_app();
-    app.start_picker(
+    app.picker.start(
         vec!["—".into(), "alpha".into(), "beta".into(), "gamma".into()],
         2,
     );
@@ -209,7 +209,7 @@ pub(super) fn detail_app() -> App {
     }]);
     app.selected = 1;
     app.open_detail();
-    app.detail_comments = Some(vec![test_comment("first"), test_comment("second")]);
+    app.detail.comments = Some(vec![test_comment("first"), test_comment("second")]);
     app
 }
 

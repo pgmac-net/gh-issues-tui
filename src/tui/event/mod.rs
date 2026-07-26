@@ -154,15 +154,15 @@ pub(crate) fn nav(
 ) {
     let prev = app.selected_issue().map(|i| i.id.clone());
     action(app);
-    if !app.detail_open {
+    if !app.detail.open {
         return;
     }
     let current = app.selected_issue().map(|i| i.id.clone());
     if current == prev {
         return;
     }
-    app.reset_detail_scroll();
-    app.detail_comments = None;
+    app.detail.reset_scroll();
+    app.detail.comments = None;
     if let Some(id) = current {
         spawn_comments(client, id, tx);
     }
@@ -171,7 +171,7 @@ pub(crate) fn nav(
 /// The issue id whose comment thread should be refetched after a mutation
 /// completes, when the detail pane is open and showing an issue.
 pub(crate) fn comments_refresh_target(app: &App) -> Option<String> {
-    if !app.detail_open {
+    if !app.detail.open {
         return None;
     }
     app.selected_issue().map(|i| i.id.clone())
@@ -217,9 +217,9 @@ pub(crate) fn handle_app_event(
             if app.selected_issue().map(|i| i.id.clone()) == Some(issue_id) {
                 match result {
                     Ok(c) => {
-                        app.detail_comments = Some(c);
+                        app.detail.comments = Some(c);
                         // Keep the selection valid within the new comment count.
-                        app.clamp_detail_sel();
+                        app.detail.clamp_sel();
                     }
                     Err(e) => app.status = Some(format!("comments failed: {e}")),
                 }
@@ -259,11 +259,11 @@ pub(crate) fn handle_app_event(
             // Stale unless we are still in Normal mode waiting on this
             // issue's options with the selection unmoved.
             if app.mode != Mode::Normal
-                || app.priority_pick_issue.as_deref() != Some(issue_id.as_str())
+                || app.picker.priority_issue.as_deref() != Some(issue_id.as_str())
                 || app.selected_issue().is_none_or(|i| i.id != issue_id)
             {
-                if app.priority_pick_issue.as_deref() == Some(issue_id.as_str()) {
-                    app.priority_pick_issue = None;
+                if app.picker.priority_issue.as_deref() == Some(issue_id.as_str()) {
+                    app.picker.priority_issue = None;
                 }
                 return;
             }
@@ -272,7 +272,7 @@ pub(crate) fn handle_app_event(
                     let options = priority_set_options(&labels);
                     if options.len() == 1 {
                         app.status = Some("no priority:* labels on this repo".into());
-                        app.priority_pick_issue = None;
+                        app.picker.priority_issue = None;
                     } else {
                         // Highlight the issue's current priority when set.
                         let idx = app
@@ -283,13 +283,13 @@ pub(crate) fn handle_app_event(
                             })
                             .unwrap_or(0);
                         app.status = None;
-                        app.start_picker(options, idx);
+                        app.picker.start(options, idx);
                         app.mode = Mode::PrioritySet;
                     }
                 }
                 Err(e) => {
                     app.status = Some(format!("priorities failed: {e}"));
-                    app.priority_pick_issue = None;
+                    app.picker.priority_issue = None;
                 }
             }
         }
@@ -297,11 +297,11 @@ pub(crate) fn handle_app_event(
             // Stale unless we are still in Normal mode waiting on this
             // issue's options with the selection unmoved.
             if app.mode != Mode::Normal
-                || app.label_pick_issue.as_deref() != Some(issue_id.as_str())
+                || app.picker.label_issue.as_deref() != Some(issue_id.as_str())
                 || app.selected_issue().is_none_or(|i| i.id != issue_id)
             {
-                if app.label_pick_issue.as_deref() == Some(issue_id.as_str()) {
-                    app.label_pick_issue = None;
+                if app.picker.label_issue.as_deref() == Some(issue_id.as_str()) {
+                    app.picker.label_issue = None;
                 }
                 return;
             }
@@ -309,11 +309,11 @@ pub(crate) fn handle_app_event(
                 Ok(labels) => {
                     if labels.is_empty() {
                         app.status = Some("no labels on this repo".into());
-                        app.label_pick_issue = None;
+                        app.picker.label_issue = None;
                     } else {
                         let options: Vec<String> = labels.iter().map(|l| l.name.clone()).collect();
                         // Pre-check the issue's current labels.
-                        app.multi_selected = app
+                        app.picker.multi_selected = app
                             .selected_issue()
                             .expect("checked above")
                             .labels
@@ -323,13 +323,13 @@ pub(crate) fn handle_app_event(
                             })
                             .collect();
                         app.status = None;
-                        app.start_picker(options, 0);
+                        app.picker.start(options, 0);
                         app.mode = Mode::LabelsSet;
                     }
                 }
                 Err(e) => {
                     app.status = Some(format!("labels failed: {e}"));
-                    app.label_pick_issue = None;
+                    app.picker.label_issue = None;
                 }
             }
         }
@@ -337,7 +337,7 @@ pub(crate) fn handle_app_event(
             if let Err(e) = result.as_ref() {
                 app.status = Some(format!("PR summary failed: {e}"));
             }
-            app.set_pr_summary(&pr, *result);
+            app.pr.set_summary(&pr, *result);
         }
     }
 }
@@ -376,7 +376,7 @@ pub(crate) mod prelude {
     pub use crate::provider::Provider;
     pub use crate::provider::types::{IssueState, PrRef};
     pub use crate::tui::app::{
-        App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorTarget, Focus,
+        App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorState, EditorTarget, Focus,
         ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH, InputKind,
         InputState, IssueForm, Mode, StateFilter, issue_form_width, priority_label_set,
     };
@@ -400,21 +400,21 @@ mod tests {
     #[test]
     fn comments_refresh_target_is_selected_issue_when_pane_open() {
         let (mut app, issue_id) = app_with_issue(&[]);
-        app.detail_open = true;
+        app.detail.open = true;
         assert_eq!(comments_refresh_target(&app), Some(issue_id));
     }
 
     #[test]
     fn comments_refresh_target_none_when_pane_closed() {
         let (mut app, _issue_id) = app_with_issue(&[]);
-        app.detail_open = false;
+        app.detail.open = false;
         assert_eq!(comments_refresh_target(&app), None);
     }
 
     #[test]
     fn comments_refresh_target_none_on_repo_header() {
         let (mut app, _issue_id) = app_with_issue(&[]);
-        app.detail_open = true;
+        app.detail.open = true;
         app.selected = 0; // repo header row
         assert_eq!(comments_refresh_target(&app), None);
     }

@@ -18,10 +18,13 @@ mod rows;
 #[cfg(test)]
 mod tests;
 
+pub use detail::DetailState;
 pub use editor::*;
 pub use filters::*;
 pub use form::*;
 pub use mode::*;
+pub use picker::PickerState;
+pub use pr::PrState;
 
 use prelude::*;
 
@@ -50,41 +53,20 @@ pub struct App {
     pub sort_key: SortKey,
     pub sort_desc: bool,
     pub focus: Focus,
-    /// Whether the detail pane (right split) is open. `focus` says which
-    /// pane has keyboard focus while it is.
-    pub detail_open: bool,
+    /// The detail pane (right split) and its two scrolling regions.
+    pub detail: DetailState,
     pub mode: Mode,
     pub input: InputState,
     pub filter_menu_idx: usize,
-    /// Available options for the current select-field popup.
-    pub select_options: Vec<String>,
-    /// Highlighted position within the *filtered* picker view.
-    pub select_idx: usize,
-    /// Type-ahead filter narrowing the picker view; reset on picker open.
-    pub select_filter: String,
-    /// Working set of toggled indices for the multi-select popup
-    /// (committed to the form on Enter, discarded on Esc).
-    pub multi_selected: std::collections::HashSet<usize>,
+    /// The option-picker popup's state, for every mode that shows one.
+    pub picker: PickerState,
     /// The new-issue form, present while it is open.
     pub issue_form: Option<IssueForm>,
-    /// Multi-line editor backing `Mode::CommentEditor`; reset each time the
-    /// editor opens or closes.
-    pub comment_editor: BodyEditor,
-    /// Which element of the comment section has keys; reset to `Editor`
-    /// each time the editor opens.
-    pub comment_focus: CommentFocus,
-    /// What the inline editor writes on save (add comment / edit comment /
-    /// edit body); set each time the editor opens.
-    pub editor_target: EditorTarget,
+    /// The inline comment/description editor's session state.
+    pub editor: EditorState,
     /// Which button has keys in the `Mode::ConfirmState` popup; reset to
     /// `No` each time the popup opens.
     pub confirm_choice: ConfirmChoice,
-    /// Issue id the set-priority picker was requested for; guards against
-    /// stale option responses and selection drift while options load.
-    pub priority_pick_issue: Option<String>,
-    /// Issue id the edit-labels picker was requested for; guards against
-    /// stale option responses and selection drift while options load.
-    pub label_pick_issue: Option<String>,
     /// Cursor position for the calendar date picker.
     pub calendar_cursor: NaiveDate,
     pub loading: bool,
@@ -97,28 +79,8 @@ pub struct App {
     pub rate_limit: Option<RateLimitData>,
     /// Persistent rate-limit error (shown until cleared by a successful fetch).
     pub rate_limit_error: Option<String>,
-    pub detail_comments: Option<Vec<Comment>>,
-    /// Which region of the detail pane has focus (body or a comment card).
-    /// Tab/Shift+Tab move it; `j/k` scroll the selected region; `e` edits it.
-    pub detail_sel: DetailSel,
-    /// Visual-row scroll offset within the body region.
-    pub body_scroll: u16,
-    /// Visual-row scroll offset into the stacked comments paragraph. Selecting
-    /// a comment snaps this to that comment's top; `j/k` then scroll within
-    /// the selected comment's own extent.
-    pub comments_scroll: u16,
-    /// Candidate PR links, populated when more than one is found (`Mode::PrPicker`).
-    pub pr_links: Vec<PrRef>,
-    /// The PR currently being fetched or shown; guards against a stale
-    /// `PrSummary` response landing after the target moved on.
-    pub pr_target: Option<PrRef>,
-    /// `None` while the summary fetch for `pr_target` is in flight.
-    pub pr_summary: Option<Result<PrSummary, String>>,
-    pub pr_scroll: u16,
-    /// Index into `pr_targets()` — the PR summary's open-able row (PR header,
-    /// a check, or a workflow run) that `o`/Enter will open and that the
-    /// popup highlights. `Tab`/`Shift+Tab` move it.
-    pub pr_sel: usize,
+    /// The PR summary popup and the links that feed it.
+    pub pr: PrState,
     pub should_quit: bool,
 }
 
@@ -148,21 +110,14 @@ impl App {
             sort_key: SortKey::Updated,
             sort_desc: true,
             focus: Focus::List,
-            detail_open: false,
+            detail: DetailState::default(),
             mode: Mode::Normal,
             input: InputState::default(),
             filter_menu_idx: 0,
-            select_options: Vec::new(),
-            select_idx: 0,
-            select_filter: String::new(),
-            multi_selected: Default::default(),
+            picker: PickerState::default(),
             issue_form: None,
-            comment_editor: BodyEditor::default(),
-            comment_focus: CommentFocus::Editor,
-            editor_target: EditorTarget::NewComment,
+            editor: EditorState::default(),
             confirm_choice: ConfirmChoice::No,
-            priority_pick_issue: None,
-            label_pick_issue: None,
             calendar_cursor: Utc::now().date_naive(),
             loading: true,
             auto_refreshing: false,
@@ -170,20 +125,11 @@ impl App {
             status: None,
             rate_limit: None,
             rate_limit_error: None,
-            detail_comments: None,
-            detail_sel: DetailSel::Body,
-            body_scroll: 0,
-            comments_scroll: 0,
-            pr_links: Vec::new(),
-            pr_target: None,
-            pr_summary: None,
-            pr_scroll: 0,
-            pr_sel: 0,
+            pr: PrState::default(),
             should_quit: false,
         }
     }
 
-    /// Open an option picker: set its options and initial highlight, and
     /// Whether the auto-refresh ticker may fire now: not while a fetch is
     /// in flight, rate-limited, or anything interactive is open (only the
     /// passive Normal and Help modes qualify).
@@ -284,17 +230,17 @@ impl App {
         self.state_filter = StateFilter::Open;
         self.selected = 0;
         self.focus = Focus::List;
-        self.detail_open = false;
-        self.detail_comments = None;
-        self.reset_detail_scroll();
-        self.clear_pr_state();
+        self.detail.open = false;
+        self.detail.comments = None;
+        self.detail.reset_scroll();
+        self.pr = PrState::default();
         self.loading = true;
     }
 
     /// Tab / Shift+Tab: move focus to the other pane. With two panes the
     /// direction doesn't matter; no-op when the split is closed.
     pub fn cycle_focus(&mut self) {
-        if self.detail_open {
+        if self.detail.open {
             self.focus = match self.focus {
                 Focus::List => Focus::Detail,
                 Focus::Detail => Focus::List,
@@ -318,4 +264,6 @@ pub(crate) mod prelude {
     pub use super::mode::*;
 
     pub use super::App;
+
+    pub use super::pr::PrState;
 }

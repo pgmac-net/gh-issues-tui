@@ -85,8 +85,10 @@ pub enum Focus {
 /// of the comment cards (0-indexed). Tab/Shift+Tab cycle through
 /// `Body → Comment(0) → … → Comment(n-1) → Body`; the selected region is the
 /// one `j/k` scroll and `e` edits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailSel {
+    /// The pane opens on the body, and an empty thread falls back to it.
+    #[default]
     Body,
     Comment(usize),
 }
@@ -103,8 +105,10 @@ pub struct PrTarget {
 
 /// Which element of the inline comment section (`Mode::CommentEditor`) has
 /// keys: the multi-line editor itself, or one of its two buttons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommentFocus {
+    /// The editor has keys when the widget opens.
+    #[default]
     Editor,
     Save,
     Cancel,
@@ -113,9 +117,10 @@ pub enum CommentFocus {
 /// What the inline editor (`Mode::CommentEditor`) writes on save. All three
 /// share the same multi-line-editor + Save/Cancel widget; only the mutation
 /// and the header text differ.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum EditorTarget {
     /// Add a new comment to the selected issue (`c`).
+    #[default]
     NewComment,
     /// Edit an existing comment by its backend id (`e` on a comment card).
     EditComment { comment_id: String },

@@ -29,19 +29,19 @@ pub(crate) fn handle_filter_menu_key(app: &mut App, key: KeyEvent) {
                 } else {
                     &app.filters.status
                 };
-                app.multi_selected = options
+                app.picker.multi_selected = options
                     .iter()
                     .enumerate()
                     .filter(|(_, o)| current.iter().any(|c| c.eq_ignore_ascii_case(o)))
                     .map(|(i, _)| i)
                     .collect();
-                app.start_picker(options, 0);
+                app.picker.start(options, 0);
                 app.mode = Mode::SelectFieldMulti(idx);
             } else if App::is_select_field(idx) {
                 let options = app.compute_select_options(idx);
                 let current = app.current_filter_value(idx);
                 let initial = options.iter().position(|v| v == &current).unwrap_or(0);
-                app.start_picker(options, initial);
+                app.picker.start(options, initial);
                 app.mode = Mode::SelectField(idx);
             } else if App::is_calendar_field(idx) {
                 app.calendar_init(idx);
@@ -62,9 +62,9 @@ pub(crate) fn handle_select_field_key(app: &mut App, key: KeyEvent, idx: usize) 
     }
     match key.code {
         KeyCode::Esc => app.mode = Mode::FilterMenu,
-        KeyCode::Enter => match app.picker_selected_original() {
+        KeyCode::Enter => match app.picker.selected_original() {
             Some(orig) => {
-                let raw = app.select_options[orig].clone();
+                let raw = app.picker.options[orig].clone();
                 let value = if raw == "\u{2014}" {
                     String::new()
                 } else {
@@ -75,7 +75,7 @@ pub(crate) fn handle_select_field_key(app: &mut App, key: KeyEvent, idx: usize) 
             }
             // No options at all → close; filter matching nothing → no-op
             // so the filter can be corrected.
-            None if app.select_options.is_empty() => app.mode = Mode::FilterMenu,
+            None if app.picker.options.is_empty() => app.mode = Mode::FilterMenu,
             None => {}
         },
         _ => {}
@@ -89,18 +89,16 @@ pub(crate) fn handle_select_field_multi_key(app: &mut App, key: KeyEvent, idx: u
     match key.code {
         KeyCode::Esc => app.mode = Mode::FilterMenu, // discard toggles
         KeyCode::Char(' ') => {
-            if let Some(orig) = app.picker_selected_original()
-                && !app.multi_selected.remove(&orig)
-            {
-                app.multi_selected.insert(orig);
+            if let Some(orig) = app.picker.selected_original() {
+                app.picker.toggle_multi(orig);
             }
         }
         KeyCode::Enter => {
-            let mut picked: Vec<usize> = app.multi_selected.iter().copied().collect();
+            let mut picked: Vec<usize> = app.picker.multi_selected.iter().copied().collect();
             picked.sort();
             let values: Vec<String> = picked
                 .into_iter()
-                .filter_map(|i| app.select_options.get(i).cloned())
+                .filter_map(|i| app.picker.options.get(i).cloned())
                 .collect();
             app.apply_multi_filter(idx, values);
             app.mode = Mode::FilterMenu;
@@ -187,14 +185,14 @@ mod tests {
         assert!(picker_common_key(&mut app, key(KeyCode::Char('a')), true));
         // "a" matches alpha/beta/gamma... narrow further.
         assert!(picker_common_key(&mut app, key(KeyCode::Char('m')), true));
-        assert_eq!(app.select_filter, "am");
-        assert_eq!(app.picker_selected_original(), Some(2)); // gamma
+        assert_eq!(app.picker.filter, "am");
+        assert_eq!(app.picker.selected_original(), Some(2)); // gamma
 
         assert!(picker_common_key(&mut app, key(KeyCode::Backspace), true));
         assert!(picker_common_key(&mut app, key(KeyCode::Down), true));
-        assert_eq!(app.select_filter, "a");
+        assert_eq!(app.picker.filter, "a");
         // filter "a" matches all three; Down moved 0 → 1.
-        assert_eq!(app.picker_selected_original(), Some(1));
+        assert_eq!(app.picker.selected_original(), Some(1));
     }
 
     #[test]
@@ -206,9 +204,9 @@ mod tests {
         handle_form_multi_key(&mut app, key(KeyCode::Char('g')), 3); // filter → gamma only
         handle_form_multi_key(&mut app, key(KeyCode::Char(' ')), 3); // toggle it
         assert!(
-            app.multi_selected.contains(&2),
+            app.picker.multi_selected.contains(&2),
             "toggle must hit gamma's original index, got {:?}",
-            app.multi_selected
+            app.picker.multi_selected
         );
 
         handle_form_multi_key(&mut app, key(KeyCode::Enter), 3);
@@ -228,7 +226,7 @@ mod tests {
             "Enter must not pick from nothing"
         );
 
-        app.start_picker(Vec::new(), 0); // truly empty picker
+        app.picker.start(Vec::new(), 0); // truly empty picker
         handle_select_field_key(&mut app, key(KeyCode::Enter), 1);
         assert_eq!(app.mode, Mode::FilterMenu);
     }
@@ -252,7 +250,8 @@ mod tests {
             false,
             "{owner}/{repo}#{number}".into(),
         );
-        app.start_picker(vec!["low".into(), "high".into(), "urgent".into()], 0);
+        app.picker
+            .start(vec!["low".into(), "high".into(), "urgent".into()], 0);
         app.mode = Mode::SelectFieldMulti(4);
 
         handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 4); // low
@@ -275,8 +274,9 @@ mod tests {
             "{owner}/{repo}#{number}".into(),
         );
         app.filters.status = vec!["blocked".into()];
-        app.start_picker(vec!["blocked".into(), "in-progress".into()], 0);
-        app.multi_selected = [0].into_iter().collect();
+        app.picker
+            .start(vec!["blocked".into(), "in-progress".into()], 0);
+        app.picker.multi_selected = [0].into_iter().collect();
         app.mode = Mode::SelectFieldMulti(5);
 
         handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 5); // untoggle blocked
@@ -296,8 +296,8 @@ mod tests {
             "{owner}/{repo}#{number}".into(),
         );
         app.filters.priority = vec!["high".into()];
-        app.start_picker(vec!["low".into(), "high".into()], 0);
-        app.multi_selected = [1].into_iter().collect();
+        app.picker.start(vec!["low".into(), "high".into()], 0);
+        app.picker.multi_selected = [1].into_iter().collect();
         app.mode = Mode::SelectFieldMulti(4);
 
         handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 4); // toggle low on

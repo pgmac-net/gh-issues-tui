@@ -223,14 +223,14 @@ pub(super) fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
         .title(" PR summary (j/k scroll · Tab select · o open · r refresh · Esc close) ");
 
     let width = pr_summary_inner_width(f.area().width);
-    let rows = pr_summary_rows(app.pr_summary.as_ref(), t, width);
+    let rows = pr_summary_rows(app.pr.summary.as_ref(), t, width);
     let mut lines: Vec<Line> = rows.into_iter().map(|r| r.line).collect();
 
     // Highlight the selected row (`Tab`/`Shift+Tab`) by patching a
     // background onto each of its spans' existing styles, preserving their
     // foreground colours and modifiers.
-    if let Some(sel_line) = pr_targets(app.pr_summary.as_ref(), width)
-        .get(app.pr_sel)
+    if let Some(sel_line) = pr_targets(app.pr.summary.as_ref(), width)
+        .get(app.pr.sel)
         .map(|target| target.line as usize)
         && let Some(l) = lines.get_mut(sel_line)
     {
@@ -247,7 +247,7 @@ pub(super) fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
     // not wrap again — otherwise a drawn row would stop matching its index.
     let para = Paragraph::new(lines)
         .block(block)
-        .scroll((app.pr_scroll, 0));
+        .scroll((app.pr.scroll, 0));
     f.render_widget(para, area);
 }
 
@@ -326,8 +326,8 @@ mod tests {
             repo: "r".into(),
             number: 7,
         };
-        app.pr_target = Some(pr);
-        app.pr_summary = Some(Ok(pr_summary_fixture(body)));
+        app.pr.target = Some(pr);
+        app.pr.summary = Some(Ok(pr_summary_fixture(body)));
         app.mode = Mode::PrSummary;
         app
     }
@@ -335,7 +335,7 @@ mod tests {
     /// The popup's navigable rows for an app rendered into a `frame_width`
     /// wide terminal — the same call the key handler makes.
     fn app_pr_targets(app: &App, frame_width: u16) -> Vec<PrTarget> {
-        pr_targets(app.pr_summary.as_ref(), pr_summary_inner_width(frame_width))
+        pr_targets(app.pr.summary.as_ref(), pr_summary_inner_width(frame_width))
     }
 
     /// Index of the popup's first content row containing `needle`, expressed
@@ -383,9 +383,9 @@ mod tests {
     fn golden_pr_summary_selection_highlights_its_own_row() {
         let mut app = pr_summary_app("short body");
         let targets = app_pr_targets(&app, 100);
-        app.select_pr_target(1, &targets); // PR header → first check
-        assert_eq!(app.pr_sel, 1);
-        assert_eq!(app.pr_scroll, targets[1].line, "scroll snaps to the target");
+        app.pr.select(1, &targets); // PR header → first check
+        assert_eq!(app.pr.sel, 1);
+        assert_eq!(app.pr.scroll, targets[1].line, "scroll snaps to the target");
     }
 
     /// Regression for the issue #87 defect: targets used to be computed from
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn golden_wrapped_rows_tag_only_their_first_row() {
         let app = pr_summary_app("short body");
-        let rows = pr_summary_rows(app.pr_summary.as_ref(), &Theme::default(), 20);
+        let rows = pr_summary_rows(app.pr.summary.as_ref(), &Theme::default(), 20);
         let tagged = rows.iter().filter(|r| r.url.is_some()).count();
         assert_eq!(
             tagged, 5,

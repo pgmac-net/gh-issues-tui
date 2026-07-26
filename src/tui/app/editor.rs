@@ -1,3 +1,5 @@
+use super::mode::{CommentFocus, EditorTarget};
+
 #[derive(Debug, Default)]
 pub struct InputState {
     pub buffer: String,
@@ -362,4 +364,38 @@ pub fn cursor_row(rows: &[VisualRow], line: usize, cursor: usize) -> (usize, usi
         }
     }
     (0, 0) // unreachable with a clamped cursor; safe fallback
+}
+
+/// The inline comment/description editor's session state: what is being
+/// typed, which element of the widget has keys, and what a save writes.
+///
+/// All three are set together each time the editor opens and cleared
+/// together when it closes, so `Default` is "editor closed, nothing pending".
+#[derive(Debug, Default)]
+pub struct EditorState {
+    /// The multi-line editor backing `Mode::CommentEditor`.
+    pub body: BodyEditor,
+    /// Which element of the comment section has keys.
+    pub focus: CommentFocus,
+    /// What a save writes: a new comment, an edit to one, or the issue body.
+    pub target: EditorTarget,
+}
+
+impl EditorState {
+    /// Open the editor on `body`, writing to `target` on save.
+    pub fn start(&mut self, body: BodyEditor, target: EditorTarget) {
+        self.body = body;
+        self.focus = CommentFocus::Editor;
+        self.target = target;
+    }
+
+    /// Take the composed text and reset to closed, in one step — the caller
+    /// then decides what to do with it. Resetting here rather than at each
+    /// call site is what stops a half-cleared editor leaking into the next
+    /// one.
+    pub fn take(&mut self) -> (String, EditorTarget) {
+        let text = self.body.text();
+        let target = std::mem::take(self);
+        (text, target.target)
+    }
 }

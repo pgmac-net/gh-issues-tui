@@ -198,7 +198,7 @@ pub(super) fn draw_comment_section(f: &mut Frame, app: &App, t: &Theme, area: Re
     let inner_height = area.height.saturating_sub(2) as usize;
     let text_height = inner_height.saturating_sub(1);
 
-    let body = &app.comment_editor;
+    let body = &app.editor.body;
     let rows = wrap_lines(&body.lines, width);
     let (cur_row, cur_col) = cursor_row(&rows, body.line, body.lines[body.line].cursor);
     let top = cur_row.saturating_sub(text_height.saturating_sub(1));
@@ -214,7 +214,7 @@ pub(super) fn draw_comment_section(f: &mut Frame, app: &App, t: &Theme, area: Re
                 .skip(row.start)
                 .take(row.end - row.start)
                 .collect();
-            if i == cur_row && app.comment_focus == CommentFocus::Editor {
+            if i == cur_row && app.editor.focus == CommentFocus::Editor {
                 Line::from(cursor_spans(&text, cur_col))
             } else {
                 Line::raw(text)
@@ -223,7 +223,7 @@ pub(super) fn draw_comment_section(f: &mut Frame, app: &App, t: &Theme, area: Re
         .collect();
     lines.push(comment_button_line(app, t, width));
 
-    let action = match app.editor_target {
+    let action = match app.editor.target {
         crate::tui::app::EditorTarget::NewComment => "add comment",
         crate::tui::app::EditorTarget::EditComment { .. } => "edit comment",
         crate::tui::app::EditorTarget::EditBody => "edit description",
@@ -257,11 +257,11 @@ pub(super) fn comment_button_line(app: &App, t: &Theme, width: usize) -> Line<'s
     };
     Line::from(vec![
         Span::raw(pad),
-        Span::styled(SAVE, button_style(app.comment_focus == CommentFocus::Save)),
+        Span::styled(SAVE, button_style(app.editor.focus == CommentFocus::Save)),
         Span::raw(gap),
         Span::styled(
             CANCEL,
-            button_style(app.comment_focus == CommentFocus::Cancel),
+            button_style(app.editor.focus == CommentFocus::Cancel),
         ),
     ])
 }

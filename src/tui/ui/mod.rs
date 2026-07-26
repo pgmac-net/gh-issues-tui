@@ -49,7 +49,7 @@ use crate::tui::app::Mode;
 /// current mode calls for.
 pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
     let frame = layout::frame(f.area());
-    let panes = layout::panes(frame.main, app.detail_open);
+    let panes = layout::panes(frame.main, app.detail.open);
 
     list::draw_list(f, app, t, panes.list);
     if let Some(area) = panes.detail {
