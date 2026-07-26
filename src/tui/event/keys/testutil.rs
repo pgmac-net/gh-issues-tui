@@ -15,7 +15,8 @@ pub(crate) fn picker_test_app() -> App {
         false,
         "{owner}/{repo}#{number}".into(),
     );
-    app.start_picker(vec!["alpha".into(), "beta".into(), "gamma".into()], 0);
+    app.picker
+        .start(vec!["alpha".into(), "beta".into(), "gamma".into()], 0);
     app
 }
 

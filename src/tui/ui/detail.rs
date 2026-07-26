@@ -55,7 +55,7 @@ pub(super) fn draw_detail_body(
     area: Rect,
     focused: bool,
 ) {
-    let selected = focused && app.detail_sel == DetailSel::Body;
+    let selected = focused && app.detail.sel == DetailSel::Body;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
@@ -67,7 +67,7 @@ pub(super) fn draw_detail_body(
     let (wrapped, rects) = linkmap::wrap(&lines, &links, inner_w as usize);
     let content_h = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
     let max_scroll = content_h.saturating_sub(inner_h);
-    let scroll = app.body_scroll.min(max_scroll);
+    let scroll = app.detail.body_scroll.min(max_scroll);
 
     f.render_widget(
         Paragraph::new(wrapped).block(block).scroll((scroll, 0)),
@@ -87,13 +87,13 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 
-    let selected = match app.detail_sel {
+    let selected = match app.detail.sel {
         _ if !focused => None,
         DetailSel::Comment(i) => Some(i),
         DetailSel::Body => None,
     };
 
-    let comments = match &app.detail_comments {
+    let comments = match &app.detail.comments {
         None => {
             f.render_widget(
                 Paragraph::new(Line::styled(
@@ -131,7 +131,7 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     let (wrapped, rects) = linkmap::wrap(&lines, &links, inner_w as usize);
     let total = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
 
-    let scroll = app.comments_scroll;
+    let scroll = app.detail.comments_scroll;
     f.render_widget(
         Paragraph::new(wrapped).block(block).scroll((scroll, 0)),
         area,
@@ -375,7 +375,7 @@ mod tests {
         }]);
         app.selected = 1;
         app.open_detail();
-        app.detail_comments = Some(vec![
+        app.detail.comments = Some(vec![
             test_comment(
                 &(1..=15)
                     .map(|n| format!("Comment line {n} long enough to scroll within one card."))
@@ -385,10 +385,11 @@ mod tests {
             test_comment("Second comment, short."),
             test_comment("Third comment."),
         ]);
-        app.detail_sel = sel;
+        app.detail.sel = sel;
         if let DetailSel::Comment(idx) = sel {
             let w = layout::detail_inner_width(100);
-            app.comments_scroll = comment_offset(app.detail_comments.as_ref().unwrap(), idx, w);
+            app.detail.comments_scroll =
+                comment_offset(app.detail.comments.as_ref().unwrap(), idx, w);
         }
 
         let backend = TestBackend::new(100, 32);
@@ -449,7 +450,7 @@ mod tests {
         }]);
         app.selected = 1;
         app.open_detail();
-        app.detail_comments = Some(vec![test_comment(
+        app.detail.comments = Some(vec![test_comment(
             "See [the site](https://comment.example.org)",
         )]);
 

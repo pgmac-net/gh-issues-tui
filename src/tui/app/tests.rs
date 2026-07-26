@@ -382,12 +382,12 @@ fn manual_collapse_sticks_until_filters_change_again() {
 #[test]
 fn detail_pane_open_close_and_focus_cycle() {
     let mut app = two_repo_app();
-    assert!(!app.detail_open);
+    assert!(!app.detail.open);
     app.cycle_focus(); // split closed → no-op
     assert_eq!(app.focus, Focus::List);
 
     app.open_detail();
-    assert!(app.detail_open);
+    assert!(app.detail.open);
     assert_eq!(app.focus, Focus::Detail);
 
     app.cycle_focus();
@@ -396,7 +396,7 @@ fn detail_pane_open_close_and_focus_cycle() {
     assert_eq!(app.focus, Focus::Detail);
 
     app.close_detail();
-    assert!(!app.detail_open);
+    assert!(!app.detail.open);
     assert_eq!(app.focus, Focus::List);
 }
 
@@ -405,7 +405,7 @@ fn switch_org_closes_detail_pane() {
     let mut app = two_repo_app();
     app.open_detail();
     app.switch_org("other".into());
-    assert!(!app.detail_open);
+    assert!(!app.detail.open);
     assert_eq!(app.focus, Focus::List);
 }
 
@@ -1328,7 +1328,7 @@ fn enter_detail_on_header_is_none_and_keeps_pane_closed() {
     let mut app = two_repo_app();
     app.selected = 0; // repo header
     assert_eq!(app.enter_detail(), None);
-    assert!(!app.detail_open);
+    assert!(!app.detail.open);
     assert_eq!(app.focus, Focus::List);
 }
 
@@ -1338,7 +1338,7 @@ fn enter_detail_opens_closed_pane_and_requests_comments() {
     app.selected = 1; // first issue row
     let expected = app.selected_issue().unwrap().id.clone();
     assert_eq!(app.enter_detail(), Some(expected));
-    assert!(app.detail_open);
+    assert!(app.detail.open);
     assert_eq!(app.focus, Focus::Detail);
 }
 
@@ -1349,7 +1349,7 @@ fn enter_detail_on_open_pane_just_moves_focus() {
     app.open_detail();
     app.focus = Focus::List; // as after ← backing out
     assert_eq!(app.enter_detail(), None); // no comment refetch
-    assert!(app.detail_open);
+    assert!(app.detail.open);
     assert_eq!(app.focus, Focus::Detail);
 }
 
@@ -1358,7 +1358,7 @@ fn start_comment_editor_on_header_is_none_and_keeps_pane_closed() {
     let mut app = two_repo_app();
     app.selected = 0; // repo header
     assert_eq!(app.start_comment_editor(), None);
-    assert!(!app.detail_open);
+    assert!(!app.detail.open);
     assert_eq!(app.mode, Mode::Normal);
 }
 
@@ -1368,10 +1368,10 @@ fn start_comment_editor_opens_closed_pane_and_requests_comments() {
     app.selected = 1; // first issue row
     let expected = app.selected_issue().unwrap().id.clone();
     assert_eq!(app.start_comment_editor(), Some(expected));
-    assert!(app.detail_open);
+    assert!(app.detail.open);
     assert_eq!(app.focus, Focus::Detail);
     assert_eq!(app.mode, Mode::CommentEditor);
-    assert_eq!(app.comment_focus, CommentFocus::Editor);
+    assert_eq!(app.editor.focus, CommentFocus::Editor);
 }
 
 #[test]
@@ -1379,22 +1379,22 @@ fn start_comment_editor_on_open_pane_keeps_comments_and_skips_refetch() {
     let mut app = two_repo_app();
     app.selected = 1;
     app.open_detail();
-    app.detail_comments = Some(vec![]);
+    app.detail.comments = Some(vec![]);
     assert_eq!(app.start_comment_editor(), None); // no comment refetch
-    assert!(app.detail_open);
+    assert!(app.detail.open);
     assert_eq!(app.mode, Mode::CommentEditor);
-    assert_eq!(app.detail_comments.as_ref().map(Vec::len), Some(0));
+    assert_eq!(app.detail.comments.as_ref().map(Vec::len), Some(0));
 }
 
 #[test]
 fn start_comment_editor_resets_stale_editor_content_and_focus() {
     let mut app = two_repo_app();
     app.selected = 1;
-    app.comment_editor.insert('x');
-    app.comment_focus = CommentFocus::Save;
+    app.editor.body.insert('x');
+    app.editor.focus = CommentFocus::Save;
     app.start_comment_editor();
-    assert_eq!(app.comment_editor.text(), "");
-    assert_eq!(app.comment_focus, CommentFocus::Editor);
+    assert_eq!(app.editor.body.text(), "");
+    assert_eq!(app.editor.focus, CommentFocus::Editor);
 }
 
 fn comment(id: &str, body: &str) -> Comment {
@@ -1411,7 +1411,7 @@ fn detail_app_with_comments() -> App {
     let mut app = two_repo_app();
     app.selected = 1; // issue #1
     app.open_detail();
-    app.detail_comments = Some(vec![
+    app.detail.comments = Some(vec![
         comment("c1", "first\nsecond"),
         comment("c2", "only one line"),
     ]);
@@ -1436,27 +1436,27 @@ fn body_editor_from_empty_text_is_default() {
 #[test]
 fn detail_comment_count_reflects_loaded_thread() {
     let app = detail_app_with_comments();
-    assert_eq!(app.detail_comment_count(), 2);
+    assert_eq!(app.detail.comment_count(), 2);
     let mut none = two_repo_app();
     none.selected = 1;
     none.open_detail();
-    assert_eq!(none.detail_comment_count(), 0);
+    assert_eq!(none.detail.comment_count(), 0);
 }
 
 #[test]
 fn select_detail_cycles_body_through_comments_and_wraps() {
     let mut app = detail_app_with_comments(); // body + 2 comments
-    assert_eq!(app.detail_sel, DetailSel::Body);
+    assert_eq!(app.detail.sel, DetailSel::Body);
 
-    app.select_detail(1);
-    assert_eq!(app.detail_sel, DetailSel::Comment(0));
-    app.select_detail(1);
-    assert_eq!(app.detail_sel, DetailSel::Comment(1));
-    app.select_detail(1); // wraps back to body
-    assert_eq!(app.detail_sel, DetailSel::Body);
+    app.detail.select(1);
+    assert_eq!(app.detail.sel, DetailSel::Comment(0));
+    app.detail.select(1);
+    assert_eq!(app.detail.sel, DetailSel::Comment(1));
+    app.detail.select(1); // wraps back to body
+    assert_eq!(app.detail.sel, DetailSel::Body);
 
-    app.select_detail(-1); // wraps to last comment
-    assert_eq!(app.detail_sel, DetailSel::Comment(1));
+    app.detail.select(-1); // wraps to last comment
+    assert_eq!(app.detail.sel, DetailSel::Comment(1));
 }
 
 #[test]
@@ -1464,70 +1464,70 @@ fn select_detail_with_no_comments_stays_on_body() {
     let mut app = two_repo_app();
     app.selected = 1;
     app.open_detail();
-    app.detail_comments = Some(vec![]);
-    app.select_detail(1);
-    assert_eq!(app.detail_sel, DetailSel::Body);
-    app.select_detail(-1);
-    assert_eq!(app.detail_sel, DetailSel::Body);
+    app.detail.comments = Some(vec![]);
+    app.detail.select(1);
+    assert_eq!(app.detail.sel, DetailSel::Body);
+    app.detail.select(-1);
+    assert_eq!(app.detail.sel, DetailSel::Body);
 }
 
 #[test]
 fn scroll_body_clamps_to_zero_and_max() {
     let mut app = detail_app_with_comments();
-    app.scroll_body(-1, 10); // can't go above the top
-    assert_eq!(app.body_scroll, 0);
-    app.scroll_body(4, 10);
-    assert_eq!(app.body_scroll, 4);
-    app.scroll_body(100, 10); // clamped at max
-    assert_eq!(app.body_scroll, 10);
+    app.detail.scroll_body(-1, 10); // can't go above the top
+    assert_eq!(app.detail.body_scroll, 0);
+    app.detail.scroll_body(4, 10);
+    assert_eq!(app.detail.body_scroll, 4);
+    app.detail.scroll_body(100, 10); // clamped at max
+    assert_eq!(app.detail.body_scroll, 10);
 }
 
 #[test]
 fn scroll_comment_clamps_within_its_span() {
     let mut app = detail_app_with_comments();
-    app.detail_sel = DetailSel::Comment(1);
-    app.snap_comment(20); // comment top offset
+    app.detail.sel = DetailSel::Comment(1);
+    app.detail.snap_comment(20); // comment top offset
     // Span is [20, 25]; scrolling can't rise above the header.
-    app.scroll_comment(-5, 20, 25);
-    assert_eq!(app.comments_scroll, 20);
-    app.scroll_comment(3, 20, 25);
-    assert_eq!(app.comments_scroll, 23);
-    app.scroll_comment(100, 20, 25); // clamped at the bottom
-    assert_eq!(app.comments_scroll, 25);
+    app.detail.scroll_comment(-5, 20, 25);
+    assert_eq!(app.detail.comments_scroll, 20);
+    app.detail.scroll_comment(3, 20, 25);
+    assert_eq!(app.detail.comments_scroll, 23);
+    app.detail.scroll_comment(100, 20, 25); // clamped at the bottom
+    assert_eq!(app.detail.comments_scroll, 25);
 }
 
 #[test]
 fn scroll_comment_that_fits_does_not_move() {
     let mut app = detail_app_with_comments();
-    app.snap_comment(8);
+    app.detail.snap_comment(8);
     // hi < lo (comment shorter than viewport): stays pinned to the top.
-    app.scroll_comment(5, 8, 3);
-    assert_eq!(app.comments_scroll, 8);
+    app.detail.scroll_comment(5, 8, 3);
+    assert_eq!(app.detail.comments_scroll, 8);
 }
 
 #[test]
 fn clamp_detail_sel_falls_back_when_thread_shrinks() {
     let mut app = detail_app_with_comments();
-    app.detail_sel = DetailSel::Comment(1);
-    app.detail_comments = Some(vec![comment("c1", "only one now")]);
-    app.clamp_detail_sel();
-    assert_eq!(app.detail_sel, DetailSel::Comment(0));
+    app.detail.sel = DetailSel::Comment(1);
+    app.detail.comments = Some(vec![comment("c1", "only one now")]);
+    app.detail.clamp_sel();
+    assert_eq!(app.detail.sel, DetailSel::Comment(0));
 
-    app.detail_comments = Some(vec![]);
-    app.clamp_detail_sel();
-    assert_eq!(app.detail_sel, DetailSel::Body);
+    app.detail.comments = Some(vec![]);
+    app.detail.clamp_sel();
+    assert_eq!(app.detail.sel, DetailSel::Body);
 }
 
 #[test]
 fn reset_detail_scroll_returns_to_body_top() {
     let mut app = detail_app_with_comments();
-    app.detail_sel = DetailSel::Comment(1);
-    app.body_scroll = 4;
-    app.comments_scroll = 12;
-    app.reset_detail_scroll();
-    assert_eq!(app.detail_sel, DetailSel::Body);
-    assert_eq!(app.body_scroll, 0);
-    assert_eq!(app.comments_scroll, 0);
+    app.detail.sel = DetailSel::Comment(1);
+    app.detail.body_scroll = 4;
+    app.detail.comments_scroll = 12;
+    app.detail.reset_scroll();
+    assert_eq!(app.detail.sel, DetailSel::Body);
+    assert_eq!(app.detail.body_scroll, 0);
+    assert_eq!(app.detail.comments_scroll, 0);
 }
 
 #[test]
@@ -1540,26 +1540,26 @@ fn start_edit_body_card_prefills_and_targets_body() {
     {
         app.repos[repo_idx].issues[issue_idx].body = "current description".into();
     }
-    app.detail_sel = DetailSel::Body;
+    app.detail.sel = DetailSel::Body;
     app.start_edit_selected_card();
     assert_eq!(app.mode, Mode::CommentEditor);
-    assert_eq!(app.editor_target, EditorTarget::EditBody);
-    assert_eq!(app.comment_editor.text(), "current description");
+    assert_eq!(app.editor.target, EditorTarget::EditBody);
+    assert_eq!(app.editor.body.text(), "current description");
 }
 
 #[test]
 fn start_edit_comment_card_prefills_and_targets_comment_id() {
     let mut app = detail_app_with_comments();
-    app.detail_sel = DetailSel::Comment(0); // first comment
+    app.detail.sel = DetailSel::Comment(0); // first comment
     app.start_edit_selected_card();
     assert_eq!(app.mode, Mode::CommentEditor);
     assert_eq!(
-        app.editor_target,
+        app.editor.target,
         EditorTarget::EditComment {
             comment_id: "c1".into()
         }
     );
-    assert_eq!(app.comment_editor.text(), "first\nsecond");
+    assert_eq!(app.editor.body.text(), "first\nsecond");
 }
 
 // `detail_split` moved to `tui::layout`, which owns all screen geometry;
@@ -1792,61 +1792,62 @@ fn body_editor_handles_multibyte() {
 
 fn picker_app(options: &[&str]) -> App {
     let mut app = two_repo_app();
-    app.start_picker(options.iter().map(|s| s.to_string()).collect(), 0);
+    app.picker
+        .start(options.iter().map(|s| s.to_string()).collect(), 0);
     app
 }
 
 #[test]
 fn picker_filter_narrows_and_maps_to_original_indices() {
     let mut app = picker_app(&["\u{2014}", "ansible", "budgeteer", "gh-issues-tui", "ghar"]);
-    app.picker_filter_push('g');
-    app.picker_filter_push('h');
-    let filtered = app.filtered_select();
+    app.picker.filter_push('g');
+    app.picker.filter_push('h');
+    let filtered = app.picker.filtered();
     assert_eq!(
         filtered,
         vec![(3, "gh-issues-tui"), (4, "ghar")],
         "case-insensitive substring over original indices"
     );
-    assert_eq!(app.select_idx, 0); // reset to first match
-    assert_eq!(app.picker_selected_original(), Some(3));
+    assert_eq!(app.picker.idx, 0); // reset to first match
+    assert_eq!(app.picker.selected_original(), Some(3));
 
-    app.select_idx = 1;
-    assert_eq!(app.picker_selected_original(), Some(4));
+    app.picker.idx = 1;
+    assert_eq!(app.picker.selected_original(), Some(4));
 }
 
 #[test]
 fn picker_filter_matches_case_insensitively() {
     let mut app = picker_app(&["Docker-Nagios", "homelabia"]);
-    app.picker_filter_push('N');
-    app.picker_filter_push('A');
-    assert_eq!(app.filtered_select(), vec![(0, "Docker-Nagios")]);
+    app.picker.filter_push('N');
+    app.picker.filter_push('A');
+    assert_eq!(app.picker.filtered(), vec![(0, "Docker-Nagios")]);
 }
 
 #[test]
 fn picker_backspace_and_clear_restore_and_clamp() {
     let mut app = picker_app(&["alpha", "beta"]);
-    app.select_idx = 1; // beta
-    app.picker_filter_push('x'); // no matches
-    assert!(app.filtered_select().is_empty());
-    assert_eq!(app.picker_selected_original(), None);
+    app.picker.idx = 1; // beta
+    app.picker.filter_push('x'); // no matches
+    assert!(app.picker.filtered().is_empty());
+    assert_eq!(app.picker.selected_original(), None);
 
-    app.picker_filter_backspace();
-    assert_eq!(app.filtered_select().len(), 2);
-    assert!(app.select_idx < 2); // clamped into range
+    app.picker.filter_backspace();
+    assert_eq!(app.picker.filtered().len(), 2);
+    assert!(app.picker.idx < 2); // clamped into range
 
-    app.picker_filter_push('b');
-    app.picker_filter_clear();
-    assert_eq!(app.select_filter, "");
-    assert_eq!(app.filtered_select().len(), 2);
+    app.picker.filter_push('b');
+    app.picker.filter_clear();
+    assert_eq!(app.picker.filter, "");
+    assert_eq!(app.picker.filtered().len(), 2);
 }
 
 #[test]
 fn start_picker_resets_filter() {
     let mut app = picker_app(&["alpha"]);
-    app.picker_filter_push('z');
-    app.start_picker(vec!["beta".into()], 0);
-    assert_eq!(app.select_filter, "");
-    assert_eq!(app.filtered_select(), vec![(0, "beta")]);
+    app.picker.filter_push('z');
+    app.picker.start(vec!["beta".into()], 0);
+    assert_eq!(app.picker.filter, "");
+    assert_eq!(app.picker.filtered(), vec![(0, "beta")]);
 }
 
 fn app_with_empty_repo() -> App {
@@ -2009,7 +2010,7 @@ fn collect_pr_links_scans_body_then_comments_in_order() {
         let issue = &mut app.repos[0].issues[0];
         issue.body = "see https://github.com/o/r/pull/1".into();
     }
-    app.detail_comments = Some(vec![Comment {
+    app.detail.comments = Some(vec![Comment {
         id: "c1".into(),
         author: "x".into(),
         created_at: Utc::now(),
@@ -2043,8 +2044,8 @@ fn open_pr_summary_sets_target_and_loading_state() {
     };
     app.open_pr_summary(pr.clone());
     assert_eq!(app.mode, Mode::PrSummary);
-    assert_eq!(app.pr_target, Some(pr));
-    assert!(app.pr_summary.is_none());
+    assert_eq!(app.pr.target, Some(pr));
+    assert!(app.pr.summary.is_none());
 }
 
 #[test]
@@ -2064,7 +2065,7 @@ fn open_pr_picker_populates_options_from_links() {
     ];
     app.open_pr_picker(links);
     assert_eq!(app.mode, Mode::PrPicker);
-    assert_eq!(app.select_options, vec!["o/r#1", "o/r#2"]);
+    assert_eq!(app.picker.options, vec!["o/r#1", "o/r#2"]);
 }
 
 #[test]
@@ -2083,11 +2084,11 @@ fn set_pr_summary_applies_only_to_current_target() {
     app.open_pr_summary(pr1.clone());
     // A response for a different PR (the popup retargeted before this
     // landed) must not overwrite the current summary.
-    app.set_pr_summary(&pr2, Ok(sample_pr_summary(pr2.clone())));
-    assert!(app.pr_summary.is_none());
+    app.pr.set_summary(&pr2, Ok(sample_pr_summary(pr2.clone())));
+    assert!(app.pr.summary.is_none());
 
-    app.set_pr_summary(&pr1, Ok(sample_pr_summary(pr1.clone())));
-    assert!(app.pr_summary.is_some());
+    app.pr.set_summary(&pr1, Ok(sample_pr_summary(pr1.clone())));
+    assert!(app.pr.summary.is_some());
 }
 
 #[test]
@@ -2101,10 +2102,10 @@ fn close_detail_clears_pr_state() {
         number: 1,
     };
     app.open_pr_summary(pr.clone());
-    app.set_pr_summary(&pr.clone(), Ok(sample_pr_summary(pr)));
+    app.pr.set_summary(&pr.clone(), Ok(sample_pr_summary(pr)));
     app.close_detail();
-    assert!(app.pr_target.is_none());
-    assert!(app.pr_summary.is_none());
+    assert!(app.pr.target.is_none());
+    assert!(app.pr.summary.is_none());
 }
 
 /// A `sample_pr_summary` with two checks, one PR run, and one
@@ -2172,24 +2173,24 @@ fn select_pr_target_wraps_and_snaps_scroll() {
     let mut app = two_repo_app();
     let targets = sample_targets();
 
-    assert_eq!(app.pr_sel, 0);
-    app.select_pr_target(1, &targets);
-    assert_eq!(app.pr_sel, 1);
-    assert_eq!(app.pr_scroll, targets[1].line);
+    assert_eq!(app.pr.sel, 0);
+    app.pr.select(1, &targets);
+    assert_eq!(app.pr.sel, 1);
+    assert_eq!(app.pr.scroll, targets[1].line);
 
     // Shift+Tab from the first row wraps to the last.
-    app.pr_sel = 0;
-    app.select_pr_target(-1, &targets);
-    assert_eq!(app.pr_sel, targets.len() - 1);
-    assert_eq!(app.pr_scroll, targets.last().unwrap().line);
+    app.pr.sel = 0;
+    app.pr.select(-1, &targets);
+    assert_eq!(app.pr.sel, targets.len() - 1);
+    assert_eq!(app.pr.scroll, targets.last().unwrap().line);
 }
 
 #[test]
 fn select_pr_target_is_a_noop_without_targets() {
     let mut app = two_repo_app();
-    app.select_pr_target(1, &[]);
-    assert_eq!(app.pr_sel, 0);
-    assert_eq!(app.pr_scroll, 0);
+    app.pr.select(1, &[]);
+    assert_eq!(app.pr.sel, 0);
+    assert_eq!(app.pr.scroll, 0);
 }
 
 #[test]
@@ -2198,12 +2199,12 @@ fn pr_selected_url_tracks_selection() {
     let targets = sample_targets();
 
     assert_eq!(
-        app.pr_selected_url(&targets),
+        app.pr.selected_url(&targets),
         Some("https://github.com/o/r/pull/1".to_string())
     );
-    app.select_pr_target(1, &targets);
+    app.pr.select(1, &targets);
     assert_eq!(
-        app.pr_selected_url(&targets),
+        app.pr.selected_url(&targets),
         Some("https://github.com/o/r/runs/1".to_string())
     );
 }
@@ -2217,29 +2218,32 @@ fn pr_sel_resets_on_open_close_and_refresh() {
         number: 1,
     };
     app.open_pr_summary(pr1.clone());
-    app.set_pr_summary(&pr1, Ok(sample_pr_summary_with_checks(pr1.clone())));
-    app.select_pr_target(1, &sample_targets());
-    assert_eq!(app.pr_sel, 1);
+    app.pr
+        .set_summary(&pr1, Ok(sample_pr_summary_with_checks(pr1.clone())));
+    app.pr.select(1, &sample_targets());
+    assert_eq!(app.pr.sel, 1);
 
-    app.refresh_pr_summary();
-    assert_eq!(app.pr_sel, 0);
-    assert!(app.pr_summary.is_none());
+    app.pr.refresh();
+    assert_eq!(app.pr.sel, 0);
+    assert!(app.pr.summary.is_none());
 
-    app.set_pr_summary(&pr1, Ok(sample_pr_summary_with_checks(pr1.clone())));
-    app.select_pr_target(1, &sample_targets());
-    assert_eq!(app.pr_sel, 1);
+    app.pr
+        .set_summary(&pr1, Ok(sample_pr_summary_with_checks(pr1.clone())));
+    app.pr.select(1, &sample_targets());
+    assert_eq!(app.pr.sel, 1);
     app.close_pr_summary();
-    assert_eq!(app.pr_sel, 0);
+    assert_eq!(app.pr.sel, 0);
 
     app.open_pr_summary(pr1.clone());
-    app.set_pr_summary(&pr1.clone(), Ok(sample_pr_summary_with_checks(pr1)));
-    app.select_pr_target(1, &sample_targets());
-    assert_eq!(app.pr_sel, 1);
+    app.pr
+        .set_summary(&pr1.clone(), Ok(sample_pr_summary_with_checks(pr1)));
+    app.pr.select(1, &sample_targets());
+    assert_eq!(app.pr.sel, 1);
     let pr2 = PrRef {
         owner: "o".into(),
         repo: "r".into(),
         number: 2,
     };
     app.open_pr_summary(pr2);
-    assert_eq!(app.pr_sel, 0);
+    assert_eq!(app.pr.sel, 0);
 }

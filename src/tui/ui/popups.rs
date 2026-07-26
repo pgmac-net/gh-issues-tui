@@ -104,16 +104,16 @@ pub(super) fn picker_items(
     clear_label: &str,
 ) -> Vec<ListItem<'static>> {
     let mut items: Vec<ListItem> = Vec::new();
-    if !app.select_filter.is_empty() {
+    if !app.picker.filter.is_empty() {
         items.push(ListItem::new(Line::from(vec![
             Span::styled(" / ", Style::default().fg(t.accent)),
-            Span::raw(app.select_filter.clone()),
+            Span::raw(app.picker.filter.clone()),
             Span::styled("█", Style::default().fg(t.accent)),
         ])));
     }
-    let filtered = app.filtered_select();
+    let filtered = app.picker.filtered();
     if filtered.is_empty() {
-        let msg = if app.select_options.is_empty() {
+        let msg = if app.picker.options.is_empty() {
             " nothing available"
         } else {
             " no matches"
@@ -125,13 +125,13 @@ pub(super) fn picker_items(
         return items;
     }
     for (pos, (orig, opt)) in filtered.into_iter().enumerate() {
-        let style = if pos == app.select_idx {
+        let style = if pos == app.picker.idx {
             Style::default().bg(t.selected_bg)
         } else {
             Style::default()
         };
         let text = if multi {
-            let mark = if app.multi_selected.contains(&orig) {
+            let mark = if app.picker.multi_selected.contains(&orig) {
                 "[x]"
             } else {
                 "[ ]"
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn golden_filter_select_multi_popup() {
         let mut app = picker_app(Mode::SelectFieldMulti(4));
-        app.multi_selected.insert(2); // "beta"
+        app.picker.multi_selected.insert(2); // "beta"
         let popup = popup_box(&render_app(&app, 100, 30));
 
         assert_eq!(popup.width, 50, "filter multi popup width");
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn golden_labels_set_popup() {
         let mut app = picker_app(Mode::LabelsSet);
-        app.multi_selected.insert(1); // "alpha"
+        app.picker.multi_selected.insert(1); // "alpha"
         let popup = popup_box(&render_app(&app, 100, 30));
 
         assert_eq!(popup.width, 50, "labels popup width");
@@ -577,7 +577,7 @@ mod tests {
     fn golden_issue_form_multi_popup() {
         let mut app = picker_app(Mode::IssueFormMulti(3));
         app.issue_form = Some(IssueForm::new("repo".into()));
-        app.multi_selected.insert(3); // "gamma"
+        app.picker.multi_selected.insert(3); // "gamma"
         let popup = popup_box(&render_app(&app, 100, 30));
 
         assert_eq!(popup.width, 50, "form multi popup width");
@@ -633,8 +633,8 @@ mod tests {
     #[test]
     fn golden_picker_type_ahead_filter_row() {
         let mut app = picker_app(Mode::SelectField(1));
-        app.picker_filter_push('a');
-        app.picker_filter_push('l');
+        app.picker.filter_push('a');
+        app.picker.filter_push('l');
         let popup = popup_box(&render_app(&app, 100, 30));
 
         let text = popup.text();
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn golden_picker_reports_empty_and_no_match_distinctly() {
         let mut empty = test_app();
-        empty.start_picker(vec![], 0);
+        empty.picker.start(vec![], 0);
         empty.mode = Mode::SelectField(1);
         assert!(
             popup_box(&render_app(&empty, 100, 30))
@@ -655,7 +655,7 @@ mod tests {
         );
 
         let mut no_match = picker_app(Mode::SelectField(1));
-        no_match.picker_filter_push('z');
+        no_match.picker.filter_push('z');
         assert!(
             popup_box(&render_app(&no_match, 100, 30))
                 .text()

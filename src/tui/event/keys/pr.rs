@@ -12,13 +12,13 @@ pub(crate) fn handle_pr_picker_key(
     }
     match key.code {
         KeyCode::Esc => app.close_pr_picker(),
-        KeyCode::Enter => match app.picker_selected_original() {
+        KeyCode::Enter => match app.picker.selected_original() {
             Some(orig) => {
-                let pr = app.pr_links[orig].clone();
+                let pr = app.pr.links[orig].clone();
                 app.open_pr_summary(pr.clone());
                 spawn_pr_summary(client, pr, tx);
             }
-            None if app.select_options.is_empty() => app.close_pr_picker(),
+            None if app.picker.options.is_empty() => app.close_pr_picker(),
             None => {}
         },
         _ => {}
@@ -36,21 +36,21 @@ pub(crate) fn handle_pr_summary_key(
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.close_pr_summary(),
         KeyCode::Char('j') | KeyCode::Down => {
-            app.pr_scroll = app.pr_scroll.saturating_add(1);
+            app.pr.scroll = app.pr.scroll.saturating_add(1);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.pr_scroll = app.pr_scroll.saturating_sub(1);
+            app.pr.scroll = app.pr.scroll.saturating_sub(1);
         }
         KeyCode::Tab => {
             let targets = pr_targets(app);
-            app.select_pr_target(1, &targets);
+            app.pr.select(1, &targets);
         }
         KeyCode::BackTab => {
             let targets = pr_targets(app);
-            app.select_pr_target(-1, &targets);
+            app.pr.select(-1, &targets);
         }
         KeyCode::Char('o') | KeyCode::Enter => {
-            if let Some(url) = app.pr_selected_url(&pr_targets(app)) {
+            if let Some(url) = app.pr.selected_url(&pr_targets(app)) {
                 match open::that(&url) {
                     Ok(()) => app.status = Some(format!("opened {url}")),
                     Err(e) => app.status = Some(format!("open failed: {e}")),
@@ -58,8 +58,8 @@ pub(crate) fn handle_pr_summary_key(
             }
         }
         KeyCode::Char('r') => {
-            if let Some(pr) = app.pr_target.clone() {
-                app.refresh_pr_summary();
+            if let Some(pr) = app.pr.target.clone() {
+                app.pr.refresh();
                 spawn_pr_summary(client, pr, tx);
             }
         }

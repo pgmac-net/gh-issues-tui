@@ -1,39 +1,39 @@
 use super::super::prelude::*;
 
 pub(crate) fn picker_common_key(app: &mut App, key: KeyEvent, space_filters: bool) -> bool {
-    let visible = app.filtered_select().len();
+    let visible = app.picker.filtered().len();
     match key.code {
         KeyCode::Down => {
             if visible > 0 {
-                app.select_idx = (app.select_idx + 1) % visible;
+                app.picker.idx = (app.picker.idx + 1) % visible;
             }
             true
         }
         KeyCode::Up => {
             if visible > 0 {
-                app.select_idx = (app.select_idx + visible - 1) % visible;
+                app.picker.idx = (app.picker.idx + visible - 1) % visible;
             }
             true
         }
         KeyCode::Home => {
-            app.select_idx = 0;
+            app.picker.idx = 0;
             true
         }
         KeyCode::End => {
-            app.select_idx = visible.saturating_sub(1);
+            app.picker.idx = visible.saturating_sub(1);
             true
         }
         KeyCode::Backspace => {
-            app.picker_filter_backspace();
+            app.picker.filter_backspace();
             true
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.picker_filter_clear();
+            app.picker.filter_clear();
             true
         }
         KeyCode::Char(' ') if !space_filters => false,
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.picker_filter_push(c);
+            app.picker.filter_push(c);
             true
         }
         _ => false,
@@ -130,5 +130,5 @@ pub(crate) fn detail_metrics() -> (u16, u16, u16) {
 /// exactly the row it highlights.
 pub(crate) fn pr_targets(app: &App) -> Vec<crate::tui::app::PrTarget> {
     let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-    ui::pr_targets(app.pr_summary.as_ref(), ui::pr_summary_inner_width(cols))
+    ui::pr_targets(app.pr.summary.as_ref(), ui::pr_summary_inner_width(cols))
 }

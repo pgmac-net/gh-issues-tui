@@ -98,7 +98,7 @@ pub(super) fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
 
 /// Border style for a pane: accent when it has focus and the split is open.
 pub(super) fn pane_border(app: &App, t: &Theme, pane: Focus) -> Style {
-    if app.detail_open && app.focus == pane {
+    if app.detail.open && app.focus == pane {
         Style::default().fg(t.accent)
     } else {
         Style::default()

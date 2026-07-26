@@ -9,18 +9,18 @@ pub(crate) fn handle_normal_key(
 ) {
     match key.code {
         KeyCode::Char('q') => {
-            if app.detail_open {
+            if app.detail.open {
                 app.close_detail();
             } else {
                 app.should_quit = true;
             }
         }
-        KeyCode::Esc if app.detail_open => app.close_detail(),
+        KeyCode::Esc if app.detail.open => app.close_detail(),
         // In the detail pane Tab/Shift+Tab move between comments; from the
         // list they switch into the pane.
         KeyCode::Tab => {
             if app.focus == Focus::Detail {
-                app.select_detail(1);
+                app.detail.select(1);
                 snap_after_select(app);
             } else {
                 app.cycle_focus();
@@ -28,7 +28,7 @@ pub(crate) fn handle_normal_key(
         }
         KeyCode::BackTab => {
             if app.focus == Focus::Detail {
-                app.select_detail(-1);
+                app.detail.select(-1);
                 snap_after_select(app);
             } else {
                 app.cycle_focus();
@@ -193,7 +193,7 @@ pub(crate) fn handle_normal_key(
             }
         }
         // Edit the highlighted detail card: the issue body or a comment.
-        KeyCode::Char('e') if app.detail_open => app.start_edit_selected_card(),
+        KeyCode::Char('e') if app.detail.open => app.start_edit_selected_card(),
         KeyCode::Char('x') => {
             if app.selected_issue().is_some() {
                 app.confirm_choice = ConfirmChoice::No;
@@ -213,7 +213,7 @@ pub(crate) fn handle_normal_key(
                 .map(|i| i.id.clone())
                 .zip(app.selected_repo().map(|r| r.repo.clone()));
             if let Some((issue_id, repo)) = target {
-                app.label_pick_issue = Some(issue_id.clone());
+                app.picker.label_issue = Some(issue_id.clone());
                 app.status = Some("loading labels…".into());
                 spawn_label_options(client, app.org.clone(), repo, issue_id, tx);
             }
@@ -231,7 +231,7 @@ pub(crate) fn handle_normal_key(
                 .map(|i| i.id.clone())
                 .zip(app.selected_repo().map(|r| r.repo.clone()));
             if let Some((issue_id, repo)) = target {
-                app.priority_pick_issue = Some(issue_id.clone());
+                app.picker.priority_issue = Some(issue_id.clone());
                 app.status = Some("loading priorities…".into());
                 spawn_priority_options(client, app.org.clone(), repo, issue_id, tx);
             }
@@ -242,7 +242,7 @@ pub(crate) fn handle_normal_key(
                 spawn_form_options(client, app.org.clone(), repo, tx);
             }
         }
-        KeyCode::Char('P') if app.detail_open => {
+        KeyCode::Char('P') if app.detail.open => {
             if !client.supports_pr_summary() {
                 app.status = Some("PR summaries not supported by this provider".into());
                 return;

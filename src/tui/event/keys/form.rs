@@ -61,8 +61,8 @@ pub(crate) fn handle_issue_form_key(
         _ if IssueForm::is_multi_field(idx) => {
             if key.code == KeyCode::Enter {
                 let opts = form.field_options(idx);
-                app.multi_selected = form.multi_set(idx).clone();
-                app.start_picker(opts, 0);
+                app.picker.multi_selected = form.multi_set(idx).clone();
+                app.picker.start(opts, 0);
                 app.mode = Mode::IssueFormMulti(idx);
             }
         }
@@ -72,7 +72,7 @@ pub(crate) fn handle_issue_form_key(
                 let mut opts = form.field_options(idx);
                 opts.insert(0, "\u{2014}".to_string());
                 let initial = form.get_single(idx).map_or(0, |i| i + 1);
-                app.start_picker(opts, initial);
+                app.picker.start(opts, initial);
                 app.mode = Mode::IssueFormSelect(idx);
             }
         }
@@ -102,7 +102,7 @@ pub(crate) fn handle_form_select_key(app: &mut App, key: KeyEvent, idx: usize) {
     }
     match key.code {
         KeyCode::Esc => app.mode = Mode::IssueForm,
-        KeyCode::Enter => match app.picker_selected_original() {
+        KeyCode::Enter => match app.picker.selected_original() {
             Some(orig) => {
                 if let Some(form) = &mut app.issue_form {
                     // Index 0 is "—" (clear); real options are offset by 1.
@@ -112,7 +112,7 @@ pub(crate) fn handle_form_select_key(app: &mut App, key: KeyEvent, idx: usize) {
             }
             // No options at all → close; filter matching nothing → no-op
             // so the filter can be corrected.
-            None if app.select_options.is_empty() => app.mode = Mode::IssueForm,
+            None if app.picker.options.is_empty() => app.mode = Mode::IssueForm,
             None => {}
         },
         _ => {}
@@ -126,15 +126,13 @@ pub(crate) fn handle_form_multi_key(app: &mut App, key: KeyEvent, idx: usize) {
     match key.code {
         KeyCode::Esc => app.mode = Mode::IssueForm, // discard toggles
         KeyCode::Char(' ') => {
-            if let Some(orig) = app.picker_selected_original()
-                && !app.multi_selected.remove(&orig)
-            {
-                app.multi_selected.insert(orig);
+            if let Some(orig) = app.picker.selected_original() {
+                app.picker.toggle_multi(orig);
             }
         }
         KeyCode::Enter => {
             if let Some(form) = &mut app.issue_form {
-                *form.multi_set_mut(idx) = app.multi_selected.clone();
+                *form.multi_set_mut(idx) = app.picker.multi_selected.clone();
             }
             app.mode = Mode::IssueForm;
         }
