@@ -14,6 +14,11 @@ styled text — the URL is dropped, keeping the pane readable in a terminal).
 > `http(s)://` URLs and `[text](url)` labels are now clickable OSC 8 terminal
 > hyperlinks. See [`clickable-urls.md`](clickable-urls.md).
 
+> **Superseded (#99, 2026-07-29):** GFM pipe tables now render as tables, and
+> the one-`Line`-per-source-line property below no longer holds for them —
+> table cells wrap inside their column. `render_with_links` also takes a pane
+> width now. See [`markdown-tables.md`](markdown-tables.md).
+
 ## Approach
 
 A small in-house renderer (`src/tui/markdown.rs`), not a dependency. Two
