@@ -63,7 +63,7 @@ pub(super) fn draw_detail_body(
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 
-    let (lines, links) = body_lines_links(issue, selected, t);
+    let (lines, links) = body_lines_links(issue, selected, inner_w as usize, t);
     let (wrapped, rects) = linkmap::wrap(&lines, &links, inner_w as usize);
     let content_h = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
     let max_scroll = content_h.saturating_sub(inner_h);
@@ -150,8 +150,13 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
 }
 
 /// The issue metadata + description lines, without link positions.
-pub(super) fn body_lines(issue: &Issue, selected: bool, t: &Theme) -> Vec<Line<'static>> {
-    body_lines_links(issue, selected, t).0
+pub(super) fn body_lines(
+    issue: &Issue,
+    selected: bool,
+    width: usize,
+    t: &Theme,
+) -> Vec<Line<'static>> {
+    body_lines_links(issue, selected, width, t).0
 }
 
 /// [`body_lines`] plus the URL positions in the description, with each link's
@@ -160,6 +165,7 @@ pub(super) fn body_lines(issue: &Issue, selected: bool, t: &Theme) -> Vec<Line<'
 pub(super) fn body_lines_links(
     issue: &Issue,
     selected: bool,
+    width: usize,
     t: &Theme,
 ) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
     let mut title_style = title_style(issue, t).add_modifier(Modifier::BOLD);
@@ -211,7 +217,7 @@ pub(super) fn body_lines_links(
         Line::default(),
     ];
     let base = lines.len();
-    let (md_lines, md_links) = markdown::render_with_links(&issue.body, t);
+    let (md_lines, md_links) = markdown::render_with_links(&issue.body, width, t);
     let links = md_links
         .into_iter()
         .map(|mut l| {
@@ -256,7 +262,7 @@ pub(super) fn comment_card_lines_links(
     }
     let mut lines = vec![rule_line(&header, card_width, header_style)];
     let base = lines.len();
-    let (md_lines, md_links) = markdown::render_with_links(&c.body, t);
+    let (md_lines, md_links) = markdown::render_with_links(&c.body, card_width, t);
     let links = md_links
         .into_iter()
         .map(|mut l| {
@@ -274,7 +280,10 @@ pub(super) fn comment_card_lines_links(
 /// `width`, measured with the same wrapper the region renders with so the
 /// scroll clamps match the drawn rows.
 pub fn body_content_height(issue: &Issue, width: u16) -> u16 {
-    paragraph_height(&body_lines(issue, false, &Theme::default()), width)
+    paragraph_height(
+        &body_lines(issue, false, width as usize, &Theme::default()),
+        width,
+    )
 }
 
 /// Wrapped height of one comment card (header rule + body + footer + blank) at
@@ -327,6 +336,54 @@ mod tests {
         assert_eq!(comment_height(&test_comment("one line"), 80), 4);
         // header + 3 body + footer + blank.
         assert_eq!(comment_height(&test_comment("a\nb\nc"), 80), 6);
+    }
+
+    /// A table breaks the renderer's one-line-per-source-line property, so the
+    /// only thing keeping the scroll clamps honest is that the measurement and
+    /// the draw render through the same function at the same width.
+    #[test]
+    fn table_measured_height_matches_the_rendered_rows() {
+        let body =
+            "| Repo | Notes |\n|------|-------|\n| homelabia | needs a regression test today |";
+        let mut with_table = issue(vec![]);
+        with_table.body = body.into();
+
+        for width in [30u16, 46, 80] {
+            let lines = body_lines(&with_table, false, width as usize, &Theme::default());
+            let drawn = linkmap::wrap(&lines, &[], width as usize).0.len();
+            assert_eq!(
+                body_content_height(&with_table, width) as usize,
+                drawn,
+                "at width {width}"
+            );
+        }
+    }
+
+    /// Guards the test above against passing trivially: a renderer that left the
+    /// table as raw pipes would also wrap, so pin the height the *table* layout
+    /// produces (4 metadata + header + rule + a body row wrapped over 3 rows).
+    #[test]
+    fn table_body_expands_to_its_laid_out_row_count() {
+        let body =
+            "| Repo | Notes |\n|------|-------|\n| homelabia | needs a regression test today |";
+        let mut with_table = issue(vec![]);
+        with_table.body = body.into();
+        // Measured against an empty body so the metadata header's own wrapping
+        // at this width cancels out: the table contributes a header row, a rule,
+        // and a body row laid out over three rows. Left as raw pipes it would
+        // contribute four.
+        let baseline = body_content_height(&issue(vec![]), 30);
+        assert_eq!(body_content_height(&with_table, 30), baseline + 5);
+
+        let lines = body_lines(&with_table, false, 30, &Theme::default());
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().any(|l: &String| l.contains('┼')),
+            "expected a table rule, got {rendered:?}"
+        );
     }
 
     #[test]

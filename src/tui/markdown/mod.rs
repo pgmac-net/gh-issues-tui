@@ -1,16 +1,25 @@
 //! Simple, line-oriented markdown renderer for the detail pane.
 //!
-//! `render` emits exactly one output [`Line`] per input line — block styling
-//! (headings, fences, quotes, lists) never adds or drops a line, only restyles
-//! it. The detail pane's scroll clamps measure *wrapped* height with ratatui's
-//! `Paragraph::line_count`, so this one-line-per-source-line property is no
-//! longer load-bearing for scroll sync, but it keeps the mapping predictable.
+//! Every block *except* a table emits exactly one output [`Line`] per input
+//! line — headings, fences, quotes and lists restyle a line, they never add or
+//! drop one. [`table`] is the deliberate exception (#99): it consumes a whole
+//! source block and wraps cells inside their columns, so one source row becomes
+//! as many screen rows as its tallest cell.
+//!
+//! That is safe because the detail pane's scroll clamps measure *wrapped*
+//! height by rendering through this same function, so measured and drawn
+//! heights cannot disagree. It does mean [`LinkSpan::line`] must be indexed
+//! against the output line, never the source line.
+
+mod inline;
+mod table;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
+use inline::{Local, parse_inline_links};
 
 /// A URL and the display-column span it occupies within a rendered line.
 ///
@@ -25,17 +34,27 @@ pub struct LinkSpan {
     pub url: String,
 }
 
-/// Render `body` as styled markdown, one output line per input line, and report
+/// Render `body` as styled markdown into a pane `width` cells wide, and report
 /// every URL's position (bare `http(s)://` URLs and markdown `[label](url)`
 /// links) so the caller can make them clickable. Fenced code and headings are
 /// not scanned for links.
-pub fn render_with_links(body: &str, t: &Theme) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
-    let mut out = Vec::with_capacity(body.lines().count());
+///
+/// `width` is only consulted for tables, which lay their columns out to fit;
+/// every other block is emitted unwrapped for [`super::linkmap`] to wrap.
+pub fn render_with_links(
+    body: &str,
+    width: usize,
+    t: &Theme,
+) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
+    let src: Vec<&str> = body.lines().collect();
+    let mut out = Vec::with_capacity(src.len());
     let mut links = Vec::new();
     let mut in_fence = false;
     let mut fence_char = '`';
 
-    for (idx, raw) in body.lines().enumerate() {
+    let mut i = 0;
+    while i < src.len() {
+        let raw = src[i];
         let trimmed = raw.trim_start();
 
         if let Some(c) = fence_open_char(trimmed) {
@@ -46,34 +65,48 @@ pub fn render_with_links(body: &str, t: &Theme) -> (Vec<Line<'static>>, Vec<Link
                 fence_char = c;
             }
             out.push(Line::styled(raw.to_string(), code_style(t)));
+            i += 1;
             continue;
         }
 
         if in_fence {
             out.push(Line::styled(raw.to_string(), code_style(t)));
+            i += 1;
+            continue;
+        }
+
+        // Tables consume several source lines at once and emit a different
+        // number of output lines, so they are dispatched before the per-line
+        // block rules.
+        if let Some((table, used)) = table::parse(&src[i..]) {
+            let (rows, row_links) = table.render(width, t);
+            let base = out.len();
+            links.extend(row_links.into_iter().map(|mut l| {
+                l.line += base;
+                l
+            }));
+            out.extend(rows);
+            i += used;
             continue;
         }
 
         let (line, locals) = render_line_links(raw, trimmed, t);
+        // Indexed against the *output* line, which no longer tracks the source
+        // line index once a table has expanded rows above it.
+        let line_idx = out.len();
         for l in locals {
             links.push(LinkSpan {
-                line: idx,
+                line: line_idx,
                 col_start: l.start,
                 col_end: l.end,
                 url: l.url,
             });
         }
         out.push(line);
+        i += 1;
     }
 
     (out, links)
-}
-
-/// A link located within a single parsed span run: display-column range plus URL.
-struct Local {
-    start: usize,
-    end: usize,
-    url: String,
 }
 
 fn fence_open_char(trimmed: &str) -> Option<char> {
@@ -203,216 +236,13 @@ fn link_style(t: &Theme) -> Style {
         .add_modifier(Modifier::UNDERLINED)
 }
 
-/// Inline span parser: bold (`**`/`__`), italic (`*`/`_`), inline code
-/// (`` ` ``), links (`[text](url)`), bare `http(s)://` URLs, and `\` escapes.
-/// Also reports every link's display-column span so the label / URL text can be
-/// made clickable. Columns are relative to the start of the returned span run
-/// (the caller offsets past any list prefix).
-fn parse_inline_links(text: &str, t: &Theme) -> (Vec<Span<'static>>, Vec<Local>) {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut spans = Vec::new();
-    // (span index, url) for each clickable span; columns are resolved below.
-    let mut marks: Vec<(usize, String)> = Vec::new();
-    let mut buf = String::new();
-    let mut i = 0;
-
-    while i < n {
-        let c = chars[i];
-        match c {
-            '\\' if i + 1 < n => {
-                buf.push(chars[i + 1]);
-                i += 2;
-            }
-            '`' => {
-                if let Some(close) = find_char(&chars, i + 1, '`') {
-                    flush(&mut spans, &mut buf);
-                    let inner: String = chars[i + 1..close].iter().collect();
-                    spans.push(Span::styled(inner, code_style(t)));
-                    i = close + 1;
-                } else {
-                    buf.push(c);
-                    i += 1;
-                }
-            }
-            '*' | '_' => {
-                let marker = c;
-                let double = i + 1 < n && chars[i + 1] == marker;
-                let marker_len = if double { 2 } else { 1 };
-                let search_from = i + marker_len;
-                match find_marker(&chars, search_from, marker, marker_len) {
-                    Some(close) if close > search_from => {
-                        flush(&mut spans, &mut buf);
-                        let inner: String = chars[search_from..close].iter().collect();
-                        let style = if double {
-                            Style::default().add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().add_modifier(Modifier::ITALIC)
-                        };
-                        spans.push(Span::styled(inner, style));
-                        i = close + marker_len;
-                    }
-                    _ => {
-                        buf.push(c);
-                        i += 1;
-                    }
-                }
-            }
-            '[' => {
-                if let Some((close_bracket, close_paren)) = find_link(&chars, i) {
-                    flush(&mut spans, &mut buf);
-                    let label: String = chars[i + 1..close_bracket].iter().collect();
-                    let url: String = chars[close_bracket + 2..close_paren].iter().collect();
-                    if !url.is_empty() {
-                        marks.push((spans.len(), url));
-                    }
-                    spans.push(Span::styled(label, link_style(t)));
-                    i = close_paren + 1;
-                } else {
-                    buf.push(c);
-                    i += 1;
-                }
-            }
-            _ => {
-                if let Some(end) = bare_url_end(&chars, i) {
-                    flush(&mut spans, &mut buf);
-                    let url: String = chars[i..end].iter().collect();
-                    marks.push((spans.len(), url.clone()));
-                    spans.push(Span::styled(url, link_style(t)));
-                    i = end;
-                } else {
-                    buf.push(c);
-                    i += 1;
-                }
-            }
-        }
-    }
-    flush(&mut spans, &mut buf);
-
-    if spans.is_empty() {
-        spans.push(Span::raw(String::new()));
-    }
-
-    // Resolve each mark's column span from the cumulative width of prior spans.
-    let mut starts = Vec::with_capacity(spans.len() + 1);
-    let mut acc = 0usize;
-    for s in &spans {
-        starts.push(acc);
-        acc += UnicodeWidthStr::width(s.content.as_ref());
-    }
-    starts.push(acc);
-    let locals = marks
-        .into_iter()
-        .map(|(idx, url)| Local {
-            start: starts[idx],
-            end: starts[idx + 1],
-            url,
-        })
-        .collect();
-
-    (spans, locals)
-}
-
-/// If a bare `http(s)://` URL starts at `chars[i]`, return its end index
-/// (exclusive). The URL must sit on a boundary (not mid-word), extends to the
-/// next whitespace or URL-hostile character, and has trailing sentence
-/// punctuation trimmed (a closing `)` is kept only when the URL opened one).
-fn bare_url_end(chars: &[char], i: usize) -> Option<usize> {
-    if i > 0 && chars[i - 1].is_alphanumeric() {
-        return None;
-    }
-    let scheme_len = if chars[i..].starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/']) {
-        8
-    } else if chars[i..].starts_with(&['h', 't', 't', 'p', ':', '/', '/']) {
-        7
-    } else {
-        return None;
-    };
-
-    let body_start = i + scheme_len;
-    let mut end = body_start;
-    while end < chars.len() {
-        let c = chars[end];
-        if c.is_whitespace()
-            || matches!(
-                c,
-                '<' | '>' | '"' | '`' | '{' | '}' | '|' | '\\' | '^' | '[' | ']'
-            )
-        {
-            break;
-        }
-        end += 1;
-    }
-    if end == body_start {
-        return None; // scheme with no host
-    }
-
-    while end > body_start {
-        let c = chars[end - 1];
-        let trim = match c {
-            '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' => true,
-            // Trim a trailing `)` only when it is unbalanced (more closes than
-            // opens in the URL so far), so `Foo_(bar)` keeps its own paren but a
-            // wrapping `(url)` does not.
-            ')' => {
-                let opens = chars[i..end].iter().filter(|&&x| x == '(').count();
-                let closes = chars[i..end].iter().filter(|&&x| x == ')').count();
-                closes > opens
-            }
-            _ => false,
-        };
-        if trim {
-            end -= 1;
-        } else {
-            break;
-        }
-    }
-
-    Some(end)
-}
-
-fn flush(spans: &mut Vec<Span<'static>>, buf: &mut String) {
-    if !buf.is_empty() {
-        spans.push(Span::raw(std::mem::take(buf)));
-    }
-}
-
-fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
-    chars[from..]
-        .iter()
-        .position(|&c| c == target)
-        .map(|p| p + from)
-}
-
-fn find_marker(chars: &[char], from: usize, marker: char, len: usize) -> Option<usize> {
-    let n = chars.len();
-    let mut i = from;
-    while i + len <= n {
-        if chars[i..i + len].iter().all(|&c| c == marker) {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-fn find_link(chars: &[char], start: usize) -> Option<(usize, usize)> {
-    let n = chars.len();
-    let close_bracket = find_char(chars, start + 1, ']')?;
-    if close_bracket + 1 >= n || chars[close_bracket + 1] != '(' {
-        return None;
-    }
-    let close_paren = find_char(chars, close_bracket + 2, ')')?;
-    Some((close_bracket, close_paren))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Styled lines only — the link positions are exercised separately.
     fn render(body: &str, t: &Theme) -> Vec<Line<'static>> {
-        render_with_links(body, t).0
+        render_with_links(body, 80, t).0
     }
 
     fn spans_text(line: &Line<'_>) -> String {
@@ -545,7 +375,7 @@ mod tests {
     #[test]
     fn bare_url_is_detected_with_columns() {
         let t = Theme::default();
-        let (lines, links) = render_with_links("see https://example.com/x now", &t);
+        let (lines, links) = render_with_links("see https://example.com/x now", 80, &t);
         assert_eq!(spans_text(&lines[0]), "see https://example.com/x now");
         assert_eq!(links.len(), 1);
         let l = &links[0];
@@ -566,7 +396,7 @@ mod tests {
     #[test]
     fn markdown_link_reports_url_over_label_columns() {
         let t = Theme::default();
-        let (_, links) = render_with_links("see [the docs](https://example.com/x) here", &t);
+        let (_, links) = render_with_links("see [the docs](https://example.com/x) here", 80, &t);
         assert_eq!(links.len(), 1);
         let l = &links[0];
         assert_eq!(l.url, "https://example.com/x");
@@ -578,24 +408,24 @@ mod tests {
     #[test]
     fn bare_url_trailing_punctuation_is_trimmed() {
         let t = Theme::default();
-        let (_, links) = render_with_links("visit https://example.com/path.", &t);
+        let (_, links) = render_with_links("visit https://example.com/path.", 80, &t);
         assert_eq!(links[0].url, "https://example.com/path");
         // A closing paren is kept when the URL opened one.
-        let (_, balanced) = render_with_links("(https://en.wikipedia.org/wiki/Foo_(bar))", &t);
+        let (_, balanced) = render_with_links("(https://en.wikipedia.org/wiki/Foo_(bar))", 80, &t);
         assert_eq!(balanced[0].url, "https://en.wikipedia.org/wiki/Foo_(bar)");
     }
 
     #[test]
     fn url_inside_inline_code_is_not_linked() {
         let t = Theme::default();
-        let (_, links) = render_with_links("run `curl https://example.com`", &t);
+        let (_, links) = render_with_links("run `curl https://example.com`", 80, &t);
         assert!(links.is_empty());
     }
 
     #[test]
     fn url_inside_fence_is_not_linked() {
         let t = Theme::default();
-        let (_, links) = render_with_links("```\nhttps://example.com\n```", &t);
+        let (_, links) = render_with_links("```\nhttps://example.com\n```", 80, &t);
         assert!(links.is_empty());
     }
 
@@ -603,7 +433,7 @@ mod tests {
     fn link_columns_offset_past_list_prefix() {
         let t = Theme::default();
         // "• " prefix is 2 cols, so a URL at the start of the item begins at col 2.
-        let (_, links) = render_with_links("- https://example.com", &t);
+        let (_, links) = render_with_links("- https://example.com", 80, &t);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].col_start, 2);
     }
@@ -611,7 +441,7 @@ mod tests {
     #[test]
     fn url_midword_is_not_detected() {
         let t = Theme::default();
-        let (_, links) = render_with_links("xhttps://example.com", &t);
+        let (_, links) = render_with_links("xhttps://example.com", 80, &t);
         assert!(links.is_empty());
     }
 }
