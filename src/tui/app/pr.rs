@@ -74,6 +74,26 @@ impl PrState {
         self.scroll = targets[next].line;
     }
 
+    /// `j`/`k`: move one row, never past the last row that has content.
+    ///
+    /// `max` comes from `ui::pr_max_scroll`, measured off the row model the
+    /// popup draws — this module computes no geometry, so the bound is passed
+    /// in rather than derived here.
+    pub fn scroll_by(&mut self, delta: i16, max: u16) {
+        self.scroll = if delta < 0 {
+            self.scroll.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.scroll.saturating_add(delta as u16).min(max)
+        };
+    }
+
+    /// Pull the scroll back inside the content after [`Self::select`] snapped
+    /// it to a target's row. A target row is always within the content, so
+    /// this can never scroll the selection off screen.
+    pub fn clamp_scroll(&mut self, max: u16) {
+        self.scroll = self.scroll.min(max);
+    }
+
     /// URL the currently selected row would open with `o`/Enter.
     pub fn selected_url(&self, targets: &[PrTarget]) -> Option<String> {
         targets.get(self.sel).map(|t| t.url.clone())
@@ -179,6 +199,40 @@ mod tests {
         // A response for the still-current target is accepted.
         s.set_summary(&pr(1), Err("again".into()));
         assert!(s.summary.is_some());
+    }
+
+    /// Regression for the unbounded `j` (#102): the popup used to scroll past
+    /// the end of its content into blank space, with nothing but `u16::MAX` to
+    /// stop it. Markdown tables expand rows, so this got easier to hit.
+    #[test]
+    fn scrolling_down_stops_at_the_last_row_with_content() {
+        let mut s = loaded();
+        s.scroll = 0;
+        for _ in 0..1000 {
+            s.scroll_by(1, 7);
+        }
+        assert_eq!(s.scroll, 7, "j must stop at the measured bound");
+    }
+
+    #[test]
+    fn scrolling_up_stops_at_the_top() {
+        let mut s = loaded();
+        s.scroll = 1;
+        s.scroll_by(-1, 7);
+        s.scroll_by(-1, 7);
+        assert_eq!(s.scroll, 0, "k must not underflow");
+    }
+
+    /// `select` snaps the scroll to a target's row without knowing the
+    /// viewport, so the key handler pulls it back inside the content.
+    #[test]
+    fn clamp_scroll_pulls_a_snapped_selection_back_inside_the_content() {
+        let mut s = loaded();
+        s.scroll = 40;
+        s.clamp_scroll(7);
+        assert_eq!(s.scroll, 7);
+        s.clamp_scroll(9);
+        assert_eq!(s.scroll, 7, "clamping never scrolls further down");
     }
 
     #[test]

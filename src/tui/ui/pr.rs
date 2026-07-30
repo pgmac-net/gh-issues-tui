@@ -1,7 +1,9 @@
 use super::prelude::*;
-use super::widgets::centered;
+use super::widgets::{apply_hyperlinks, centered, inner_area};
 use crate::provider::types::{PrState, PrSummary, WorkflowRunInfo};
 use crate::tui::app::PrTarget;
+use crate::tui::markdown;
+use crate::tui::markdown::LinkSpan;
 
 pub(super) fn conclusion_style(conclusion: Option<&str>, t: &Theme) -> (&'static str, Color) {
     match conclusion.unwrap_or("PENDING") {
@@ -21,9 +23,28 @@ pub fn pr_summary_inner_width(frame_width: u16) -> u16 {
     PR_SUMMARY_WIDTH.min(frame_width).saturating_sub(2)
 }
 
+/// The PR summary popup's outer height for a frame `frame_height` tall, before
+/// `centered` clamps it to the frame.
+fn pr_summary_outer_height(frame_height: u16) -> u16 {
+    (frame_height * 3 / 4).max(12)
+}
+
+/// The PR summary popup's inner text height for a frame `frame_height` tall.
+/// Shared by the renderer and the key handler so a scroll clamp measured off
+/// the terminal matches the viewport actually drawn.
+pub fn pr_summary_inner_height(frame_height: u16) -> u16 {
+    pr_summary_outer_height(frame_height)
+        .min(frame_height)
+        .saturating_sub(2)
+}
+
 /// The PR summary popup's outer area within `frame`.
 pub(super) fn pr_summary_area(frame: Rect) -> Rect {
-    centered(frame, PR_SUMMARY_WIDTH, (frame.height * 3 / 4).max(12))
+    centered(
+        frame,
+        PR_SUMMARY_WIDTH,
+        pr_summary_outer_height(frame.height),
+    )
 }
 
 /// One drawn row of the PR summary popup: the line as rendered, plus the URL
@@ -37,22 +58,54 @@ pub struct PrRow {
     pub url: Option<String>,
 }
 
-/// Build the popup's rows, already wrapped to `width`.
+/// Build the popup's rows, already wrapped to `width`, plus one [`LinkRect`]
+/// per URL run in the rendered body.
 ///
 /// Wrapping happens here rather than in the `Paragraph` so that a row index
 /// means the same thing to the renderer and to the key handler — the house
 /// rule the detail pane already follows (see [`super::linkmap`]). A logical
 /// line that wraps contributes several rows; only its first carries the URL,
 /// so selecting it scrolls to where the item starts.
+///
+/// Each logical line is wrapped on its own so that per-line invariant is
+/// obvious, which means its links must be rebased to line 0 going in and the
+/// resulting rects rebased back out — [`linkmap::wrap`] treats lines
+/// independently, so this is exact.
 pub fn pr_summary_rows(
     summary: Option<&Result<PrSummary, String>>,
     t: &Theme,
     width: u16,
-) -> Vec<PrRow> {
-    let tagged = pr_summary_logical_rows(summary, t);
+) -> (Vec<PrRow>, Vec<LinkRect>) {
+    let (tagged, links) = pr_summary_logical_rows(summary, t, width);
     let mut out = Vec::new();
-    for (line, url) in tagged {
-        let (wrapped, _) = linkmap::wrap(&[line], &[], width as usize);
+    let mut rects = Vec::new();
+    for (li, (line, url)) in tagged.into_iter().enumerate() {
+        // This line's links, renumbered to the single-line slice being wrapped,
+        // alongside where each one sat in the whole popup's link list.
+        let (ids, local): (Vec<usize>, Vec<LinkSpan>) = links
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.line == li)
+            .map(|(id, l)| {
+                (
+                    id,
+                    LinkSpan {
+                        line: 0,
+                        ..l.clone()
+                    },
+                )
+            })
+            .unzip();
+
+        let base = out.len();
+        let (wrapped, local_rects) = linkmap::wrap(&[line], &local, width as usize);
+        // `id` must stay unique across the whole popup, or a terminal groups
+        // two different URLs under one OSC 8 link.
+        rects.extend(local_rects.into_iter().map(|mut r| {
+            r.vrow += base;
+            r.id = ids[r.id];
+            r
+        }));
         for (i, line) in wrapped.into_iter().enumerate() {
             out.push(PrRow {
                 line,
@@ -61,7 +114,7 @@ pub fn pr_summary_rows(
             });
         }
     }
-    out
+    (out, rects)
 }
 
 /// The navigable rows of the PR summary popup, as positions in
@@ -71,6 +124,7 @@ pub fn pr_targets(summary: Option<&Result<PrSummary, String>>, width: u16) -> Ve
     // sound basis for measurement — the same convention `body_content_height`
     // uses.
     pr_summary_rows(summary, &Theme::default(), width)
+        .0
         .into_iter()
         .enumerate()
         .filter_map(|(i, row)| {
@@ -82,28 +136,56 @@ pub fn pr_targets(summary: Option<&Result<PrSummary, String>>, width: u16) -> Ve
         .collect()
 }
 
-/// The popup's unwrapped lines, each tagged with the URL it opens (if any).
+/// The largest useful `PrState::scroll` for a popup `width` × `inner_height`:
+/// the row past which only blank space remains. The analogue of the detail
+/// pane's `body_content_height`, and measured through the same row model the
+/// popup draws so the two cannot disagree.
+pub fn pr_max_scroll(
+    summary: Option<&Result<PrSummary, String>>,
+    width: u16,
+    inner_height: u16,
+) -> u16 {
+    let rows = pr_summary_rows(summary, &Theme::default(), width).0.len();
+    u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_sub(inner_height)
+}
+
+/// The popup's unwrapped lines, each tagged with the URL it opens (if any),
+/// plus the body's link spans indexed against that line list.
+///
+/// `width` is passed through to the markdown renderer, which consults it to lay
+/// out tables; every other block is emitted unwrapped for [`pr_summary_rows`].
 pub(super) fn pr_summary_logical_rows(
     summary: Option<&Result<PrSummary, String>>,
     t: &Theme,
-) -> Vec<(Line<'static>, Option<String>)> {
+    width: u16,
+) -> (Vec<(Line<'static>, Option<String>)>, Vec<LinkSpan>) {
     let plain = |line: Line<'static>| (line, None);
 
     let s = match summary {
         None => {
-            return vec![plain(Line::styled(
-                "loading PR summary…",
-                Style::default().fg(t.dim),
-            ))];
+            return (
+                vec![plain(Line::styled(
+                    "loading PR summary…",
+                    Style::default().fg(t.dim),
+                ))],
+                Vec::new(),
+            );
         }
         Some(Err(e)) => {
-            return vec![plain(Line::styled(
-                format!("failed: {e}"),
-                Style::default().fg(t.error),
-            ))];
+            return (
+                vec![plain(Line::styled(
+                    format!("failed: {e}"),
+                    Style::default().fg(t.error),
+                ))],
+                Vec::new(),
+            );
         }
         Some(Ok(s)) => s,
     };
+
+    let mut links: Vec<LinkSpan> = Vec::new();
 
     let mut rows: Vec<(Line<'static>, Option<String>)> = Vec::new();
 
@@ -141,9 +223,17 @@ pub(super) fn pr_summary_logical_rows(
     ])));
     rows.push(plain(Line::default()));
 
-    for l in s.body.lines() {
-        rows.push(plain(Line::raw(l.to_string())));
-    }
+    // The body is markdown, rendered through the same renderer as the detail
+    // pane (#102). A table expands one source row into several output lines, so
+    // link line indices are rebased onto the row list rather than the source —
+    // the same rule `markdown::render_with_links` follows internally.
+    let base = rows.len();
+    let (body_lines, body_links) = markdown::render_with_links(&s.body, width as usize, t);
+    links.extend(body_links.into_iter().map(|mut l| {
+        l.line += base;
+        l
+    }));
+    rows.extend(body_lines.into_iter().map(plain));
     rows.push(plain(Line::default()));
 
     let review_line = match s.reviews.decision {
@@ -211,7 +301,7 @@ pub(super) fn pr_summary_logical_rows(
         &s.default_branch_runs,
     );
 
-    rows
+    (rows, links)
 }
 
 pub(super) fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
@@ -223,7 +313,7 @@ pub(super) fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
         .title(" PR summary (j/k scroll · Tab select · o open · r refresh · Esc close) ");
 
     let width = pr_summary_inner_width(f.area().width);
-    let rows = pr_summary_rows(app.pr.summary.as_ref(), t, width);
+    let (rows, rects) = pr_summary_rows(app.pr.summary.as_ref(), t, width);
     let mut lines: Vec<Line> = rows.into_iter().map(|r| r.line).collect();
 
     // Highlight the selected row (`Tab`/`Shift+Tab`) by patching a
@@ -249,6 +339,7 @@ pub(super) fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
         .block(block)
         .scroll((app.pr.scroll, 0));
     f.render_widget(para, area);
+    apply_hyperlinks(f.buffer_mut(), inner_area(area), &rects, app.pr.scroll);
 }
 
 #[cfg(test)]
@@ -445,11 +536,157 @@ mod tests {
     #[test]
     fn golden_wrapped_rows_tag_only_their_first_row() {
         let app = pr_summary_app("short body");
-        let rows = pr_summary_rows(app.pr.summary.as_ref(), &Theme::default(), 20);
+        let (rows, _) = pr_summary_rows(app.pr.summary.as_ref(), &Theme::default(), 20);
         let tagged = rows.iter().filter(|r| r.url.is_some()).count();
         assert_eq!(
             tagged, 5,
             "a narrow width wraps rows but must not multiply targets"
+        );
+    }
+
+    /// A GFM table in the PR body draws as a table, not as a wall of pipes —
+    /// the popup shares the detail pane's renderer (#102).
+    #[test]
+    fn golden_body_table_draws_as_a_table() {
+        let app = pr_summary_app("| Repo | Status |\n|------|--------|\n| homelabia | open |");
+        let popup = popup_box(&render_app(&app, 100, 30));
+        let text = popup.text();
+
+        assert!(
+            text.contains(" Repo      │ Status"),
+            "table header row missing:\n{text}"
+        );
+        assert!(
+            text.contains("───────────┼───────"),
+            "table rule row missing:\n{text}"
+        );
+        assert!(
+            text.contains(" homelabia │ open"),
+            "table body row missing:\n{text}"
+        );
+        assert!(
+            !text.contains("|------|"),
+            "raw delimiter row still drawn:\n{text}"
+        );
+    }
+
+    /// Headings lose their hashes and bold loses its asterisks, rather than
+    /// rendering the markup literally as they did before #102.
+    #[test]
+    fn golden_body_markup_is_rendered_not_shown_literally() {
+        let app = pr_summary_app("## Summary\nsome **bold** words");
+        let popup = popup_box(&render_app(&app, 100, 30));
+        let text = popup.text();
+
+        assert!(text.contains("Summary"), "heading text missing:\n{text}");
+        assert!(!text.contains("## Summary"), "hashes still drawn:\n{text}");
+        assert!(
+            text.contains("some bold words"),
+            "bold markers not stripped:\n{text}"
+        );
+    }
+
+    /// The sharpest regression test for #102: a table expands one source row
+    /// into several drawn rows, so a body rendered through the markdown layer
+    /// can shift every check and run target unless the row model owns the
+    /// expansion. This is the #87 defect made reachable again by tables.
+    #[test]
+    fn golden_targets_survive_a_row_expanding_table_body() {
+        // A narrow column forces cell wrapping, so this body's three source
+        // lines draw as more than three rows.
+        let body = "| Repo | Status |\n|------|--------|\n| homelabia | a fairly long status value that must wrap inside its column |";
+        let app = pr_summary_app(body);
+        let popup = popup_box(&render_app(&app, 100, 30));
+        let targets = app_pr_targets(&app, 100);
+
+        assert_eq!(targets.len(), 5, "target count");
+        for (i, needle) in [
+            (0usize, "o/r#7"),
+            (1, "check-one"),
+            (2, "check-two"),
+            (3, "pr-workflow"),
+            (4, "main-workflow"),
+        ] {
+            assert_eq!(
+                targets[i].line as usize,
+                content_row_of(&popup, needle),
+                "target {i} ({needle}) drifted when the table expanded rows:\n{}",
+                popup.text()
+            );
+        }
+    }
+
+    /// Body links are reported as link rects so `apply_hyperlinks` can make
+    /// them OSC 8 clickable, indexed against the drawn row — not the source
+    /// line — and with ids unique across the popup.
+    #[test]
+    fn body_links_are_rected_against_their_drawn_row() {
+        let app =
+            pr_summary_app("see [one](https://example.test/1) and [two](https://example.test/2)");
+        let (rows, rects) = pr_summary_rows(app.pr.summary.as_ref(), &Theme::default(), 74);
+
+        assert_eq!(rects.len(), 2, "one rect per link: {rects:?}");
+        assert_eq!(rects[0].url, "https://example.test/1");
+        assert_eq!(rects[1].url, "https://example.test/2");
+        assert_ne!(rects[0].id, rects[1].id, "ids must be unique across links");
+
+        // Both land on the drawn row whose text carries them.
+        for r in &rects {
+            let drawn: String = rows[r.vrow]
+                .line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(
+                drawn.contains("see one and two"),
+                "rect at vrow {} points at {drawn:?}",
+                r.vrow
+            );
+        }
+        assert_eq!(
+            rects[0].col_start, 4,
+            "columns are display cells: {rects:?}"
+        );
+        assert_eq!(rects[0].col_end, 7);
+    }
+
+    /// A link below a table is indexed against the *expanded* output, so the
+    /// rect follows the rows the table actually drew.
+    #[test]
+    fn a_link_below_a_table_is_indexed_against_the_expanded_output() {
+        let app =
+            pr_summary_app("| a | b |\n|---|---|\n| 1 | 2 |\n\nsee <https://example.test/after>");
+        let (rows, rects) = pr_summary_rows(app.pr.summary.as_ref(), &Theme::default(), 74);
+
+        assert_eq!(rects.len(), 1, "{rects:?}");
+        let drawn: String = rows[rects[0].vrow]
+            .line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            drawn.contains("https://example.test/after"),
+            "rect landed on {drawn:?}"
+        );
+    }
+
+    /// The scroll bound is the row past which only blank space remains, and it
+    /// is zero when the content already fits.
+    #[test]
+    fn pr_max_scroll_is_rows_beyond_the_viewport() {
+        let app = pr_summary_app(&"a line\n".repeat(40));
+        let (rows, _) = pr_summary_rows(app.pr.summary.as_ref(), &Theme::default(), 74);
+
+        assert_eq!(
+            pr_max_scroll(app.pr.summary.as_ref(), 74, 20),
+            rows.len() as u16 - 20
+        );
+        assert_eq!(
+            pr_max_scroll(app.pr.summary.as_ref(), 74, rows.len() as u16 + 5),
+            0,
+            "content that fits cannot scroll"
         );
     }
 }

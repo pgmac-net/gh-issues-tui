@@ -32,7 +32,7 @@ Three layers, each a directory (`app/` state and pure logic, `event/` key handli
 - **Inline editing** reuses one `Mode::CommentEditor` widget for three targets (`NewComment`, `EditComment`, `EditBody`) via `EditorTarget` on `App`. An empty submission is discarded except for `EditBody` (clearing a description is valid).
 - New-issue form (`n`) is one inline form (`Mode::IssueForm`), not per-field modals — text fields edit in place, choice fields (assignees/labels/type/priority/project/milestone) are the one deliberate exception, using picker popups since those lists benefit from type-ahead. Full detail: `docs/inline-new-issue-form.md`.
 - Pickers have type-ahead: `select_idx` is positional within the **filtered** view, so every commit path maps back via `picker_selected_original()`.
-- `P` (detail pane) summarises a linked PR — full detail: `docs/pr-summary-modal-actionable.md`. `App::pr_target` guards against a stale response landing after the popup retargeted or closed.
+- `P` (detail pane) summarises a linked PR — full detail: `docs/pr-summary-modal-actionable.md`, and `docs/pr-summary-markdown.md` for the shared markdown renderer (#102). `App::pr_target` guards against a stale response landing after the popup retargeted or closed. The popup's body links are OSC 8 only, never `Tab` targets — `PrRow` holds one URL, a body line can hold several.
 
 ## Key design invariants
 
