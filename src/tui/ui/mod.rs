@@ -15,7 +15,7 @@ mod widgets;
 mod testutil;
 
 pub use detail::{body_content_height, comment_height, comment_offset};
-pub use pr::{pr_summary_inner_width, pr_targets};
+pub use pr::{pr_max_scroll, pr_summary_inner_height, pr_summary_inner_width, pr_targets};
 
 /// Items every rendering submodule needs. Kept in one place so the split
 /// files stay mechanical — each `use super::prelude::*` replaces what was a

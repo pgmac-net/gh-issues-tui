@@ -18,6 +18,11 @@ instead of raw pipes — aligned columns, a header rule, and `│` separators:
 Tables were explicitly out of scope for the original renderer
 ([`markdown-rendering-detail-pane.md`](markdown-rendering-detail-pane.md), #67).
 
+Since #102 the PR summary popup shares this renderer too
+([`pr-summary-markdown.md`](pr-summary-markdown.md)), so `Table::render` has a
+second width consumer: the popup's fixed 74-cell inner width, independent of the
+terminal size.
+
 ## Decisions
 
 Seven decisions, all taken deliberately on the ticket before implementation:

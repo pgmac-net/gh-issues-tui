@@ -132,3 +132,15 @@ pub(crate) fn pr_targets(app: &App) -> Vec<crate::tui::app::PrTarget> {
     let cols = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
     ui::pr_targets(app.pr.summary.as_ref(), ui::pr_summary_inner_width(cols))
 }
+
+/// The furthest the PR summary popup can usefully scroll at the live terminal
+/// size — measured off the same row model the popup draws, so the clamp can't
+/// drift from the rows on screen.
+pub(crate) fn pr_scroll_max(app: &App) -> u16 {
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    ui::pr_max_scroll(
+        app.pr.summary.as_ref(),
+        ui::pr_summary_inner_width(cols),
+        ui::pr_summary_inner_height(rows),
+    )
+}

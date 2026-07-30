@@ -36,18 +36,26 @@ pub(crate) fn handle_pr_summary_key(
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.close_pr_summary(),
         KeyCode::Char('j') | KeyCode::Down => {
-            app.pr.scroll = app.pr.scroll.saturating_add(1);
+            let max = pr_scroll_max(app);
+            app.pr.scroll_by(1, max);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.pr.scroll = app.pr.scroll.saturating_sub(1);
+            let max = pr_scroll_max(app);
+            app.pr.scroll_by(-1, max);
         }
+        // `PrState::select` snaps the scroll to the target's row; `app/`
+        // computes no geometry, so the bound is applied here instead.
         KeyCode::Tab => {
             let targets = pr_targets(app);
             app.pr.select(1, &targets);
+            let max = pr_scroll_max(app);
+            app.pr.clamp_scroll(max);
         }
         KeyCode::BackTab => {
             let targets = pr_targets(app);
             app.pr.select(-1, &targets);
+            let max = pr_scroll_max(app);
+            app.pr.clamp_scroll(max);
         }
         KeyCode::Char('o') | KeyCode::Enter => {
             if let Some(url) = app.pr.selected_url(&pr_targets(app)) {
