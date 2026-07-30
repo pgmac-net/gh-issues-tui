@@ -54,24 +54,28 @@ count.
 
 ## Testing
 
-- 6 new tests in `ui::pr`: table body drawn as a table, heading/bold markup
+- 7 new tests in `ui::pr`: table body drawn as a table, heading/bold markup
   stripped, link rects indexed against their drawn row with unique ids, a link
-  below a table indexed against the expanded output, and `pr_max_scroll`'s two
-  cases.
+  below a table indexed against the expanded output, `pr_max_scroll`'s two
+  cases, and a golden that renders the popup scrolled *to* the bound and
+  asserts the row model's last row is still on screen. That last one was
+  verified to fail when the bound is off by one, so it cannot pass trivially.
 - 3 new tests in `app::pr` pinning the clamp: `j` stops at the bound rather than
   running to `u16::MAX`, `k` does not underflow, and `clamp_scroll` never
   scrolls further down.
 - The five pre-existing `golden_*` popup tests were left untouched on purpose.
   They scrape target rows out of the rendered buffer, so they are the regression
   signal for the row model: if the rebases were wrong, they fail.
-- Full suite 370 → 383. `cargo clippy --all-targets -- -D warnings` and
+- Full suite 370 → 384. `cargo clippy --all-targets -- -D warnings` and
   `cargo fmt --check` clean.
 - Live-verified with the pty + pyte recipe in `.claude/skills/verify/SKILL.md`,
   against this repo's own PR #100 (whose description contains both a fenced
   pre-rendered example and a real 3-column GFM table). The real table rendered
   with `───┼───` rules and wrapped cells, `### Decisions` drew without its
   hashes, `**wrap**` without its asterisks, and the fenced block passed through
-  untouched.
+  untouched. Holding `j` (300 presses) came to rest with the last content row
+  against the popup's bottom border rather than scrolling into blank space, and
+  `Shift+Tab` to the last target landed on the same view.
 - pyte's `Screen.display` crashes on that PR's `🤖` footer — it trips over the
   empty continuation cell ratatui writes after a wide glyph. Confirmed
   pre-existing by reproducing it on an unmodified build at the same scroll
