@@ -80,11 +80,12 @@ impl PrState {
     /// popup draws — this module computes no geometry, so the bound is passed
     /// in rather than derived here.
     pub fn scroll_by(&mut self, delta: i16, max: u16) {
-        self.scroll = if delta < 0 {
+        let moved = if delta < 0 {
             self.scroll.saturating_sub(delta.unsigned_abs())
         } else {
-            self.scroll.saturating_add(delta as u16).min(max)
+            self.scroll.saturating_add(delta as u16)
         };
+        self.scroll = moved.min(max);
     }
 
     /// Pull the scroll back inside the content after [`Self::select`] snapped

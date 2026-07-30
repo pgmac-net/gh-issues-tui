@@ -40,7 +40,8 @@ pub(crate) fn handle_pr_summary_key(
             app.pr.scroll_by(1, max);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.pr.scroll_by(-1, 0);
+            let max = pr_scroll_max(app);
+            app.pr.scroll_by(-1, max);
         }
         // `PrState::select` snaps the scroll to the target's row; `app/`
         // computes no geometry, so the bound is applied here instead.
