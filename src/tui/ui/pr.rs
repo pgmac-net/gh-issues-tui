@@ -672,6 +672,40 @@ mod tests {
         );
     }
 
+    /// The bound is pinned against the *drawn* popup, not against the
+    /// arithmetic that produced it: scrolled all the way down, the popup's
+    /// last content row still carries the final row of the row model. If
+    /// `pr_max_scroll` over-counted, that row would be blank.
+    #[test]
+    fn golden_scrolled_to_the_bound_the_last_row_is_still_drawn() {
+        let mut app = pr_summary_app(&"a line\n".repeat(60));
+        let width = pr_summary_inner_width(100);
+        let (rows, _) = pr_summary_rows(app.pr.summary.as_ref(), &Theme::default(), width);
+
+        app.pr.scroll = pr_max_scroll(app.pr.summary.as_ref(), width, pr_summary_inner_height(30));
+        assert!(app.pr.scroll > 0, "this body must overflow the popup");
+
+        let popup = popup_box(&render_app(&app, 100, 30));
+        let last: String = rows
+            .last()
+            .unwrap()
+            .line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        // Last row of the popup box is its bottom border; the one above it is
+        // the final content row.
+        let drawn = popup.rows[popup.rows.len() - 2].trim_matches(['│', ' ']);
+        assert_eq!(
+            drawn,
+            last.trim(),
+            "the bound must leave the last row on screen:\n{}",
+            popup.text()
+        );
+    }
+
     /// The scroll bound is the row past which only blank space remains, and it
     /// is zero when the content already fits.
     #[test]
