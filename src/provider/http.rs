@@ -40,6 +40,20 @@ pub fn build_http_client(
         .build()?)
 }
 
+/// A fetch is usually several requests (page 1..n, then hydration), so cost is
+/// accumulated between [`RateLimitStore::begin_fetch`] and
+/// [`RateLimitStore::end_fetch`] and only published as a whole. Reporting the
+/// last *request* instead would show the cost of the final hydration batch,
+/// which is the least interesting number in the sequence.
+#[derive(Default)]
+struct Inner {
+    data: Option<RateLimitData>,
+    /// Cost accrued by the fetch currently in flight.
+    fetch_cost: u64,
+    /// Cost of the last fetch that ran to completion.
+    last_fetch_cost: Option<u64>,
+}
+
 /// The last-seen rate-limit state, shared by every clone of a client.
 ///
 /// Backends read their own headers and call [`RateLimitStore::set`]; the
@@ -47,15 +61,35 @@ pub fn build_http_client(
 /// in exactly one place. The event loop classifies errors by
 /// [`RATE_LIMIT_MSG_PREFIX`], so that prefix must lead the message.
 #[derive(Clone, Default)]
-pub struct RateLimitStore(Arc<Mutex<Option<RateLimitData>>>);
+pub struct RateLimitStore(Arc<Mutex<Inner>>);
 
 impl RateLimitStore {
     pub fn get(&self) -> Option<RateLimitData> {
-        *self.0.lock().unwrap()
+        let inner = self.0.lock().unwrap();
+        inner.data.map(|mut data| {
+            data.last_cost = inner.last_fetch_cost;
+            data
+        })
     }
 
     pub fn set(&self, data: RateLimitData) {
-        *self.0.lock().unwrap() = Some(data);
+        self.0.lock().unwrap().data = Some(data);
+    }
+
+    /// Start accumulating cost for a new multi-request fetch.
+    pub fn begin_fetch(&self) {
+        self.0.lock().unwrap().fetch_cost = 0;
+    }
+
+    /// Add one request's reported `rateLimit.cost`.
+    pub fn add_cost(&self, cost: u64) {
+        self.0.lock().unwrap().fetch_cost += cost;
+    }
+
+    /// Publish the accumulated cost as the last completed fetch's cost.
+    pub fn end_fetch(&self) {
+        let mut inner = self.0.lock().unwrap();
+        inner.last_fetch_cost = Some(inner.fetch_cost);
     }
 
     /// The rate-limit message for the currently stored state, falling back to
@@ -165,8 +199,53 @@ mod tests {
             remaining: 10,
             limit: 100,
             reset: 1_800_000_000,
+            last_cost: None,
         });
         assert_eq!(store.get().unwrap().remaining, 10);
+    }
+
+    #[test]
+    fn fetch_cost_accumulates_across_requests_and_publishes_once() {
+        let store = RateLimitStore::default();
+        store.set(RateLimitData {
+            remaining: 4000,
+            limit: 5000,
+            reset: 1_800_000_000,
+            last_cost: None,
+        });
+        // Nothing published until a fetch completes.
+        assert_eq!(store.get().unwrap().last_cost, None);
+
+        store.begin_fetch();
+        store.add_cost(1); // bulk page
+        store.add_cost(2); // hydration batch
+        assert_eq!(store.get().unwrap().last_cost, None);
+        store.end_fetch();
+        assert_eq!(store.get().unwrap().last_cost, Some(3));
+
+        // The next fetch reports its own cost, not a running total.
+        store.begin_fetch();
+        store.add_cost(1);
+        store.end_fetch();
+        assert_eq!(store.get().unwrap().last_cost, Some(1));
+    }
+
+    #[test]
+    fn header_updates_do_not_clear_the_last_fetch_cost() {
+        let store = RateLimitStore::default();
+        store.begin_fetch();
+        store.add_cost(5);
+        store.end_fetch();
+        // A later response's headers refresh remaining/limit/reset only.
+        store.set(RateLimitData {
+            remaining: 10,
+            limit: 5000,
+            reset: 1_800_000_000,
+            last_cost: None,
+        });
+        let data = store.get().unwrap();
+        assert_eq!(data.remaining, 10);
+        assert_eq!(data.last_cost, Some(5));
     }
 
     #[test]
@@ -177,6 +256,7 @@ mod tests {
             remaining: 1,
             limit: 2,
             reset: 3,
+            last_cost: None,
         });
         assert_eq!(store.get().unwrap().limit, 2, "clone must share the state");
     }
@@ -188,6 +268,7 @@ mod tests {
             remaining: 0,
             limit: 5000,
             reset: 1_800_000_000,
+            last_cost: None,
         });
         let msg = store.message(None);
         assert!(msg.starts_with(RATE_LIMIT_MSG_PREFIX), "{msg}");

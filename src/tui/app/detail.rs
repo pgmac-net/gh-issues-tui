@@ -94,6 +94,45 @@ impl App {
         self.pr = PrState::default();
     }
 
+    /// Point the detail pane at issue `id`'s comment thread, returning the id
+    /// only when a request is actually required.
+    ///
+    /// Two cases resolve without touching the API (#107): a thread already
+    /// fetched this cycle, and an issue whose `comment_count` is zero — the
+    /// bulk list fetch already told us there is nothing to load, so asking is
+    /// pure waste. Both settle `detail.comments` to a loaded (possibly empty)
+    /// thread rather than leaving it `None`, so the pane never shows a
+    /// spinner for a thread that will never arrive.
+    pub fn load_comments(&mut self, id: String) -> Option<String> {
+        if let Some(cached) = self.comment_cache.get(&id) {
+            self.detail.comments = Some(cached.clone());
+            return None;
+        }
+        let empty = self
+            .repos
+            .iter()
+            .flat_map(|r| r.issues.iter())
+            .find(|i| i.id == id)
+            .is_some_and(|i| i.comment_count == 0);
+        if empty {
+            self.comment_cache.insert(id, Vec::new());
+            self.detail.comments = Some(Vec::new());
+            return None;
+        }
+        self.detail.comments = None;
+        Some(id)
+    }
+
+    /// Record a fetched thread so revisiting the issue costs nothing.
+    pub fn cache_comments(&mut self, id: String, comments: Vec<Comment>) {
+        self.comment_cache.insert(id, comments);
+    }
+
+    /// Forget one thread — used after a mutation that may have changed it.
+    pub fn invalidate_comments(&mut self, id: &str) {
+        self.comment_cache.remove(id);
+    }
+
     /// `→` on an issue row: move focus into the detail pane, opening the
     /// split first when it is closed. Returns the issue id when the pane
     /// was newly opened and its comments need fetching. No-op (`None`)
@@ -105,7 +144,7 @@ impl App {
             None
         } else {
             self.open_detail();
-            Some(id)
+            self.load_comments(id)
         }
     }
 

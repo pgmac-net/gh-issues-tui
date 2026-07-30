@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -13,8 +15,13 @@ use crate::provider::types::{
 };
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
-const REPOS_PAGE: u32 = 50;
+/// GitHub's maximum page size. Cost does not scale with this once the bulk
+/// query carries no nested connections, so the largest page is also the
+/// cheapest: fewer requests for the same points.
+const REPOS_PAGE: u32 = 100;
 const ISSUES_PAGE: u32 = 100;
+/// GitHub rejects `nodes(ids:)` with more than 100 ids.
+const HYDRATE_BATCH: usize = 100;
 const MIN_REPOS_PAGE: u32 = 5;
 const MIN_ISSUES_PAGE: u32 = 10;
 
@@ -81,6 +88,7 @@ impl Client {
                 remaining: remaining.max(0) as u64,
                 limit: limit.max(0) as u64,
                 reset,
+                last_cost: None,
             });
         }
     }
@@ -105,7 +113,7 @@ impl Client {
         }
 
         let body: Value = resp.error_for_status()?.json().await?;
-        graphql_data(&body, |errors| {
+        let data = graphql_data(&body, |errors| {
             // The GraphQL API reports the primary rate limit as an HTTP 200
             // with a RATE_LIMITED error entry, not as a 403.
             if errors_contain_rate_limited(errors) {
@@ -119,7 +127,14 @@ impl Client {
                 return Some(ProviderError::ResourceLimited(join_error_messages(errors)));
             }
             None
-        })
+        })?;
+
+        // Queries that ask for `rateLimit { cost }` report what they actually
+        // cost; the rest simply don't contribute to the running total.
+        if let Some(cost) = data.pointer("/rateLimit/cost").and_then(Value::as_u64) {
+            self.rate_limit.add_cost(cost);
+        }
+        Ok(data)
     }
 
     /// Runs a GraphQL query built by `make_vars` from the current page
@@ -162,6 +177,7 @@ impl Client {
             repos: REPOS_PAGE,
             issues: ISSUES_PAGE,
         };
+        self.rate_limit.begin_fetch();
 
         loop {
             let data = self
@@ -230,7 +246,62 @@ impl Client {
             }
             repo_cursor = repos.page_info.end_cursor;
         }
+
+        // Hydration is deliberately *not* interleaved with the pages above:
+        // one pass over the finished set batches ids maximally, and callers
+        // get fully-populated issues or an error, never a half-labelled list.
+        // `provider::priority` derives priority from labels and the label
+        // filters read them, so rows must never be built from empty sets.
+        self.hydrate_issues(&mut out).await?;
+        self.rate_limit.end_fetch();
         Ok(out)
+    }
+
+    /// Fill in `labels` and `assignees`, which [`issue_fields`] deliberately
+    /// omits, via `nodes(ids:)` batches of 100 (GitHub's per-call id limit).
+    ///
+    /// Measured cost is 2 points per batch, against 100 points for carrying
+    /// the same two connections inline in the bulk query.
+    async fn hydrate_issues(&self, repos: &mut [RepoIssues]) -> Result<()> {
+        let ids: Vec<String> = repos
+            .iter()
+            .flat_map(|r| r.issues.iter().map(|i| i.id.clone()))
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut hydrated: HashMap<String, HydratedIssue> = HashMap::new();
+        for chunk in ids.chunks(HYDRATE_BATCH) {
+            let data = self
+                .graphql(ISSUE_HYDRATE_QUERY, json!({ "ids": chunk }))
+                .await?;
+            let nodes = data
+                .get("nodes")
+                .and_then(Value::as_array)
+                .ok_or_else(|| ProviderError::Shape("missing nodes".into()))?;
+            for node in nodes {
+                // A deleted or type-mismatched id comes back as null, and an
+                // id the viewer can no longer see yields an empty object —
+                // both leave the issue with the empty sets it already has.
+                if node.is_null() {
+                    continue;
+                }
+                let issue: HydratedIssue = serde_json::from_value(node.clone())
+                    .map_err(|e| ProviderError::Shape(e.to_string()))?;
+                hydrated.insert(issue.id.clone(), issue);
+            }
+        }
+
+        for repo in repos.iter_mut() {
+            for issue in repo.issues.iter_mut() {
+                if let Some(h) = hydrated.get(&issue.id) {
+                    issue.labels = h.labels.nodes.clone();
+                    issue.assignees = h.assignees.nodes.iter().map(|n| n.login.clone()).collect();
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Fetch the comment thread of an issue by node id.
@@ -598,8 +669,6 @@ struct IssueNode {
     state: IssueState,
     url: String,
     author: Option<ActorNode>,
-    assignees: NamedNodes,
-    labels: Option<LabelNodes>,
     comments: CountNode,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -620,17 +689,11 @@ impl IssueNode {
                 .as_ref()
                 .map(|a| a.login.clone())
                 .unwrap_or_else(|| "ghost".into()),
-            assignees: self
-                .assignees
-                .nodes
-                .iter()
-                .map(|n| n.login.clone())
-                .collect(),
-            labels: self
-                .labels
-                .as_ref()
-                .map(|l| l.nodes.clone())
-                .unwrap_or_default(),
+            // Filled in by `hydrate_issues`, which fetches both in one batched
+            // `nodes(ids:)` request rather than as connections nested in the
+            // bulk query.
+            assignees: Vec::new(),
+            labels: Vec::new(),
             comment_count: self.comments.total_count,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -674,12 +737,22 @@ impl IdTitle {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct NamedNodes {
     nodes: Vec<ActorNode>,
 }
 
+/// One `nodes(ids:)` entry: the fields [`issue_fields`] leaves out.
 #[derive(Debug, Deserialize)]
+struct HydratedIssue {
+    id: String,
+    #[serde(default)]
+    assignees: NamedNodes,
+    #[serde(default)]
+    labels: LabelNodes,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct LabelNodes {
     nodes: Vec<Label>,
 }
@@ -690,12 +763,19 @@ struct CountNode {
     total_count: u64,
 }
 
+/// Scalar issue fields only — **no nested connections**.
+///
+/// A connection nested inside `issues` is charged per issue slot requested:
+/// measured against `pgmac-net`, `cost = 1 + n_nested × (reposFirst ×
+/// issuesFirst) / 100`, which made the old `assignees`+`labels` inline form
+/// cost 101 points a page (202 a refresh) while this shape costs 1. Labels and
+/// assignees are hydrated separately by [`Client::hydrate_issues`]. Adding a
+/// connection back here silently restores the 100x cost — `issue_fields_has_no_nested_connections`
+/// guards it. See `docs/graphql-api-cost.md`.
 macro_rules! issue_fields {
     () => {
         "id number title body state url
          author { login }
-         assignees(first: 10) { nodes { login } }
-         labels(first: 20) { nodes { name color } }
          comments { totalCount }
          createdAt updatedAt closedAt"
     };
@@ -703,6 +783,7 @@ macro_rules! issue_fields {
 
 const ORG_ISSUES_QUERY: &str = concat!(
     "query($org: String!, $reposFirst: Int!, $issuesFirst: Int!, $repoCursor: String, $states: [IssueState!]) {
+       rateLimit { cost }
        repositoryOwner(login: $org) {
          repositories(first: $reposFirst, after: $repoCursor, ownerAffiliations: OWNER, isArchived: false, orderBy: {field: NAME, direction: ASC}) {
            pageInfo { hasNextPage endCursor }
@@ -722,6 +803,7 @@ const ORG_ISSUES_QUERY: &str = concat!(
 
 const REPO_ISSUES_QUERY: &str = concat!(
     "query($owner: String!, $name: String!, $issuesFirst: Int!, $issueCursor: String, $states: [IssueState!]) {
+       rateLimit { cost }
        repository(owner: $owner, name: $name) {
          issues(first: $issuesFirst, after: $issueCursor, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
            pageInfo { hasNextPage endCursor }
@@ -732,6 +814,22 @@ const REPO_ISSUES_QUERY: &str = concat!(
        }
      }"
 );
+
+/// Labels and assignees for up to 100 issues at a time. `nodes(ids:)` is a
+/// plain list, not a connection, so the two connections inside it are charged
+/// once for the batch instead of once per issue slot — 2 points per 100
+/// issues, against 100 for the same data nested in the bulk query.
+const ISSUE_HYDRATE_QUERY: &str = "
+query($ids: [ID!]!) {
+  rateLimit { cost }
+  nodes(ids: $ids) {
+    ... on Issue {
+      id
+      assignees(first: 10) { nodes { login } }
+      labels(first: 20) { nodes { name color } }
+    }
+  }
+}";
 
 const COMMENTS_QUERY: &str = "
 query($id: ID!) {
@@ -1184,10 +1282,39 @@ mod tests {
         let issue = node.to_issue();
         assert_eq!(issue.number, 7);
         assert_eq!(issue.author, "pgmac");
-        assert_eq!(issue.assignees, vec!["pgmac"]);
-        assert_eq!(issue.labels[0].name, "bug");
         assert_eq!(issue.comment_count, 3);
         assert!(issue.closed_at.is_none());
+        // Labels and assignees are not part of the bulk query's shape — they
+        // arrive from `hydrate_issues`, so the node leaves them empty even
+        // when the payload happens to carry them.
+        assert!(issue.assignees.is_empty());
+        assert!(issue.labels.is_empty());
+    }
+
+    #[test]
+    fn hydrated_issue_carries_labels_and_assignees() {
+        let raw = serde_json::json!({
+            "id": "I_abc",
+            "assignees": {"nodes": [{"login": "pgmac"}]},
+            "labels": {"nodes": [{"name": "bug", "color": "d73a4a"}]}
+        });
+        let h: HydratedIssue = serde_json::from_value(raw).unwrap();
+        assert_eq!(h.id, "I_abc");
+        assert_eq!(h.assignees.nodes[0].login, "pgmac");
+        assert_eq!(h.labels.nodes[0].name, "bug");
+    }
+
+    #[test]
+    fn hydrated_issue_tolerates_missing_connections() {
+        // An id the viewer can no longer resolve comes back as a bare object.
+        let h: HydratedIssue = serde_json::from_value(serde_json::json!({"id": "I_x"})).unwrap();
+        assert!(h.assignees.nodes.is_empty());
+        assert!(h.labels.nodes.is_empty());
+    }
+
+    #[test]
+    fn hydrate_batch_matches_githubs_node_id_limit() {
+        assert_eq!(HYDRATE_BATCH, 100);
     }
 
     #[test]
@@ -1276,16 +1403,20 @@ mod tests {
             issues: ISSUES_PAGE,
         };
         assert!(sizes.shrink());
-        assert_eq!(sizes.repos, 25);
+        assert_eq!(sizes.repos, 50);
         assert_eq!(sizes.issues, 50);
 
         assert!(sizes.shrink());
-        assert_eq!(sizes.repos, 12);
+        assert_eq!(sizes.repos, 25);
         assert_eq!(sizes.issues, 25);
 
         assert!(sizes.shrink());
-        assert_eq!(sizes.repos, 6);
+        assert_eq!(sizes.repos, 12);
         assert_eq!(sizes.issues, 12);
+
+        assert!(sizes.shrink());
+        assert_eq!(sizes.repos, 6);
+        assert_eq!(sizes.issues, MIN_ISSUES_PAGE);
 
         assert!(sizes.shrink());
         assert_eq!(sizes.repos, MIN_REPOS_PAGE);
@@ -1299,15 +1430,50 @@ mod tests {
 
     #[test]
     fn queries_request_all_issue_fields() {
-        for field in [
-            "createdAt",
-            "updatedAt",
-            "closedAt",
-            "totalCount",
-            "assignees",
-        ] {
+        for field in ["createdAt", "updatedAt", "closedAt", "totalCount"] {
             assert!(ORG_ISSUES_QUERY.contains(field));
             assert!(REPO_ISSUES_QUERY.contains(field));
+        }
+    }
+
+    /// The cost guard for #107.
+    ///
+    /// A connection nested inside `issues` is charged per issue slot
+    /// requested, so re-inlining `labels`/`assignees` here takes a full org
+    /// fetch from 1 point back to 101 per page — with no visible symptom until
+    /// the hourly budget is gone. Hydration exists precisely so these two stay
+    /// out; if this test is in your way, read `docs/graphql-api-cost.md` before
+    /// changing it.
+    #[test]
+    fn issue_fields_has_no_nested_connections() {
+        let fields = issue_fields!();
+        for banned in ["assignees", "labels", "projectItems", "timelineItems"] {
+            assert!(
+                !fields.contains(banned),
+                "`{banned}` is a nested connection inside `issues` — it costs \
+                 (reposFirst × issuesFirst) / 100 points per fetch. Hydrate it \
+                 via `nodes(ids:)` instead. See docs/graphql-api-cost.md"
+            );
+        }
+        // `first:` anywhere in the issue fields means some connection crept
+        // back in, whatever it is called.
+        assert!(
+            !fields.contains("first:"),
+            "no connection may be paginated inside `issues` — see docs/graphql-api-cost.md"
+        );
+    }
+
+    #[test]
+    fn hydrate_query_carries_the_connections_issue_fields_drops() {
+        assert!(ISSUE_HYDRATE_QUERY.contains("assignees(first: 10)"));
+        assert!(ISSUE_HYDRATE_QUERY.contains("labels(first: 20)"));
+        assert!(ISSUE_HYDRATE_QUERY.contains("nodes(ids: $ids)"));
+    }
+
+    #[test]
+    fn bulk_queries_report_their_cost() {
+        for query in [ORG_ISSUES_QUERY, REPO_ISSUES_QUERY, ISSUE_HYDRATE_QUERY] {
+            assert!(query.contains("rateLimit { cost }"));
         }
     }
 

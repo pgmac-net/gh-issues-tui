@@ -139,8 +139,14 @@ pub(super) fn draw_info_bar(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         } else {
             t.dim
         };
+        // The per-fetch cost is what actually burns the budget, so show it
+        // next to the remaining balance when the backend reports one (#107).
+        let cost = match rl.last_cost {
+            Some(c) => format!(" (last fetch {c})"),
+            None => String::new(),
+        };
         spans.push(Span::styled(
-            format!("  API {}/{}", rl.remaining, rl.limit),
+            format!("  API {}/{}{}", rl.remaining, rl.limit, cost),
             Style::default().fg(color),
         ));
     }

@@ -141,6 +141,11 @@ pub struct RateLimitData {
     pub remaining: u64,
     pub limit: u64,
     pub reset: i64,
+    /// Points charged by the last completed fetch, when the backend reports a
+    /// per-request cost (GitHub's `rateLimit.cost`). `None` for backends that
+    /// don't — the field is filled in by `RateLimitStore::get`, never by the
+    /// header parse that builds the rest of this struct.
+    pub last_cost: Option<u64>,
 }
 
 impl RateLimitData {

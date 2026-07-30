@@ -180,7 +180,9 @@ pub(crate) fn handle_normal_key(
         KeyCode::Enter => {
             if let Some(issue_id) = app.selected_issue().map(|i| i.id.clone()) {
                 app.open_detail();
-                spawn_comments(client, issue_id, tx);
+                if let Some(issue_id) = app.load_comments(issue_id) {
+                    spawn_comments(client, issue_id, tx);
+                }
             } else {
                 app.toggle_collapse();
             }
