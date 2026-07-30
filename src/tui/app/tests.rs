@@ -1336,6 +1336,7 @@ fn enter_detail_on_header_is_none_and_keeps_pane_closed() {
 fn enter_detail_opens_closed_pane_and_requests_comments() {
     let mut app = two_repo_app();
     app.selected = 1; // first issue row
+    app.repos[0].issues[0].comment_count = 1; // otherwise the fetch is skipped
     let expected = app.selected_issue().unwrap().id.clone();
     assert_eq!(app.enter_detail(), Some(expected));
     assert!(app.detail.open);
@@ -1366,6 +1367,7 @@ fn start_comment_editor_on_header_is_none_and_keeps_pane_closed() {
 fn start_comment_editor_opens_closed_pane_and_requests_comments() {
     let mut app = two_repo_app();
     app.selected = 1; // first issue row
+    app.repos[0].issues[0].comment_count = 1; // otherwise the fetch is skipped
     let expected = app.selected_issue().unwrap().id.clone();
     assert_eq!(app.start_comment_editor(), Some(expected));
     assert!(app.detail.open);
@@ -2246,4 +2248,74 @@ fn pr_sel_resets_on_open_close_and_refresh() {
     };
     app.open_pr_summary(pr2);
     assert_eq!(app.pr.sel, 0);
+}
+
+// ---- comment thread cache (#107) ----
+
+#[test]
+fn load_comments_skips_the_fetch_when_the_issue_has_none() {
+    let mut app = two_repo_app();
+    app.selected = 1;
+    let id = app.selected_issue().unwrap().id.clone();
+    assert_eq!(app.repos[0].issues[0].comment_count, 0);
+
+    // No request, and the pane shows a loaded-empty thread rather than
+    // sitting on `None` waiting for a response that would never come.
+    assert_eq!(app.load_comments(id), None);
+    assert!(app.detail.comments.is_some());
+    assert_eq!(app.detail.comment_count(), 0);
+}
+
+#[test]
+fn load_comments_fetches_once_then_serves_from_cache() {
+    let mut app = two_repo_app();
+    app.selected = 1;
+    app.repos[0].issues[0].comment_count = 2;
+    let id = app.selected_issue().unwrap().id.clone();
+
+    // First visit: a fetch is required and the pane waits.
+    assert_eq!(app.load_comments(id.clone()), Some(id.clone()));
+    assert!(app.detail.comments.is_none());
+
+    app.cache_comments(id.clone(), vec![comment("c1", "one")]);
+
+    // Second visit: served from cache, no request.
+    assert_eq!(app.load_comments(id), None);
+    assert_eq!(app.detail.comment_count(), 1);
+}
+
+#[test]
+fn invalidate_comments_forces_the_next_load_to_refetch() {
+    let mut app = two_repo_app();
+    app.selected = 1;
+    app.repos[0].issues[0].comment_count = 1;
+    let id = app.selected_issue().unwrap().id.clone();
+    app.cache_comments(id.clone(), vec![comment("c1", "one")]);
+    assert_eq!(app.load_comments(id.clone()), None);
+
+    app.invalidate_comments(&id);
+    assert_eq!(app.load_comments(id.clone()), Some(id));
+}
+
+#[test]
+fn set_data_clears_the_comment_cache() {
+    let mut app = two_repo_app();
+    app.selected = 1;
+    app.repos[0].issues[0].comment_count = 1;
+    let id = app.selected_issue().unwrap().id.clone();
+    app.cache_comments(id.clone(), vec![comment("c1", "one")]);
+
+    // A refetch can carry comments added elsewhere, so the cache goes.
+    let repos = app.repos.clone();
+    app.set_data(repos);
+    assert!(app.comment_cache.is_empty());
+    assert_eq!(app.load_comments(id.clone()), Some(id));
+}
+
+#[test]
+fn switch_org_clears_the_comment_cache() {
+    let mut app = two_repo_app();
+    app.cache_comments("I_1".into(), vec![comment("c1", "one")]);
+    app.switch_org("other-org".into());
+    assert!(app.comment_cache.is_empty());
 }

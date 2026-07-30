@@ -47,6 +47,7 @@ impl Client {
                 remaining: remaining.max(0) as u64,
                 limit: limit.max(0) as u64,
                 reset: reset_ms / 1000,
+                last_cost: None,
             });
         }
     }

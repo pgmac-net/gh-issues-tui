@@ -81,6 +81,13 @@ pub struct App {
     pub rate_limit_error: Option<String>,
     /// The PR summary popup and the links that feed it.
     pub pr: PrState,
+    /// Comment threads already fetched this refresh cycle, keyed by issue id.
+    ///
+    /// Navigating with the detail pane open used to spawn one request per row
+    /// (#107); this makes revisiting a row free. Cleared wholesale by
+    /// `set_data` and `switch_org` — a refetch can reveal comments added
+    /// elsewhere, and a stale thread is worse than a cheap refetch.
+    pub comment_cache: HashMap<String, Vec<Comment>>,
     pub should_quit: bool,
 }
 
@@ -125,6 +132,7 @@ impl App {
             status: None,
             rate_limit: None,
             rate_limit_error: None,
+            comment_cache: HashMap::new(),
             pr: PrState::default(),
             should_quit: false,
         }
@@ -141,6 +149,9 @@ impl App {
 
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
         let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        // Fresh data can carry comments added since the last fetch, so the
+        // cached threads are no longer trustworthy.
+        self.comment_cache.clear();
         self.repos = repos;
         // First-seen repos take the configured default; repos the user has
         // already interacted with keep their manual collapse state. When the
@@ -223,6 +234,7 @@ impl App {
     pub fn switch_org(&mut self, org: String) {
         self.org = org;
         self.repos.clear();
+        self.comment_cache.clear();
         self.rows.clear();
         self.collapsed.clear();
         self.seen_repos.clear();
@@ -251,6 +263,8 @@ impl App {
 /// Items the state submodules share. One place for what was a single import
 /// block at the top of the old `app.rs`.
 pub(crate) mod prelude {
+    pub use std::collections::HashMap;
+
     pub use chrono::{DateTime, NaiveDate, Utc};
 
     pub use crate::provider::types::{

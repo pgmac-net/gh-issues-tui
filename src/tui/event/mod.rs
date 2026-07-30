@@ -162,9 +162,15 @@ pub(crate) fn nav(
         return;
     }
     app.detail.reset_scroll();
-    app.detail.comments = None;
-    if let Some(id) = current {
-        spawn_comments(client, id, tx);
+    // Holding j/k walks a row at a time; `load_comments` keeps that free for
+    // issues already fetched this cycle and for issues with no comments (#107).
+    match current {
+        Some(id) => {
+            if let Some(id) = app.load_comments(id) {
+                spawn_comments(client, id, tx);
+            }
+        }
+        None => app.detail.comments = None,
     }
 }
 
@@ -213,16 +219,21 @@ pub(crate) fn handle_app_event(
             }
         }
         AppEvent::Comments { issue_id, result } => {
-            // Ignore stale responses for a previously selected issue.
-            if app.selected_issue().map(|i| i.id.clone()) == Some(issue_id) {
-                match result {
-                    Ok(c) => {
+            let is_selected = app.selected_issue().map(|i| i.id.clone()) == Some(issue_id.clone());
+            match result {
+                // Cached even when the selection has moved on: the thread is
+                // still valid for `issue_id`, so navigating back to it should
+                // not cost another request. Only the *display* is stale.
+                Ok(c) => {
+                    app.cache_comments(issue_id, c.clone());
+                    if is_selected {
                         app.detail.comments = Some(c);
                         // Keep the selection valid within the new comment count.
                         app.detail.clamp_sel();
                     }
-                    Err(e) => app.status = Some(format!("comments failed: {e}")),
                 }
+                Err(e) if is_selected => app.status = Some(format!("comments failed: {e}")),
+                Err(_) => {}
             }
         }
         AppEvent::MutationDone(msg) => {
@@ -233,6 +244,9 @@ pub(crate) fn handle_app_event(
                 app.loading = true;
                 spawn_fetch(client, app, tx);
                 if let Some(id) = comments_refresh_target(app) {
+                    // The mutation may have been the comment itself, so the
+                    // cached thread is known-stale — drop it before refetching.
+                    app.invalidate_comments(&id);
                     spawn_comments(client, id, tx);
                 }
             } else {

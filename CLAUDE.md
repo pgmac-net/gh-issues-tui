@@ -38,6 +38,7 @@ Three layers, each a directory (`app/` state and pure logic, `event/` key handli
 
 - **Tokens never in config.** `Config` has no token field; resolution is env/CLI/`gh` only.
 - **Pagination over search.** Issue fetch must stay on `repositoryOwner.repositories` → `issues` cursors — the search API silently caps at 1000 results org-wide.
+- **No nested connections in the bulk issue query.** GraphQL cost is `1 + n_nested × (reposFirst × issuesFirst)/100` — a connection inside `issues` is billed per issue slot requested, whatever its own page size. `issue_fields!` is scalars only; labels and assignees are hydrated by `Client::hydrate_issues` via `nodes(ids:)` batches. Inlining them again costs 100x with no visible symptom until the hourly budget is gone (`issue_fields_has_no_nested_connections` guards it). See `docs/graphql-api-cost.md`.
 - **Repo filter is exact-when-exact.** Filter text exactly matching a loaded repo name (case-insensitive) matches only that repo; otherwise substring. Computed per `rebuild_rows` pass.
 - **Org switch resets view state.** `App::switch_org` clears data, filters, collapse and seen-repo sets (keeps `include_closed`); callers must spawn a refetch.
 - **`rebuild_rows` after any change** to filters, sort, collapse state, or data — stale selection indices panic otherwise.
