@@ -95,6 +95,17 @@ impl PrState {
         self.scroll = self.scroll.min(max);
     }
 
+    /// `Home`/`g`: jump to the first row. Leaves `sel` untouched — Home/End
+    /// move the viewport, not which row `o`/Enter would open.
+    pub fn scroll_to_top(&mut self) {
+        self.scroll = 0;
+    }
+
+    /// `End`/`G`: jump to the row past which only blank space remains.
+    pub fn scroll_to_bottom(&mut self, max: u16) {
+        self.scroll = max;
+    }
+
     /// URL the currently selected row would open with `o`/Enter.
     pub fn selected_url(&self, targets: &[PrTarget]) -> Option<String> {
         targets.get(self.sel).map(|t| t.url.clone())
@@ -222,6 +233,42 @@ mod tests {
         s.scroll_by(-1, 7);
         s.scroll_by(-1, 7);
         assert_eq!(s.scroll, 0, "k must not underflow");
+    }
+
+    /// `PageDown` is `scroll_by(page, max)` — pinning that a page step past
+    /// the end clamps to `max`, same as an unbounded `j`.
+    #[test]
+    fn paging_down_past_the_end_clamps_to_the_bound() {
+        let mut s = loaded();
+        s.scroll = 0;
+        s.scroll_by(20, 7);
+        assert_eq!(s.scroll, 7, "PageDown must stop at the measured bound");
+    }
+
+    #[test]
+    fn home_jumps_to_the_top_without_moving_the_selection() {
+        let mut s = loaded();
+        s.scroll = 5;
+        let sel_before = s.sel;
+        s.scroll_to_top();
+        assert_eq!(s.scroll, 0);
+        assert_eq!(s.sel, sel_before, "Home must not touch Tab's selection");
+    }
+
+    #[test]
+    fn end_jumps_to_the_measured_bound_without_moving_the_selection() {
+        let mut s = loaded();
+        let sel_before = s.sel;
+        s.scroll_to_bottom(7);
+        assert_eq!(s.scroll, 7);
+        assert_eq!(s.sel, sel_before, "End must not touch Tab's selection");
+    }
+
+    #[test]
+    fn end_stays_at_zero_when_the_content_already_fits() {
+        let mut s = loaded();
+        s.scroll_to_bottom(0);
+        assert_eq!(s.scroll, 0, "content that fits cannot scroll");
     }
 
     /// `select` snaps the scroll to a target's row without knowing the

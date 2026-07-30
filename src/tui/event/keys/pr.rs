@@ -43,6 +43,22 @@ pub(crate) fn handle_pr_summary_key(
             let max = pr_scroll_max(app);
             app.pr.scroll_by(-1, max);
         }
+        KeyCode::PageDown => {
+            let max = pr_scroll_max(app);
+            app.pr.scroll_by(pr_page_rows(), max);
+        }
+        KeyCode::PageUp => {
+            let max = pr_scroll_max(app);
+            app.pr.scroll_by(-pr_page_rows(), max);
+        }
+        // Home/End move the viewport only — `sel` (the Tab selection) is
+        // left alone, so jumping to the top/bottom can never change which
+        // row `o`/Enter would open.
+        KeyCode::Home | KeyCode::Char('g') => app.pr.scroll_to_top(),
+        KeyCode::End | KeyCode::Char('G') => {
+            let max = pr_scroll_max(app);
+            app.pr.scroll_to_bottom(max);
+        }
         // `PrState::select` snaps the scroll to the target's row; `app/`
         // computes no geometry, so the bound is applied here instead.
         KeyCode::Tab => {

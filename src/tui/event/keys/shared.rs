@@ -133,6 +133,13 @@ pub(crate) fn pr_targets(app: &App) -> Vec<crate::tui::app::PrTarget> {
     ui::pr_targets(app.pr.summary.as_ref(), ui::pr_summary_inner_width(cols))
 }
 
+/// The PR summary popup's `PageUp`/`PageDown` step at the live terminal
+/// size — one viewport height, the same convention `detail_page_rows` uses.
+pub(crate) fn pr_page_rows() -> i16 {
+    let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    ui::pr_summary_inner_height(rows) as i16
+}
+
 /// The furthest the PR summary popup can usefully scroll at the live terminal
 /// size — measured off the same row model the popup draws, so the clamp can't
 /// drift from the rows on screen.
