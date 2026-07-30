@@ -1,5 +1,5 @@
 use super::prelude::*;
-use super::widgets::{apply_hyperlinks, centered, inner_area};
+use super::widgets::{apply_hyperlinks, centered, inner_area, render_region_scrollbar};
 use crate::provider::types::{PrState, PrSummary, WorkflowRunInfo};
 use crate::tui::app::PrTarget;
 use crate::tui::markdown;
@@ -333,6 +333,8 @@ pub(super) fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
         );
     }
 
+    let content_h = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+
     // Wrapping is already applied by `pr_summary_rows`, so the Paragraph must
     // not wrap again — otherwise a drawn row would stop matching its index.
     let para = Paragraph::new(lines)
@@ -340,6 +342,14 @@ pub(super) fn draw_pr_summary_popup(f: &mut Frame, app: &App, t: &Theme) {
         .scroll((app.pr.scroll, 0));
     f.render_widget(para, area);
     apply_hyperlinks(f.buffer_mut(), inner_area(area), &rects, app.pr.scroll);
+    render_region_scrollbar(
+        f,
+        t,
+        area,
+        content_h,
+        area.height.saturating_sub(2),
+        app.pr.scroll,
+    );
 }
 
 #[cfg(test)]
@@ -696,8 +706,9 @@ mod tests {
             .collect();
 
         // Last row of the popup box is its bottom border; the one above it is
-        // the final content row.
-        let drawn = popup.rows[popup.rows.len() - 2].trim_matches(['│', ' ']);
+        // the final content row. This body overflows, so the popup also
+        // draws a scrollbar track/thumb (║/█) on the right edge.
+        let drawn = popup.rows[popup.rows.len() - 2].trim_matches(['│', '║', '█', ' ']);
         assert_eq!(
             drawn,
             last.trim(),
@@ -721,6 +732,32 @@ mod tests {
             pr_max_scroll(app.pr.summary.as_ref(), 74, rows.len() as u16 + 5),
             0,
             "content that fits cannot scroll"
+        );
+    }
+
+    /// A body long enough to overflow the popup draws a scrollbar thumb, the
+    /// same widget (and the same `█` glyph) the comments pane uses.
+    #[test]
+    fn golden_pr_summary_draws_a_scrollbar_when_content_overflows() {
+        let app = pr_summary_app(&"a line\n".repeat(60));
+        let popup = popup_box(&render_app(&app, 100, 30));
+        assert!(
+            popup.text().contains('█'),
+            "expected a scrollbar thumb:\n{}",
+            popup.text()
+        );
+    }
+
+    /// Content that fits in the popup draws no scrollbar — same
+    /// `render_region_scrollbar` no-op the comments pane relies on.
+    #[test]
+    fn golden_pr_summary_draws_no_scrollbar_when_content_fits() {
+        let app = pr_summary_app("short body");
+        let popup = popup_box(&render_app(&app, 100, 30));
+        assert!(
+            !popup.text().contains('█'),
+            "short content must not draw a scrollbar:\n{}",
+            popup.text()
         );
     }
 }
