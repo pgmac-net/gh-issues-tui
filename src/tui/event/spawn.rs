@@ -94,12 +94,23 @@ pub(crate) fn spawn_pr_summary(client: &Provider, pr: PrRef, tx: &mpsc::Unbounde
     });
 }
 
+/// Whether a mutation changed the selected issue's comment thread, and so
+/// whether `MutationDone` needs to invalidate the cache and refetch it.
+/// Most mutations (state, title, assignees, labels, description) leave the
+/// thread untouched — only adding or editing a comment does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommentRefresh {
+    Refetch,
+    Skip,
+}
+
 /// Spawn a mutation against the selected issue; reports done/failed via `tx`.
 pub(crate) fn with_issue<F, Fut>(
     app: &mut App,
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
     done_msg: &'static str,
+    comments: CommentRefresh,
     op: F,
 ) where
     F: FnOnce(Provider, String) -> Fut + Send + 'static,
@@ -114,7 +125,10 @@ pub(crate) fn with_issue<F, Fut>(
     app.status = Some("working…".into());
     tokio::spawn(async move {
         let msg = match op(client, id).await {
-            Ok(()) => AppEvent::MutationDone(done_msg.to_string()),
+            Ok(()) => AppEvent::MutationDone {
+                msg: done_msg.to_string(),
+                comments,
+            },
             Err(e) => AppEvent::MutationFailed(e.to_string()),
         };
         let _ = tx.send(msg);

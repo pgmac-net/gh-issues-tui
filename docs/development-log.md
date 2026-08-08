@@ -579,3 +579,36 @@ Wiring: `provider::build` gains a `jira` arm; `SUPPORTED = [github, linear, jira
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
 - Startup credential-error paths confirmed manually (`--provider jira` with no env → clear `JIRA_BASE_URL` message; `--provider asana` → unknown-provider listing all three).
 - **No live drive** — no Jira instance available. REST endpoint shapes, ADF structure, and transition workflow are unit-tested against sample payloads only. Flagged in the PR: the Linear live drive caught a bad field and a complexity-budget bug that mocks missed, so the same untested-live risk applies here.
+
+# Development log — detail pane resync after issue-list refetches (2026-08-09)
+
+Work driven by [pgmac-net/gh-issues-tui#117](https://github.com/pgmac-net/gh-issues-tui/issues/117), delivered in PR [#118](https://github.com/pgmac-net/gh-issues-tui/pull/118) on branch `117-detail-pane-stale-after-close`. Planned on Opus 5 (rated STANDARD), implemented on Sonnet 5.
+
+## Process
+
+1. **Plan approval** — implementation plan posted to the ticket and approved before any code.
+2. **Grilling** — interviewed to confirm scope: description was live-following already (renders from `selected_issue()` each frame), only `detail.comments` was stale; selection-landing policy after a vanish stays as the existing index clamp; fix should reuse `nav()` rather than a new resync method.
+3. **Root cause** — `App::set_data` (`src/tui/app/mod.rs`) re-locates the previously selected issue by id and, when it's gone, leaves the selection wherever `rebuild_rows` clamped it — without ever touching `detail.comments`. `nav()` (`src/tui/event/mod.rs`) was the only place that resyncs the pane on a selection change, and only key-driven navigation called it. Not close-specific: any refetch (including auto-refresh) that drops the selected issue hit the same staleness.
+
+## Implementation
+
+- `handle_app_event`'s `AppEvent::Data(Ok(repos))` arm now calls `nav(app, client, tx, |app| app.set_data(repos))` instead of `app.set_data(repos)` directly — reuses `nav()`'s existing reset-scroll/load-comments/clear logic instead of a new mechanism.
+- Added `CommentRefresh { Refetch, Skip }` to `with_issue` and `AppEvent::MutationDone`. Of the 8 `with_issue` call sites, only add-comment and edit-comment pass `Refetch`; the other 6 (close/reopen, title, assignees, priority, labels, edit body) plus issue-creation now pass `Skip`, so `MutationDone` only invalidates and refetches the cached thread when the mutation could actually have changed it.
+
+## Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Where the fix lives | Route `set_data` through `nav()` | `nav()` already does exactly what the ticket asks and is already tested; a bespoke resync method would duplicate it |
+| Selection landing after a vanish | Left as-is (existing index clamp) | Ticket only asked for the pane to follow or clear, not for a new "land on nearest issue" policy |
+| Comments-refetch waste | Fixed in the same PR, scoped per-mutation via `CommentRefresh` | Same `with_issue`/`MutationDone` plumbing either way; narrowing to close/reopen only would have left the same waste on 5 other mutation kinds |
+| `comment_cache.clear()` in `set_data` | Untouched | Documented in `CLAUDE.md` as a deliberate freshness choice — a refetch can reveal comments added elsewhere |
+
+## Diversions from plan
+
+None — implemented as approved.
+
+## Verification
+
+- `cargo test` — 408 passed (5 new): selection vanishing resyncs the pane to the new issue's thread, clamping onto a repo header/empty list clears `detail.comments`, an unchanged selection leaves scroll and the loaded thread untouched, and `MutationDone`'s `Skip`/`Refetch` correctly gate cache invalidation.
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
