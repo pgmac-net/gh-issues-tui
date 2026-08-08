@@ -23,7 +23,7 @@ mod keys;
 mod spawn;
 
 use keys::handle_key;
-use spawn::{spawn_comments, spawn_fetch};
+use spawn::{CommentRefresh, spawn_comments, spawn_fetch};
 
 pub enum AppEvent {
     Data(Result<Vec<RepoIssues>, String>),
@@ -31,7 +31,10 @@ pub enum AppEvent {
         issue_id: String,
         result: Result<Vec<Comment>, String>,
     },
-    MutationDone(String),
+    MutationDone {
+        msg: String,
+        comments: CommentRefresh,
+    },
     MutationFailed(String),
     /// Per-repo picker options for the new-issue form.
     FormOptions {
@@ -195,7 +198,7 @@ pub(crate) fn handle_app_event(
     match msg {
         AppEvent::Data(Ok(repos)) => {
             app.rate_limit_error = None;
-            app.set_data(repos);
+            nav(app, client, tx, |app| app.set_data(repos));
             let verb = if app.auto_refreshing {
                 "auto-refreshed"
             } else {
@@ -236,16 +239,18 @@ pub(crate) fn handle_app_event(
                 Err(_) => {}
             }
         }
-        AppEvent::MutationDone(msg) => {
+        AppEvent::MutationDone { msg, comments } => {
             app.status = Some(msg);
             // Only refetch if we have rate limit budget left.
             let should_fetch = app.rate_limit.is_none_or(|rl| rl.remaining > 0);
             if should_fetch {
                 app.loading = true;
                 spawn_fetch(client, app, tx);
-                if let Some(id) = comments_refresh_target(app) {
-                    // The mutation may have been the comment itself, so the
-                    // cached thread is known-stale — drop it before refetching.
+                if comments == CommentRefresh::Refetch
+                    && let Some(id) = comments_refresh_target(app)
+                {
+                    // The mutation changed the comment thread itself, so the
+                    // cached copy is known-stale — drop it before refetching.
                     app.invalidate_comments(&id);
                     spawn_comments(client, id, tx);
                 }
@@ -403,7 +408,183 @@ pub(crate) mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keys::testutil::app_with_issue;
+    use crate::provider::types::{Comment, Issue, IssueState, Label, RepoIssues};
+    use crate::tui::app::Row;
+    use keys::testutil::{app_with_issue, test_client};
+
+    fn stub_issue(id: &str, number: u64) -> Issue {
+        Issue {
+            id: id.into(),
+            number,
+            title: "t".into(),
+            body: String::new(),
+            state: IssueState::Open,
+            url: "u".into(),
+            author: "a".into(),
+            assignees: vec![],
+            labels: Vec::<Label>::new(),
+            comment_count: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            closed_at: None,
+        }
+    }
+
+    fn stub_comment(body: &str) -> Comment {
+        Comment {
+            id: "C_1".into(),
+            author: "a".into(),
+            created_at: chrono::Utc::now(),
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn data_event_resyncs_detail_pane_when_the_selected_issue_vanishes() {
+        let (mut app, _id) = app_with_issue(&[]);
+        // A second issue survives the "close" below.
+        app.repos[0].issues.push(stub_issue("I_2", 2));
+        app.rebuild_rows();
+        app.selected = app
+            .rows
+            .iter()
+            .position(|row| match row {
+                Row::Issue {
+                    repo_idx,
+                    issue_idx,
+                } => app.repos[*repo_idx].issues[*issue_idx].id == "I_1",
+                Row::RepoHeader { .. } => false,
+            })
+            .expect("I_1 must be a row");
+        app.detail.open = true;
+        app.detail.body_scroll = 7;
+        // Stale thread left over from I_1 — must not survive the resync.
+        app.detail.comments = Some(vec![stub_comment("stale from I_1")]);
+
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        // "Close" I_1: the refetch it triggers only ever returns I_2.
+        handle_app_event(
+            &mut app,
+            AppEvent::Data(Ok(vec![RepoIssues {
+                repo: "r".into(),
+                repo_url: "u".into(),
+                issues: vec![stub_issue("I_2", 2)],
+            }])),
+            &client,
+            &tx,
+        );
+
+        assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some("I_2"));
+        assert_eq!(
+            app.detail.body_scroll, 0,
+            "scroll must reset for the new issue"
+        );
+        // I_2 has comment_count 0, so load_comments settles it to an empty,
+        // loaded thread rather than leaving the stale one in place.
+        assert_eq!(app.detail.comments.as_ref().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn data_event_clears_detail_pane_when_no_issue_survives() {
+        let (mut app, _id) = app_with_issue(&[]);
+        app.detail.open = true;
+        app.detail.comments = Some(vec![stub_comment("stale")]);
+
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(&mut app, AppEvent::Data(Ok(vec![])), &client, &tx);
+
+        assert!(app.selected_issue().is_none());
+        assert!(app.detail.comments.is_none());
+    }
+
+    #[test]
+    fn data_event_leaves_detail_pane_untouched_when_selection_is_unchanged() {
+        let (mut app, _id) = app_with_issue(&[]);
+        app.detail.open = true;
+        app.detail.body_scroll = 3;
+        app.detail.comments = Some(vec![stub_comment("still current")]);
+
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        // Same issue comes back on refresh — just a title change.
+        let mut refreshed = stub_issue("I_1", 1);
+        refreshed.title = "updated".into();
+        handle_app_event(
+            &mut app,
+            AppEvent::Data(Ok(vec![RepoIssues {
+                repo: "r".into(),
+                repo_url: "u".into(),
+                issues: vec![refreshed],
+            }])),
+            &client,
+            &tx,
+        );
+
+        assert_eq!(
+            app.detail.body_scroll, 3,
+            "unrelated selection must not reset scroll"
+        );
+        assert_eq!(
+            app.detail.comments.as_ref().map(|c| c.len()),
+            Some(1),
+            "unrelated selection must not touch the loaded thread"
+        );
+        assert_eq!(
+            app.detail.comments.as_ref().unwrap()[0].body,
+            "still current"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutation_done_skip_leaves_cached_comments_alone() {
+        let (mut app, issue_id) = app_with_issue(&[]);
+        app.detail.open = true;
+        app.comment_cache
+            .insert(issue_id.clone(), vec![stub_comment("cached")]);
+
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::MutationDone {
+                msg: "issue closed".into(),
+                comments: CommentRefresh::Skip,
+            },
+            &client,
+            &tx,
+        );
+
+        assert!(app.comment_cache.contains_key(&issue_id));
+    }
+
+    #[tokio::test]
+    async fn mutation_done_refetch_invalidates_cached_comments() {
+        let (mut app, issue_id) = app_with_issue(&[]);
+        app.detail.open = true;
+        app.comment_cache
+            .insert(issue_id.clone(), vec![stub_comment("cached")]);
+
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::MutationDone {
+                msg: "comment added".into(),
+                comments: CommentRefresh::Refetch,
+            },
+            &client,
+            &tx,
+        );
+
+        assert!(!app.comment_cache.contains_key(&issue_id));
+    }
 
     #[test]
     fn split_csv_trims_and_drops_empties() {
