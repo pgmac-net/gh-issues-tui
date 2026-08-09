@@ -19,6 +19,14 @@ styled text — the URL is dropped, keeping the pane readable in a terminal).
 > table cells wrap inside their column. `render_with_links` also takes a pane
 > width now. See [`markdown-tables.md`](markdown-tables.md).
 
+> **Superseded (#120, 2026-08-09):** Fenced code blocks no longer show raw
+> backticks — they render with a gutter bar and filled background, and (like
+> tables) no longer preserve one output line per source line: both delimiter
+> lines are dropped and content hard-breaks at the pane edge instead of
+> word-wrapping. Syntax highlighting, floated as an open question below,
+> stays deferred to a follow-up ticket. See
+> [`markdown-code-fences.md`](markdown-code-fences.md).
+
 ## Approach
 
 A small in-house renderer (`src/tui/markdown.rs`), not a dependency. Two

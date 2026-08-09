@@ -1,16 +1,19 @@
 //! Simple, line-oriented markdown renderer for the detail pane.
 //!
-//! Every block *except* a table emits exactly one output [`Line`] per input
-//! line — headings, fences, quotes and lists restyle a line, they never add or
-//! drop one. [`table`] is the deliberate exception (#99): it consumes a whole
-//! source block and wraps cells inside their columns, so one source row becomes
-//! as many screen rows as its tallest cell.
+//! Most blocks emit exactly one output [`Line`] per input line — headings,
+//! quotes and lists restyle a line, they never add or drop one. [`table`]
+//! (#99) and [`fence`] (#120) are the deliberate exceptions: a table consumes
+//! a whole source block and wraps cells inside their columns, and a fence
+//! drops both delimiter lines and hard-breaks each content line at the pane
+//! edge, so either can turn one source row into a different number of screen
+//! rows.
 //!
 //! That is safe because the detail pane's scroll clamps measure *wrapped*
 //! height by rendering through this same function, so measured and drawn
 //! heights cannot disagree. It does mean [`LinkSpan::line`] must be indexed
 //! against the output line, never the source line.
 
+mod fence;
 mod inline;
 mod table;
 
@@ -49,35 +52,22 @@ pub fn render_with_links(
     let src: Vec<&str> = body.lines().collect();
     let mut out = Vec::with_capacity(src.len());
     let mut links = Vec::new();
-    let mut in_fence = false;
-    let mut fence_char = '`';
 
     let mut i = 0;
     while i < src.len() {
         let raw = src[i];
         let trimmed = raw.trim_start();
 
-        if let Some(c) = fence_open_char(trimmed) {
-            if in_fence && c == fence_char {
-                in_fence = false;
-            } else if !in_fence {
-                in_fence = true;
-                fence_char = c;
-            }
-            out.push(Line::styled(raw.to_string(), code_style(t)));
-            i += 1;
+        // Fences and tables consume several source lines at once and emit a
+        // different number of output lines, so both are dispatched before the
+        // per-line block rules. Fence first: a `|` inside code must never be
+        // mistaken for a table.
+        if let Some((fence, used)) = fence::parse(&src[i..]) {
+            out.extend(fence::render(&fence, width, t));
+            i += used;
             continue;
         }
 
-        if in_fence {
-            out.push(Line::styled(raw.to_string(), code_style(t)));
-            i += 1;
-            continue;
-        }
-
-        // Tables consume several source lines at once and emit a different
-        // number of output lines, so they are dispatched before the per-line
-        // block rules.
         if let Some((table, used)) = table::parse(&src[i..]) {
             let (rows, row_links) = table.render(width, t);
             let base = out.len();
@@ -107,12 +97,6 @@ pub fn render_with_links(
     }
 
     (out, links)
-}
-
-fn fence_open_char(trimmed: &str) -> Option<char> {
-    ['`', '~']
-        .into_iter()
-        .find(|&c| trimmed.chars().take_while(|&x| x == c).count() >= 3)
 }
 
 /// Render one non-fenced source line, returning the styled line plus any links
@@ -227,7 +211,7 @@ fn ordered_rest(trimmed: &str) -> Option<(&str, &str)> {
 }
 
 fn code_style(t: &Theme) -> Style {
-    Style::default().fg(t.dim)
+    Style::default().fg(t.code_fg).bg(t.code_bg)
 }
 
 fn link_style(t: &Theme) -> Style {
@@ -250,17 +234,19 @@ mod tests {
     }
 
     #[test]
-    fn line_count_matches_source_for_mixed_body() {
+    fn line_count_matches_source_for_mixed_body_minus_fence_delimiters() {
         let body = "# Title\n\nSome *text* and __bold__.\n\n- one\n- two\n\n```rust\nfn x() {}\n```\n\n> quoted\n\n1. first\n2. second\n";
         let t = Theme::default();
-        assert_eq!(render(body, &t).len(), body.lines().count());
+        // Every block except the fence stays one line in, one line out; the
+        // fence's two delimiter lines are dropped entirely (#120).
+        assert_eq!(render(body, &t).len(), body.lines().count() - 2);
     }
 
     #[test]
-    fn line_count_matches_for_unterminated_fence() {
+    fn line_count_matches_for_unterminated_fence_minus_opening_delimiter() {
         let body = "```\nfn x() {}\nstill in fence\n";
         let t = Theme::default();
-        assert_eq!(render(body, &t).len(), body.lines().count());
+        assert_eq!(render(body, &t).len(), body.lines().count() - 1);
     }
 
     #[test]
@@ -295,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_code_span_is_dim_styled() {
+    fn inline_code_span_is_code_styled() {
         let t = Theme::default();
         let lines = render("run `cargo test` now", &t);
         let code_span = lines[0]
@@ -303,7 +289,8 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "cargo test")
             .expect("code span present");
-        assert_eq!(code_span.style.fg, Some(t.dim));
+        assert_eq!(code_span.style.fg, Some(t.code_fg));
+        assert_eq!(code_span.style.bg, Some(t.code_bg));
     }
 
     #[test]
@@ -360,8 +347,15 @@ mod tests {
         let t = Theme::default();
         let body = "```\n**not bold**\n```";
         let lines = render(body, &t);
-        assert_eq!(spans_text(&lines[1]), "**not bold**");
-        assert_eq!(lines[1].style.fg, Some(t.dim));
+        // Fence delimiters are dropped (#120): the sole content line is lines[0].
+        assert_eq!(lines.len(), 1);
+        let code_span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "**not bold**")
+            .expect("literal, un-parsed code text present");
+        assert_eq!(code_span.style.fg, Some(t.code_fg));
+        assert_eq!(code_span.style.bg, Some(t.code_bg));
     }
 
     #[test]
