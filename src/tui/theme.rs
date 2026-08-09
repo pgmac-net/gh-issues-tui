@@ -25,6 +25,10 @@ pub struct Theme {
     pub error: Color,
     /// Fallback for GitHub labels whose colour can't be parsed.
     pub label_fallback: Color,
+    /// Background fill for fenced and inline code.
+    pub code_bg: Color,
+    /// Foreground for fenced and inline code text.
+    pub code_fg: Color,
 }
 
 impl Default for Theme {
@@ -39,6 +43,8 @@ impl Default for Theme {
             warning: Color::Yellow,
             error: Color::Red,
             label_fallback: Color::Blue,
+            code_bg: Color::Rgb(38, 38, 38),
+            code_fg: Color::Rgb(220, 220, 220),
         }
     }
 }
@@ -59,6 +65,8 @@ pub struct ColorProfile {
     pub warning: Option<Color>,
     pub error: Option<Color>,
     pub label_fallback: Option<Color>,
+    pub code_bg: Option<Color>,
+    pub code_fg: Option<Color>,
 }
 
 impl Theme {
@@ -75,6 +83,8 @@ impl Theme {
             warning: profile.warning.unwrap_or(d.warning),
             error: profile.error.unwrap_or(d.error),
             label_fallback: profile.label_fallback.unwrap_or(d.label_fallback),
+            code_bg: profile.code_bg.unwrap_or(d.code_bg),
+            code_fg: profile.code_fg.unwrap_or(d.code_fg),
         }
     }
 }

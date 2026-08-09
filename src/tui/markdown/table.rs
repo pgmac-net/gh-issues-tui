@@ -465,8 +465,14 @@ mod tests {
 
     #[test]
     fn a_table_inside_a_fence_is_not_parsed() {
+        // Fence delimiters are dropped and each content line gets a gutter
+        // prefix (#120), but the pipe syntax stays literal — it must not be
+        // read as a table.
         let out = render("```\n| a |\n|---|\n```", 80);
-        assert_eq!(out, vec!["```", "| a |", "|---|", "```"]);
+        assert_eq!(out.len(), 2);
+        for (row, content) in out.iter().zip(["| a |", "|---|"]) {
+            assert_eq!(row.trim_end(), format!("▏ {content}"));
+        }
     }
 
     #[test]

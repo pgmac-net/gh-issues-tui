@@ -139,6 +139,8 @@ assignee    = "#fabd2f"   # assignee badges / detail meta line
 warning     = "#fe8019"   # rate-limit warnings, y/n prompts
 error       = "#fb4934"   # errors
 label_fallback = "blue"   # labels with unparsable GitHub colours
+code_bg     = "#1d2021"   # fenced/inline code background
+code_fg     = "#ebdbb2"   # fenced/inline code text
 
 [color_profiles.mono]
 accent = "white"

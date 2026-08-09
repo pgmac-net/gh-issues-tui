@@ -359,6 +359,27 @@ mod tests {
         }
     }
 
+    /// A fence also breaks the one-line-per-source-line property (delimiters
+    /// dropped, content hard-broken), so it needs the same measured-vs-drawn
+    /// agreement check as the table above — including a width narrow enough to
+    /// force the fence renderer's own hard-break.
+    #[test]
+    fn fence_measured_height_matches_the_rendered_rows() {
+        let body = "```rust\nfn very_long_function_name_that_will_need_to_wrap(a, b, c) {}\n```";
+        let mut with_fence = issue(vec![]);
+        with_fence.body = body.into();
+
+        for width in [20u16, 46, 80] {
+            let lines = body_lines(&with_fence, false, width as usize, &Theme::default());
+            let drawn = linkmap::wrap(&lines, &[], width as usize).0.len();
+            assert_eq!(
+                body_content_height(&with_fence, width) as usize,
+                drawn,
+                "at width {width}"
+            );
+        }
+    }
+
     /// Guards the test above against passing trivially: a renderer that left the
     /// table as raw pipes would also wrap, so pin the height the *table* layout
     /// produces (4 metadata + header + rule + a body row wrapped over 3 rows).
