@@ -474,8 +474,13 @@ mod tests {
     fn a_missing_clone_reports_every_path_tried() {
         let roots = vec!["/nope/one".to_string(), "/nope/two".to_string()];
         let err = resolve_workspace("myrepo", "o", None, Path::new("/"), &roots).unwrap_err();
-        assert!(err.contains("/nope/one/myrepo"), "got {err}");
-        assert!(err.contains("/nope/two/myrepo"), "got {err}");
+        // Expected text is built with the same path machinery rather than
+        // spelled out: Windows joins with `\`, so hardcoding `/nope/one/myrepo`
+        // asserted the separator instead of the property under test.
+        for root in &roots {
+            let expected = expand_tilde(root).join("myrepo").display().to_string();
+            assert!(err.contains(&expected), "{expected} missing from {err}");
+        }
     }
 
     #[test]
