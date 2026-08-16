@@ -15,14 +15,15 @@ use crate::provider::Provider;
 use crate::provider::error::RATE_LIMIT_MSG_PREFIX;
 use crate::provider::types::{Comment, FormOptions, PrRef, PrSummary, RepoIssues, RepoLabel};
 
-use super::app::{App, Mode, priority_set_options};
+use super::app::{App, Mode, SessionId, priority_set_options};
+use super::harness::{HarnessRegistry, HarnessSettings};
 use super::theme::Theme;
 use super::ui;
 
 mod keys;
 mod spawn;
 
-use keys::handle_key;
+use keys::{HarnessCtx, handle_key};
 use spawn::{CommentRefresh, spawn_comments, spawn_fetch};
 
 pub enum AppEvent {
@@ -56,6 +57,15 @@ pub enum AppEvent {
         pr: PrRef,
         result: Box<Result<PrSummary, String>>,
     },
+    /// A harness session produced output. Payload-free by design: the bytes
+    /// went straight into that session's parser on its reader thread, so a
+    /// noisy agent cannot flood or stall this channel.
+    HarnessDirty(SessionId),
+    /// A harness child finished.
+    HarnessExited {
+        id: SessionId,
+        code: i32,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -69,6 +79,7 @@ pub async fn run(
     hide_empty_repos: bool,
     copy_format: String,
     theme: Theme,
+    harness: HarnessSettings,
 ) -> Result<()> {
     let terminal = ratatui::init();
     let result = event_loop(
@@ -82,6 +93,7 @@ pub async fn run(
         hide_empty_repos,
         copy_format,
         theme,
+        harness,
     )
     .await;
     ratatui::restore();
@@ -100,6 +112,7 @@ async fn event_loop(
     hide_empty_repos: bool,
     copy_format: String,
     theme: Theme,
+    harness_settings: HarnessSettings,
 ) -> Result<()> {
     let mut app = App::new(
         org,
@@ -111,6 +124,8 @@ async fn event_loop(
     app.set_hide_empty_default(hide_empty_repos);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
+    // The PTYs live here, not on `App` — see `tui::harness`.
+    let mut registry = HarnessRegistry::default();
 
     // Auto-refresh ticker. `interval` fires immediately on first tick, so
     // start one period out; a disabled (0) interval still needs a valid
@@ -122,18 +137,42 @@ async fn event_loop(
 
     spawn_fetch(&client, &app, &tx);
 
+    // A detached agent producing output must not force a re-render of the
+    // issue list on every chunk it writes — its bytes are already in its
+    // parser either way. Only a dirty *visible* session needs a frame.
+    let mut redraw = true;
+
     loop {
-        terminal.draw(|f| ui::draw(f, &app, &theme))?;
+        if redraw {
+            terminal.draw(|f| ui::draw(f, &app, &theme, &registry))?;
+        }
+        redraw = true;
 
         tokio::select! {
             Some(Ok(ev)) = keys.next() => {
-                if let Event::Key(key) = ev
-                    && key.kind == KeyEventKind::Press
-                {
-                    handle_key(&mut app, key, &client, &tx);
+                let mut hx = HarnessCtx {
+                    registry: &mut registry,
+                    settings: &harness_settings,
+                    tx: &tx,
+                };
+                match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        handle_key(&mut app, key, &client, &tx, &mut hx);
+                    }
+                    // Children need the new size too, or their own TUI keeps
+                    // drawing to the old one.
+                    Event::Resize(cols, rows) => {
+                        resize_sessions(&app, &mut registry, cols, rows);
+                    }
+                    _ => {}
                 }
             }
-            Some(msg) = rx.recv() => handle_app_event(&mut app, msg, &client, &tx),
+            Some(msg) = rx.recv() => {
+                if let AppEvent::HarnessDirty(id) = &msg {
+                    redraw = app.harness.active == Some(*id);
+                }
+                handle_app_event(&mut app, msg, &client, &tx);
+            }
             _ = refresh.tick(), if refresh_enabled => {
                 if app.should_auto_refresh() {
                     app.loading = true;
@@ -144,8 +183,23 @@ async fn event_loop(
         }
 
         if app.should_quit {
+            // Children die with the process anyway once their PTY closes;
+            // doing it explicitly means the terminal is restored after they
+            // are gone rather than racing them.
+            registry.kill_all();
             return Ok(());
         }
+    }
+}
+
+/// Keep every session's PTY the size of the pane it is drawn into. All
+/// sessions render full-frame, so they all take the same size — an inactive
+/// one resized now is correct the moment it is attached.
+fn resize_sessions(app: &App, registry: &mut HarnessRegistry, cols: u16, rows: u16) {
+    let areas = super::layout::harness_areas(ratatui::layout::Rect::new(0, 0, cols, rows));
+    let ids: Vec<SessionId> = app.harness.sessions.iter().map(|s| s.id).collect();
+    for id in ids {
+        registry.resize(id, areas.pane.height, areas.pane.width);
     }
 }
 
@@ -192,6 +246,24 @@ pub(crate) fn handle_app_event(
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
+    // Harness events never touch the API, so they must not disturb the
+    // rate-limit display or be counted as an interaction.
+    match msg {
+        // Output already went into the parser on the reader thread; the redraw
+        // at the top of the loop is the whole response.
+        AppEvent::HarnessDirty(_) => return,
+        AppEvent::HarnessExited { id, code } => {
+            app.harness.mark_exited(id, code);
+            // The PTY stays until the session is dismissed — that frozen
+            // screen is the agent's summary of what it did.
+            if let Some(session) = app.harness.get(id) {
+                app.status = Some(format!("{} exited ({code})", session.issue_ref));
+            }
+            return;
+        }
+        _ => {}
+    }
+
     // Pull rate limit state from client after any API interaction.
     app.rate_limit = client.rate_limit();
 
@@ -352,6 +424,9 @@ pub(crate) fn handle_app_event(
                 }
             }
         }
+        // Both are fully handled above; listed so a new event cannot be
+        // added without the compiler pointing here.
+        AppEvent::HarnessDirty(_) | AppEvent::HarnessExited { .. } => {}
         AppEvent::PrSummary { pr, result } => {
             if let Err(e) = result.as_ref() {
                 app.status = Some(format!("PR summary failed: {e}"));
@@ -396,9 +471,11 @@ pub(crate) mod prelude {
     pub use crate::provider::types::{IssueState, PrRef};
     pub use crate::tui::app::{
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorState, EditorTarget, Focus,
-        ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH, InputKind,
-        InputState, IssueForm, Mode, StateFilter, issue_form_width, priority_label_set,
+        HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH,
+        InputKind, InputState, IssueForm, LaunchAction, Mode, SessionId, StateFilter,
+        issue_form_width, priority_label_set,
     };
+    pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};
     pub use crate::tui::{layout, ui};
 
     pub(crate) use super::spawn::*;

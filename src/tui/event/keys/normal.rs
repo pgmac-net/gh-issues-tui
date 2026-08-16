@@ -1,20 +1,45 @@
 use super::super::prelude::*;
 use super::detail::{detail_page_rows, detail_scroll, snap_after_select};
+use super::harness::{HarnessCtx, open_harness_picker, open_session_picker};
 
 pub(crate) fn handle_normal_key(
     app: &mut App,
     key: KeyEvent,
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
+    hx: &mut HarnessCtx,
 ) {
     match key.code {
         KeyCode::Char('q') => {
             if app.detail.open {
                 app.close_detail();
+            } else if app.harness.has_running() {
+                // Quitting closes the PTYs, which SIGHUPs the children — so
+                // say what is about to be lost rather than doing it silently.
+                app.confirm_choice = ConfirmChoice::No;
+                app.mode = Mode::ConfirmHarness(HarnessConfirm::Quit);
             } else {
                 app.should_quit = true;
             }
         }
+        // launch a coding harness for the selected issue (#23)
+        KeyCode::Char('A') => match app.launch_action(hx.settings.default_harness.as_deref()) {
+            LaunchAction::NoIssue => {
+                app.status = Some("select an issue to send to a harness".into());
+            }
+            LaunchAction::Attach(id) => {
+                app.harness.attach(id);
+                app.mode = Mode::Harness;
+            }
+            LaunchAction::ConfirmRelaunch(id) => {
+                app.confirm_choice = ConfirmChoice::No;
+                app.mode = Mode::ConfirmHarness(HarnessConfirm::Relaunch(id));
+            }
+            LaunchAction::Spawn { issue_ref, harness } => hx.launch(app, &issue_ref, &harness),
+            LaunchAction::Pick { .. } => open_harness_picker(app, hx.settings.names()),
+        },
+        // reattach to a detached session
+        KeyCode::Char('Z') => open_session_picker(app),
         KeyCode::Esc if app.detail.open => app.close_detail(),
         // In the detail pane Tab/Shift+Tab move between comments; from the
         // list they switch into the pane.

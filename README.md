@@ -108,11 +108,53 @@ default_collapsed = false   # start with repo groups expanded (default: true)
 refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
 copy_format = "{owner}/{repo}#{number}"   # `y` clipboard format (default shown)
+
+default_harness = "claude"                # harness `A` launches (unset: `A` asks)
+workspace_roots = ["~/pgmac", "~/projects"]   # searched for a repo's clone
+
+[harnesses.claude]                        # built in; shown here to override it
+command = ["claude", "/pgmac-workflows:pickup-ticket {ref}"]
 ```
 
 With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
 
 `copy_format` controls what `y` puts on the clipboard, with `{owner}`, `{repo}`, and `{number}` placeholders substituted from the selected issue. The default (`{owner}/{repo}#{number}`) is the short form GitHub tools and Claude Code understand.
+
+`default_harness`, `workspace_roots` and `[harnesses.*]` configure sending an issue to a coding agent — see [Coding harnesses](#coding-harnesses) below.
+
+### Coding harnesses
+
+`A` on an issue starts a coding agent in that repo's clone, primed with the ticket, in an embedded terminal pane. Full detail: [`docs/harness-sessions.md`](docs/harness-sessions.md).
+
+```toml
+default_harness = "claude"
+workspace_roots = ["~/pgmac", "~/projects"]
+
+[harnesses.claude]
+command = ["claude", "/pgmac-workflows:pickup-ticket {ref}"]
+
+[harnesses.opencode]
+command = ["opencode", "run", "work on {url}"]
+```
+
+`command` is an **argv array, never a shell string** — placeholders expand into individual arguments, so issue text containing quotes or `$(…)` is inert. Available placeholders are `{owner}`, `{repo}`, `{number}`, `{ref}` (`owner/repo#number`, always canonical) and `{url}`.
+
+`claude` and `opencode` ship built in; defining a harness of the same name overrides it, and defining a new one leaves the others in place. A harness may set its own `workspace_roots`.
+
+Other agents are not shipped as defaults because their argument forms were not verified — a guessed argv fails at spawn time. Check their `--help`, then paste:
+
+```toml
+[harnesses.codex]
+command = ["codex", "work on {url}"]
+
+[harnesses.copilot]
+command = ["copilot", "-p", "work on {ref}"]
+
+[harnesses.pi]
+command = ["pi", "{ref}"]
+```
+
+A harness runs in the current directory's repo when that is the issue's repo; otherwise in the first `<root>/<repo>` that exists across `workspace_roots`. If none does, nothing launches and the message names every path tried.
 
 ### Auto-refresh
 
@@ -178,6 +220,8 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `t` | edit the title |
 | `p` | set the priority (picker of the repo's `priority:*` labels, `—` clears) |
 | `P` | summarise a linked PR (detail pane only; picker if several links are found) |
+| `A` | send the issue to a coding harness — starts it in that repo's clone in an embedded terminal pane; attaches if the issue already has a session |
+| `Z` | switch between harness sessions |
 | `n` | create a new issue in the selected repo (opens the form) |
 | `r` | reload all data |
 | `?` | help |
@@ -225,6 +269,25 @@ To create the *first* issue in a repo that shows no issues, flip the `hide empty
 ### Linked PR summaries
 
 With the detail pane open, `P` scans the issue's body and its loaded comment thread for `github.com/<owner>/<repo>/pull/<N>` links (bare `#N` shorthand is deliberately not matched — it's ambiguous between an issue and a PR). One link opens its summary directly; several open a picker to choose. The summary popup shows the PR's title/description, state (open/closed/merged/draft), base←head branches and diffstat, review status (GitHub's overall decision plus per-reviewer approve/changes-requested/comment counts), issue-comment and review-thread counts, the head commit's checks, the PR's own Actions runs, and recent Actions runs on the repo's default branch (the "merge to main" runs). `j`/`k` scroll it; `Esc`/`q` closes back to the detail pane.
+
+### Harness sessions
+
+`A` starts the configured coding agent for the selected issue, in that repo's clone, on a real PTY drawn full-frame inside the TUI. Several sessions run at once, one per issue.
+
+Inside a session **every key goes to the agent** — arrows, `Esc`, `Ctrl+C` and `Shift+Tab` included, since agent CLIs bind them. `F12` is the single key the TUI keeps back, as a tmux-style prefix:
+
+| Chord | Effect |
+|---|---|
+| `F12 d` | detach — back to the list, the agent keeps running |
+| `F12 s` | switch session |
+| `F12 k` | kill (confirmed while the agent is alive) |
+| `F12 n` | start another harness for the current issue |
+| `F12 ?` | help |
+| `F12 F12` | send a literal `F12` to the agent |
+
+Detaching is not killing: the agent keeps working and `Z` returns to it. When an agent exits, its session stays with the final screen frozen so the closing summary is still readable — `k`/`j` scroll, `G` jumps to the end, `q` leaves it in place, `x` dismisses it. The bottom status line shows `n running, m exited (Z)` whenever any session exists, and `q` with agents still running asks first, naming them.
+
+Full detail: [`docs/harness-sessions.md`](docs/harness-sessions.md).
 
 ## Notes
 

@@ -1,3 +1,5 @@
+use super::harness::SessionId;
+
 /// A visible row in the main list: repo header or issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
@@ -60,7 +62,30 @@ pub enum Mode {
     PrPicker,
     /// Popup showing a linked PR's summary.
     PrSummary,
+    /// A coding-harness session is on screen (#23). Every key is forwarded
+    /// to the child except the `F12` prefix chord — see
+    /// `event::keys::harness`.
+    Harness,
+    /// Picker choosing which harness to launch for the selected issue.
+    HarnessPicker,
+    /// Picker choosing which running/exited session to attach to.
+    SessionPicker,
+    /// Confirmation popup whose `Yes` performs a harness action.
+    ConfirmHarness(HarnessConfirm),
     Help,
+}
+
+/// What a `Mode::ConfirmHarness` popup will do if confirmed. Each carries
+/// everything the action needs, so the popup cannot act on a selection that
+/// moved while it was open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HarnessConfirm {
+    /// Terminate a live session's child.
+    Kill(SessionId),
+    /// Discard an exited session's screen and start its harness again.
+    Relaunch(SessionId),
+    /// Quit the app while sessions are still running.
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod event;
+pub mod harness;
 pub mod layout;
 pub mod linkmap;
 pub mod markdown;

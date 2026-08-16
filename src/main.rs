@@ -55,6 +55,10 @@ async fn main() -> Result<()> {
     // config default_org. The repo filter only applies when the org being
     // browsed is the detected remote's owner.
     let detected = cwd_repo::detect();
+    // Kept for the harness feature (#23): launching an issue in the repo the
+    // TUI was started from should use that clone, whatever `workspace_roots`
+    // says.
+    let cwd_repo = detected.clone();
     let (org, initial_repo) = match (cli.org, detected) {
         (Some(org), Some((owner, repo))) => {
             let filter = owner.eq_ignore_ascii_case(&org).then_some(repo);
@@ -82,6 +86,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "github".into());
     let client = provider::build(&provider_name, cli.token)?;
 
+    let harness = tui::harness::HarnessSettings {
+        default_harness: cfg.default_harness.clone(),
+        harnesses: cfg.harnesses.clone(),
+        workspace_roots: cfg.workspace_roots.clone(),
+        cwd_repo,
+        cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+
     install_panic_hook();
     tui::run(
         client,
@@ -93,6 +105,7 @@ async fn main() -> Result<()> {
         cfg.hide_empty_repos,
         cfg.copy_format,
         theme,
+        harness,
     )
     .await
 }

@@ -2,7 +2,7 @@ use super::list::input_prompt;
 use super::prelude::*;
 use super::widgets::centered;
 use crate::tui::app::{
-    ConfirmChoice, FILTER_FIELDS, INPUT_POPUP_WIDTH, ISSUE_FORM_FIELDS, InputKind,
+    ConfirmChoice, FILTER_FIELDS, HarnessConfirm, INPUT_POPUP_WIDTH, ISSUE_FORM_FIELDS, InputKind,
     input_popup_width, input_scroll_skip,
 };
 use chrono::{Datelike, NaiveDate};
@@ -25,9 +25,16 @@ pub(super) fn draw_confirm_popup(f: &mut Frame, app: &App, t: &Theme) {
         Some(i) => format!("{action} issue #{}?", i.number),
         None => format!("{action} this issue?"),
     };
+    draw_confirm(f, app, t, &format!(" {action} issue "), &[message]);
+}
 
-    let width = (message.len() as u16 + 4).max(24);
-    let area = centered(f.area(), width, 4);
+/// The shared Yes/No popup: `lines` of warning text above the two buttons.
+/// Both the close/reopen confirmation and the harness ones (#23) draw through
+/// here, so the button focus styling and keys can only be defined once.
+fn draw_confirm(f: &mut Frame, app: &App, t: &Theme, title: &str, lines: &[String]) {
+    let widest = lines.iter().map(String::len).max().unwrap_or(0);
+    let width = (widest as u16 + 4).max(24).min(f.area().width);
+    let area = centered(f.area(), width, lines.len() as u16 + 3);
     f.render_widget(Clear, area);
 
     const YES: &str = "[ Yes ]";
@@ -53,16 +60,68 @@ pub(super) fn draw_confirm_popup(f: &mut Frame, app: &App, t: &Theme) {
         Span::styled(NO, button_style(app.confirm_choice == ConfirmChoice::No)),
     ]);
 
-    let para = Paragraph::new(vec![
-        Line::styled(message, Style::default().fg(t.warning)),
-        buttons,
-    ])
-    .block(
+    let mut body: Vec<Line> = lines
+        .iter()
+        .map(|l| Line::styled(l.clone(), Style::default().fg(t.warning)))
+        .collect();
+    body.push(buttons);
+
+    let para = Paragraph::new(body).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {action} issue ")),
+            .title(title.to_string()),
     );
     f.render_widget(para, area);
+}
+
+/// The confirmation in front of an irreversible harness action (#23).
+pub(super) fn draw_harness_confirm_popup(
+    f: &mut Frame,
+    app: &App,
+    t: &Theme,
+    what: HarnessConfirm,
+) {
+    let (title, lines) = match what {
+        HarnessConfirm::Kill(id) => {
+            let which = app
+                .harness
+                .get(id)
+                .map(|s| format!("{} ({})", s.issue_ref, s.harness))
+                .unwrap_or_else(|| "this session".into());
+            (
+                " kill session ".to_string(),
+                vec![format!("terminate {which}?")],
+            )
+        }
+        HarnessConfirm::Relaunch(id) => {
+            let which = app
+                .harness
+                .get(id)
+                .map(|s| format!("{} ({})", s.issue_ref, s.harness))
+                .unwrap_or_else(|| "this session".into());
+            (
+                " relaunch ".to_string(),
+                vec![
+                    format!("{which} has exited."),
+                    "Relaunching discards its output.".to_string(),
+                ],
+            )
+        }
+        HarnessConfirm::Quit => {
+            let mut lines = vec![format!(
+                "{} harness session(s) still running:",
+                app.harness.running_count()
+            )];
+            lines.extend(
+                app.harness
+                    .running()
+                    .map(|s| format!("  {} ({})", s.issue_ref, s.harness)),
+            );
+            lines.push("They will be terminated.".to_string());
+            (" quit ".to_string(), lines)
+        }
+    };
+    draw_confirm(f, app, t, &title, &lines);
 }
 
 pub(super) fn draw_filter_menu(f: &mut Frame, app: &App, t: &Theme) {
@@ -221,6 +280,25 @@ impl PickerSpec {
             " set labels (type to filter · Space toggles · Enter accepts · Esc cancels) ",
             true,
         )
+    }
+
+    /// Choosing which coding harness to launch (`Mode::HarnessPicker`).
+    pub(super) fn harnesses() -> Self {
+        Self::new(
+            " send to harness (type to filter · Enter starts · Esc cancels) ",
+            false,
+        )
+    }
+
+    /// Choosing which session to attach to (`Mode::SessionPicker`).
+    pub(super) fn sessions() -> Self {
+        Self {
+            width: PR_PICKER_WIDTH,
+            ..Self::new(
+                " harness sessions (type to filter · Enter attaches · Esc cancels) ",
+                false,
+            )
+        }
     }
 
     /// Choosing among several linked PRs (`Mode::PrPicker`).
