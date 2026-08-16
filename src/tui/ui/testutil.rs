@@ -111,12 +111,15 @@ pub(super) fn test_app() -> App {
 
 /// Render the whole UI — mode dispatch included — into a `TestBackend`.
 pub(super) fn render_app(app: &App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    use crate::tui::harness::HarnessRegistry;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     let backend = TestBackend::new(w, h);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| draw(f, app, &Theme::default())).unwrap();
+    terminal
+        .draw(|f| draw(f, app, &Theme::default(), &HarnessRegistry::default()))
+        .unwrap();
     terminal.backend().buffer().clone()
 }
 

@@ -49,6 +49,72 @@ pub struct Config {
     /// entries override individual UI colours (see `theme::ColorProfile`).
     #[serde(default, skip_serializing)]
     pub color_profiles: HashMap<String, ColorProfile>,
+
+    /// Harness started by `A` when the issue has no session yet. Unset →
+    /// `A` opens the harness picker instead of guessing.
+    #[serde(default)]
+    pub default_harness: Option<String>,
+
+    /// Directories searched for a repo's clone when launching a harness, in
+    /// order; the first `<root>/<repo>` that exists wins. `~` is expanded.
+    /// Empty (the default) means only the cwd's own repo can be launched
+    /// into — see `harness::workspace_dir`.
+    #[serde(default)]
+    pub workspace_roots: Vec<String>,
+
+    /// Coding harnesses `A` can launch: `[harnesses.<name>]` tables.
+    /// Built-in entries (see `builtin_harnesses`) are merged in for names
+    /// the config does not define, so the common ones work with no config
+    /// at all while staying fully overridable.
+    #[serde(default)]
+    pub harnesses: HashMap<String, HarnessConfig>,
+}
+
+/// One entry in the `[harnesses.*]` table.
+///
+/// `command` is an **argv array, never a shell string** — placeholders
+/// expand into individual argv slots, so an issue title containing
+/// `$(...)`, backticks or quotes is inert. Issue text is attacker-controlled
+/// in a public org; routing it through `sh -c` would be a live injection hole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessConfig {
+    /// Program and arguments. Supports the `{owner}`, `{repo}`, `{number}`,
+    /// `{ref}` and `{url}` placeholders.
+    pub command: Vec<String>,
+
+    /// Overrides the top-level `workspace_roots` for this harness only.
+    #[serde(default)]
+    pub workspace_roots: Option<Vec<String>>,
+}
+
+/// Harnesses that ship working out of the box.
+///
+/// Only harnesses whose argument form has actually been verified are listed:
+/// `claude [prompt]` starts an interactive session on a prompt, and
+/// `opencode run [message..]` runs one non-interactively. `codex`, `copilot`
+/// and `pi` are documented in the README as ready-to-paste snippets instead —
+/// a shipped default built from a guessed argv fails at spawn time, which is
+/// worse than no default at all.
+pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
+    HashMap::from([
+        (
+            "claude".to_string(),
+            HarnessConfig {
+                command: vec![
+                    "claude".into(),
+                    "/pgmac-workflows:pickup-ticket {ref}".into(),
+                ],
+                workspace_roots: None,
+            },
+        ),
+        (
+            "opencode".to_string(),
+            HarnessConfig {
+                command: vec!["opencode".into(), "run".into(), "work on {url}".into()],
+                workspace_roots: None,
+            },
+        ),
+    ])
 }
 
 fn default_collapsed_default() -> bool {
@@ -78,6 +144,9 @@ impl Default for Config {
             color_profile: None,
             copy_format: copy_format_default(),
             color_profiles: HashMap::new(),
+            default_harness: None,
+            workspace_roots: Vec::new(),
+            harnesses: builtin_harnesses(),
         }
     }
 }
@@ -100,7 +169,15 @@ impl Config {
         }
         let raw =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        let mut cfg: Self =
+            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        // Built-ins fill the gaps rather than replacing the parsed table:
+        // defining `[harnesses.codex]` must not silently delete `claude`,
+        // which a plain `#[serde(default = ...)]` on the field would do.
+        for (name, harness) in builtin_harnesses() {
+            cfg.harnesses.entry(name).or_insert(harness);
+        }
+        Ok(cfg)
     }
 
     /// Resolve the active colour theme: the profile named by `color_profile`
@@ -281,6 +358,90 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "default_org = [broken\n").unwrap();
+        assert!(Config::load_from(&path).is_err());
+    }
+
+    fn cfg_from(body: &str) -> Config {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, body).unwrap();
+        Config::load_from(&path).unwrap()
+    }
+
+    fn harness_names(cfg: &Config) -> Vec<String> {
+        let mut names: Vec<String> = cfg.harnesses.keys().cloned().collect();
+        names.sort_unstable();
+        names
+    }
+
+    #[test]
+    fn builtin_harnesses_are_available_with_no_config() {
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        assert_eq!(harness_names(&cfg), vec!["claude", "opencode"]);
+        assert_eq!(cfg.harnesses["claude"].command[0], "claude");
+    }
+
+    #[test]
+    fn a_user_harness_is_added_without_dropping_the_builtins() {
+        // The bug this pins: `#[serde(default = "builtin_harnesses")]` would
+        // replace the whole map, so defining one harness would delete claude.
+        let cfg = cfg_from(
+            "[harnesses.codex]\n\
+             command = [\"codex\", \"work on {url}\"]\n",
+        );
+        assert_eq!(harness_names(&cfg), vec!["claude", "codex", "opencode"]);
+    }
+
+    #[test]
+    fn a_user_harness_overrides_the_builtin_of_the_same_name() {
+        let cfg = cfg_from(
+            "[harnesses.claude]\n\
+             command = [\"claude\", \"--resume\", \"{ref}\"]\n",
+        );
+        assert_eq!(
+            cfg.harnesses["claude"].command,
+            vec!["claude", "--resume", "{ref}"]
+        );
+        assert_eq!(harness_names(&cfg).len(), 2, "opencode still merged in");
+    }
+
+    #[test]
+    fn parses_default_harness_and_workspace_roots() {
+        let cfg = cfg_from(
+            "default_harness = \"claude\"\n\
+             workspace_roots = [\"~/pgmac\", \"~/projects\"]\n",
+        );
+        assert_eq!(cfg.default_harness.as_deref(), Some("claude"));
+        assert_eq!(cfg.workspace_roots, vec!["~/pgmac", "~/projects"]);
+    }
+
+    #[test]
+    fn workspace_roots_default_to_empty_and_harness_to_none() {
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        assert!(cfg.workspace_roots.is_empty());
+        assert!(cfg.default_harness.is_none());
+    }
+
+    #[test]
+    fn a_harness_may_override_workspace_roots() {
+        let cfg = cfg_from(
+            "workspace_roots = [\"~/pgmac\"]\n\
+             [harnesses.work]\n\
+             command = [\"claude\"]\n\
+             workspace_roots = [\"~/projects\"]\n",
+        );
+        assert_eq!(
+            cfg.harnesses["work"].workspace_roots.as_deref(),
+            Some(["~/projects".to_string()].as_slice())
+        );
+        assert!(cfg.harnesses["claude"].workspace_roots.is_none());
+    }
+
+    #[test]
+    fn a_harness_without_a_command_is_a_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[harnesses.broken]\nworkspace_roots = []\n").unwrap();
         assert!(Config::load_from(&path).is_err());
     }
 }

@@ -318,6 +318,7 @@ mod tests {
     use super::super::testutil::*;
     use super::*;
     use crate::tui::app::DetailSel;
+    use crate::tui::harness::HarnessRegistry;
 
     #[test]
     fn body_content_height_counts_metadata_and_body() {
@@ -472,7 +473,9 @@ mod tests {
 
         let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &app, &Theme::default())).unwrap();
+        terminal
+            .draw(|f| draw(f, &app, &Theme::default(), &HarnessRegistry::default()))
+            .unwrap();
         terminal
             .backend()
             .buffer()
@@ -534,7 +537,9 @@ mod tests {
 
         let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &app, &Theme::default())).unwrap();
+        terminal
+            .draw(|f| draw(f, &app, &Theme::default(), &HarnessRegistry::default()))
+            .unwrap();
         terminal
             .backend()
             .buffer()

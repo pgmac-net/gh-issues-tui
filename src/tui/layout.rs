@@ -99,6 +99,30 @@ pub fn detail_regions(detail: Rect) -> DetailAreas {
     }
 }
 
+/// The harness pane and the status row under it.
+pub struct HarnessAreas {
+    /// Where the child's screen is drawn; also the size its PTY is set to.
+    pub pane: Rect,
+    pub status: Rect,
+}
+
+/// Split the frame for a harness session (#23): the child gets everything
+/// except one status row. A session is drawn full-frame rather than into the
+/// detail split because an agent's own TUI needs the room, and because it
+/// keeps the PTY size a plain function of the terminal.
+pub fn harness_areas(area: Rect) -> HarnessAreas {
+    // Too short to spare a row: the child keeps the lot. Anything that gives
+    // the pane zero rows would be handed to `PtySize`, which the OS rejects.
+    if area.height <= 1 {
+        return HarnessAreas {
+            pane: area,
+            status: Rect::new(area.x, area.y, area.width, 0),
+        };
+    }
+    let [pane, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    HarnessAreas { pane, status }
+}
+
 /// The text width inside a bordered area — its width less both border columns.
 pub fn inner_width(area: Rect) -> u16 {
     area.width.saturating_sub(2)
@@ -224,5 +248,25 @@ mod tests {
     #[test]
     fn detail_regions_reports_no_comments_region_when_collapsed() {
         assert!(detail_regions(Rect::new(0, 0, 60, 6)).comments.is_none());
+    }
+
+    #[test]
+    fn harness_areas_give_the_child_everything_but_one_status_row() {
+        let a = harness_areas(Rect::new(0, 0, 120, 40));
+        assert_eq!(a.pane.height, 39);
+        assert_eq!(a.pane.width, 120);
+        assert_eq!(a.status.height, 1);
+        assert_eq!(a.status.y, 39);
+    }
+
+    #[test]
+    fn harness_pane_never_collapses_to_zero_rows() {
+        // A one-row terminal must still yield a usable PtySize; a zero-row
+        // pty is rejected by the OS.
+        for height in [1u16, 2, 3] {
+            let a = harness_areas(Rect::new(0, 0, 80, height));
+            assert!(a.pane.height >= 1, "at height {height}");
+            assert_eq!(a.pane.height + a.status.height, height);
+        }
     }
 }

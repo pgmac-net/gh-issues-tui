@@ -10,6 +10,7 @@ mod editor;
 mod filter_input;
 mod filters;
 mod form;
+mod harness;
 mod mode;
 mod picker;
 mod pr;
@@ -22,6 +23,7 @@ pub use detail::DetailState;
 pub use editor::*;
 pub use filters::*;
 pub use form::*;
+pub use harness::{HarnessState, LaunchAction, SessionId, SessionMeta, SessionStatus};
 pub use mode::*;
 pub use picker::PickerState;
 pub use pr::PrState;
@@ -88,6 +90,11 @@ pub struct App {
     /// `set_data` and `switch_org` — a refetch can reveal comments added
     /// elsewhere, and a stale thread is worse than a cheap refetch.
     pub comment_cache: HashMap<String, Vec<Comment>>,
+    /// Coding-harness sessions (#23) — metadata only; the PTYs themselves
+    /// are owned by the event loop. Deliberately *not* reset by
+    /// `switch_org`: an agent working a ticket is unaffected by the list
+    /// being pointed at another owner.
+    pub harness: HarnessState,
     pub should_quit: bool,
 }
 
@@ -134,6 +141,7 @@ impl App {
             rate_limit_error: None,
             comment_cache: HashMap::new(),
             pr: PrState::default(),
+            harness: HarnessState::default(),
             should_quit: false,
         }
     }

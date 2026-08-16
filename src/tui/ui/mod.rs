@@ -6,6 +6,7 @@
 
 mod detail;
 mod form;
+mod harness;
 mod list;
 mod popups;
 mod pr;
@@ -44,10 +45,25 @@ mod prelude {
 use prelude::*;
 
 use crate::tui::app::Mode;
+use crate::tui::harness::HarnessRegistry;
 
 /// Draw a whole frame: the panes, the status lines, then whichever popup the
 /// current mode calls for.
-pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
+pub fn draw(f: &mut Frame, app: &App, t: &Theme, registry: &HarnessRegistry) {
+    // An attached session takes the whole frame — the list and detail pane
+    // are not drawn behind it, so a full-screen agent TUI is not fighting
+    // for space with a view nobody can see.
+    if app.harness.active.is_some()
+        && matches!(
+            app.mode,
+            Mode::Harness | Mode::HarnessPicker | Mode::SessionPicker | Mode::ConfirmHarness(_)
+        )
+    {
+        harness::draw_harness(f, app, t, registry, f.area());
+        draw_popup(f, app, t);
+        return;
+    }
+
     let frame = layout::frame(f.area());
     let panes = layout::panes(frame.main, app.detail.open);
 
@@ -58,6 +74,11 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
     list::draw_info_bar(f, app, t, frame.info);
     list::draw_bottom_line(f, app, t, frame.bottom);
 
+    draw_popup(f, app, t);
+}
+
+/// Whichever popup the current mode calls for, over whatever is behind it.
+fn draw_popup(f: &mut Frame, app: &App, t: &Theme) {
     match app.mode {
         Mode::FilterMenu => popups::draw_filter_menu(f, app, t),
         Mode::SelectField(idx) => {
@@ -82,6 +103,9 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
         Mode::PrPicker => popups::draw_picker(f, app, t, popups::PickerSpec::pr_links()),
         Mode::PrSummary => pr::draw_pr_summary_popup(f, app, t),
         Mode::ConfirmState => popups::draw_confirm_popup(f, app, t),
+        Mode::HarnessPicker => popups::draw_picker(f, app, t, popups::PickerSpec::harnesses()),
+        Mode::SessionPicker => popups::draw_picker(f, app, t, popups::PickerSpec::sessions()),
+        Mode::ConfirmHarness(what) => popups::draw_harness_confirm_popup(f, app, t, what),
         Mode::Help => popups::draw_help(f, t),
         _ => {}
     }

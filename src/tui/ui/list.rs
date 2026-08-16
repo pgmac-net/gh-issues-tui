@@ -179,10 +179,16 @@ pub(super) fn input_prompt(kind: InputKind) -> &'static str {
 
 pub(super) fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let msg = app.status.clone().unwrap_or_default();
-    f.render_widget(
-        Paragraph::new(Line::styled(format!(" {msg}"), Style::default().fg(t.dim))),
-        area,
-    );
+    let mut spans = vec![Span::styled(format!(" {msg}"), Style::default().fg(t.dim))];
+    // Detached harness sessions (#23) are otherwise invisible — without this
+    // an agent could be running with nothing on screen to say so.
+    if let Some(segment) = app.harness.status_segment() {
+        spans.push(Span::styled(
+            format!("  ·  {segment} (Z)"),
+            Style::default().fg(t.accent),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 #[cfg(test)]
