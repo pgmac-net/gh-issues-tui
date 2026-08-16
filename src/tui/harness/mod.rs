@@ -509,13 +509,19 @@ mod tests {
             )
             .expect("spawn");
 
+        // `HarnessExited` comes from the waiter thread and says nothing about
+        // whether the reader thread has finished draining the pty — stopping
+        // there raced the final output and made this test flaky (~1 in 40).
+        // The app is unaffected (a later `HarnessDirty` redraws), but the
+        // assertion below needs both threads done. Dropping the test's own
+        // sender leaves the two thread clones, so the channel closes exactly
+        // when both have exited.
+        drop(tx);
         let mut code = None;
-        // Drain until the waiter reports; dirty events arrive interleaved.
         while let Some(event) = rx.blocking_recv() {
             if let AppEvent::HarnessExited { id, code: c } = event {
                 assert_eq!(id, 0);
                 code = Some(c);
-                break;
             }
         }
         assert_eq!(code, Some(3), "exit code must reach the event loop");
