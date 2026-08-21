@@ -437,6 +437,38 @@ impl Client {
         .map(drop)
     }
 
+    /// Move the issue to another repo in the same org. Missing labels are
+    /// recreated in the target — `createLabelsIfMissing: true` — so
+    /// `priority:*`/`status:*`, which this app's sort/colour/filter model
+    /// depends on, survive the transfer instead of being silently dropped.
+    /// GitHub only allows same-owner transfers, so `target` is always one
+    /// of the org's already-loaded repos.
+    pub async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<()> {
+        let data = self
+            .graphql(
+                "query($owner: String!, $name: String!) {
+                   repository(owner: $owner, name: $name) { id }
+                 }",
+                json!({ "owner": org, "name": target }),
+            )
+            .await?;
+        let repo_id = data
+            .pointer("/repository/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ProviderError::Shape(format!("no repository {org}/{target}")))?
+            .to_string();
+        self.graphql(
+            "mutation($id: ID!, $repo: ID!) {
+               transferIssue(input: {issueId: $id, repositoryId: $repo, createLabelsIfMissing: true}) {
+                 clientMutationId
+               }
+             }",
+            json!({ "id": issue_id, "repo": repo_id }),
+        )
+        .await
+        .map(drop)
+    }
+
     /// Everything the new-issue form's pickers need, in one query (plus a
     /// separate, failure-tolerant issue-types query — that field is an org
     /// feature not available for every owner and must not kill the form).
@@ -1258,6 +1290,14 @@ impl crate::provider::IssueProvider for Client {
 
     async fn pull_request(&self, pr: &PrRef) -> Result<PrSummary> {
         self.pull_request(pr).await
+    }
+
+    fn supports_move(&self) -> bool {
+        true
+    }
+
+    async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<()> {
+        self.move_issue(issue_id, org, target).await
     }
 }
 

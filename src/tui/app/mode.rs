@@ -62,6 +62,10 @@ pub enum Mode {
     PrPicker,
     /// Popup showing a linked PR's summary.
     PrSummary,
+    /// Picker choosing which repo to move the selected issue to.
+    MovePicker,
+    /// Confirmation popup for a move committed from `MovePicker`.
+    ConfirmMove,
     /// A coding-harness session is on screen (#23). Every key is forwarded
     /// to the child except the `F12` prefix chord — see
     /// `event::keys::harness`.
@@ -126,6 +130,18 @@ pub enum DetailSel {
 pub struct PrTarget {
     pub url: String,
     pub line: u16,
+}
+
+/// A move committed from `Mode::MovePicker`, awaiting confirmation in
+/// `Mode::ConfirmMove`. `Mode` stays `Copy` (a `String` payload can't live
+/// inside a variant the way `HarnessConfirm::Kill(SessionId)` does), so this
+/// lives in `App` instead — captured at picker-commit time so a selection
+/// change or refetch while the confirm popup is open can't retarget the
+/// mutation onto a different issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingMove {
+    pub issue_id: String,
+    pub target: String,
 }
 
 /// Which element of the inline comment section (`Mode::CommentEditor`) has

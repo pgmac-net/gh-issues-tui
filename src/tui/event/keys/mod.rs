@@ -9,6 +9,7 @@ pub(crate) mod filter;
 pub(crate) mod form;
 pub(crate) mod harness;
 pub(crate) mod input;
+pub(crate) mod move_issue;
 pub(crate) mod normal;
 pub(crate) mod pr;
 pub(super) mod shared;
@@ -28,6 +29,7 @@ use harness::{
     handle_session_picker_key,
 };
 use input::handle_input_key;
+use move_issue::{handle_confirm_move_key, handle_move_picker_key};
 use normal::handle_normal_key;
 use pr::{handle_pr_picker_key, handle_pr_summary_key};
 
@@ -58,6 +60,8 @@ pub(super) fn handle_key(
         Mode::LabelsSet => handle_labels_set_key(app, key, client, tx),
         Mode::PrPicker => handle_pr_picker_key(app, key, client, tx),
         Mode::PrSummary => handle_pr_summary_key(app, key, client, tx),
+        Mode::MovePicker => handle_move_picker_key(app, key),
+        Mode::ConfirmMove => handle_confirm_move_key(app, key, client, tx),
         // Dismissing help returns where it was opened from — `F12 ?` inside a
         // session must not drop you back on the issue list.
         Mode::Help => {

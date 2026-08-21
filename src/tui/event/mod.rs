@@ -472,7 +472,7 @@ pub(crate) mod prelude {
     pub use crate::tui::app::{
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorState, EditorTarget, Focus,
         HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH,
-        InputKind, InputState, IssueForm, LaunchAction, Mode, SessionId, StateFilter,
+        InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove, SessionId, StateFilter,
         issue_form_width, priority_label_set,
     };
     pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};

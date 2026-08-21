@@ -78,6 +78,20 @@ pub trait IssueProvider: Send + Sync {
     async fn pull_request(&self, _pr: &PrRef) -> Result<PrSummary> {
         Err(ProviderError::Unsupported("pull request summaries"))
     }
+
+    /// Capability probe for [`IssueProvider::move_issue`]. The UI checks
+    /// this before offering the move-to-another-repo affordance.
+    fn supports_move(&self) -> bool {
+        false
+    }
+
+    /// Move an issue to another repo/team/project (`target`, the
+    /// provider's nearest grouping concept — same meaning as
+    /// [`RepoIssues::repo`]) within the same org. Capability method — only
+    /// meaningful when [`IssueProvider::supports_move`] is `true`.
+    async fn move_issue(&self, _issue_id: &str, _org: &str, _target: &str) -> Result<()> {
+        Err(ProviderError::Unsupported("moving issues between repos"))
+    }
 }
 
 /// The shared handle the event loop clones into spawned tasks.
@@ -186,6 +200,10 @@ mod tests {
             })
             .await
             .unwrap_err();
+        assert!(matches!(err, ProviderError::Unsupported(_)));
+
+        assert!(!p.supports_move());
+        let err = p.move_issue("I_1", "org", "target").await.unwrap_err();
         assert!(matches!(err, ProviderError::Unsupported(_)));
     }
 }

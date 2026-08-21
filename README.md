@@ -2,7 +2,7 @@
 
 Interactive TUI for browsing and managing GitHub issues across an entire organisation, written in Rust with [ratatui](https://ratatui.rs).
 
-Issues from every repository in the organisation are listed in one place, grouped by repo with collapsible groups. Filter, sort, inspect, comment on, close/reopen, re-assign, re-label and re-title issues — or jump out to the GitHub website — without leaving the terminal.
+Issues from every repository in the organisation are listed in one place, grouped by repo with collapsible groups. Filter, sort, inspect, comment on, close/reopen, re-assign, re-label, re-title, and move issues to another repo — or jump out to the GitHub website — without leaving the terminal.
 
 ## Install
 
@@ -46,6 +46,7 @@ How Linear concepts map onto the UI:
 | `priority:*` label | Linear's native priority field, surfaced as a synthetic label so sort/colour/filter/`p` all work; setting it writes the native field back |
 | Assignees | Single assignee (the list holds 0 or 1) |
 | Close / reopen | Moves the issue to a `completed` / open workflow state in its team |
+| Move issue (`m`) | Moves the issue to another team; Linear remaps its workflow state and label set to the target team itself |
 | `--org` | Ignored — the workspace is fixed by the API key |
 
 Not available on Linear: the linked-PR summary (`P`) — Linear issues have no GitHub PR links, so the key reports "not supported". Linear has no milestones or issue types in the GitHub sense; those form fields stay empty. The list view does not show a comment count for Linear issues (the count appears once you open the detail pane).
@@ -74,7 +75,7 @@ How Jira concepts map onto the UI:
 | Issue type | Required when creating an issue — the new-issue form's type picker is populated from the project |
 | `--org` | Ignored — the site is fixed by the credentials |
 
-Not available on Jira: the linked-PR summary (`P`, no GitHub PR links) and milestones. Rich ADF formatting (tables, panels, media) is dropped when flattening to text.
+Not available on Jira: the linked-PR summary (`P`, no GitHub PR links), milestones, and moving issues to another project (`m`) — Jira Cloud has no per-issue move, only a Beta bulk-move endpoint requiring an explicit issue-type/status mapping, so the key reports "not supported". Rich ADF formatting (tables, panels, media) is dropped when flattening to text.
 
 ### Starting inside a repository clone
 
@@ -220,6 +221,7 @@ Every entry is optional — unset entries keep the built-in colour. Values accep
 | `t` | edit the title |
 | `p` | set the priority (picker of the repo's `priority:*` labels, `—` clears) |
 | `P` | summarise a linked PR (detail pane only; picker if several links are found) |
+| `m` | move the issue to another repo (picker of the org's other repos, then a confirmation popup) |
 | `A` | send the issue to a coding harness — starts it in that repo's clone in an embedded terminal pane; attaches if the issue already has a session |
 | `Z` | switch between harness sessions |
 | `n` | create a new issue in the selected repo (opens the form) |
@@ -265,6 +267,14 @@ URLs in the description and comments — both bare `http(s)://` URLs and the lab
 `n` opens a New-Issue form for the selected repo (from its header or any of its issue rows) as a single inline form — one box, no per-field popups except for the pickers below. `Tab`/`Shift+Tab` move between fields and the `[ Create ]`/`[ Cancel ]` buttons at the bottom, wrapping at both ends. **Title** and **description** edit directly in the form (description is a small multi-line box: `Enter` inserts a newline; `Tab` leaves it). **Assignees** and **labels** (multi-select pickers — Space toggles, Enter accepts) and **type**, **priority**, **project**, **milestone** (single-select pickers, `—` clears) still open a picker popup on `Enter` — the one modal exception, since these option lists benefit from the pickers' type-ahead filter. Picker options load per repo when the form opens: assignable users, repo labels, issue types (where the org has them), the repo's Projects (V2), and open milestones. Priority follows the `priority:<value>` label convention — the chosen label is added to the issue's labels. `Enter`/`Space` on `[ Create ]` submits; the status line reports `created #N` and the list refetches. `Esc` anywhere, or `Enter`/`Space` on `[ Cancel ]`, discards the form.
 
 To create the *first* issue in a repo that shows no issues, flip the `hide empty repos` filter to `no` (`F` → last row → Enter) — the repo's `(0)` header appears and `n` works on it.
+
+### Moving an issue to another repo
+
+`m` moves the selected issue to a different repo in the same org: it opens a picker of every other loaded repo (type-ahead filters it), then a confirmation popup naming the destination and the move's side effects — the issue gets a new number, and everyone mentioned in it is notified. `Esc`/`n` cancels either step without mutating anything.
+
+GitHub only allows same-owner transfers — the picker's targets are exactly the repos already loaded for this org, so there's nothing to fetch. Labels missing from the target repo are recreated there (`priority:*`/`status:*` included) so the app's sort/colour/filter keeps working on the moved issue; recreated labels get GitHub's default colour rather than the source's. On Linear, `m` moves the issue to another team instead — see the [Linear backend](#linear-backend) table for what that remaps. Not available on Jira — see the [Jira backend](#jira-backend) section.
+
+The selection does not follow the moved issue after the refetch — GitHub does not document whether a transferred issue keeps its id, so the cursor falls back to the same clamped-index behaviour as any issue that vanishes from view. The status line names the destination instead (`moved to <repo>`).
 
 ### Linked PR summaries
 
