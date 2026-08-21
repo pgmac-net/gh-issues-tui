@@ -1,6 +1,6 @@
 # Move an issue to another repo (#135)
 
-Work driven by pgmac-net/gh-issues-tui#135 [https://github.com/pgmac-net/gh-issues-tui/issues/135](https://github.com/pgmac-net/gh-issues-tui/issues/135), delivered on branch `135-move-issue-to-repo`.
+Work driven by pgmac-net/gh-issues-tui#135 [https://github.com/pgmac-net/gh-issues-tui/issues/135](https://github.com/pgmac-net/gh-issues-tui/issues/135), delivered in PR #136 [https://github.com/pgmac-net/gh-issues-tui/pull/136](https://github.com/pgmac-net/gh-issues-tui/pull/136) on branch `135-move-issue-to-repo`.
 
 ## Problem
 
