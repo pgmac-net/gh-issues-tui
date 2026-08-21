@@ -106,6 +106,8 @@ fn draw_popup(f: &mut Frame, app: &App, t: &Theme) {
         Mode::HarnessPicker => popups::draw_picker(f, app, t, popups::PickerSpec::harnesses()),
         Mode::SessionPicker => popups::draw_picker(f, app, t, popups::PickerSpec::sessions()),
         Mode::ConfirmHarness(what) => popups::draw_harness_confirm_popup(f, app, t, what),
+        Mode::MovePicker => popups::draw_picker(f, app, t, popups::PickerSpec::move_target()),
+        Mode::ConfirmMove => popups::draw_confirm_move_popup(f, app, t),
         Mode::Help => popups::draw_help(f, t),
         _ => {}
     }

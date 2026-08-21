@@ -98,6 +98,27 @@ impl App {
         self.mode = Mode::Normal;
     }
 
+    /// Repo names available as a move target for the selected issue: every
+    /// loaded repo except its own. Empty when nothing is selected or the
+    /// issue's repo is the only one loaded.
+    pub fn move_targets(&self) -> Vec<String> {
+        let Some(current) = self.selected_repo().map(|r| r.repo.clone()) else {
+            return Vec::new();
+        };
+        self.repos
+            .iter()
+            .map(|r| r.repo.clone())
+            .filter(|r| *r != current)
+            .collect()
+    }
+
+    /// Open the move-target picker. Callers gate on `move_targets()` being
+    /// non-empty and the provider supporting moves before calling this.
+    pub fn open_move_picker(&mut self, targets: Vec<String>) {
+        self.picker.start(targets, 0);
+        self.mode = Mode::MovePicker;
+    }
+
     /// Deliver a per-repo options fetch. Dropped when the form has been
     /// closed or retargeted since the fetch was spawned (stale response).
     pub fn set_form_options(&mut self, repo: &str, options: FormOptions) {

@@ -105,11 +105,15 @@ pub(crate) enum CommentRefresh {
 }
 
 /// Spawn a mutation against the selected issue; reports done/failed via `tx`.
+/// `done_msg` takes `impl Into<String>` rather than `&'static str` so a
+/// caller can report a destination or other runtime detail (the move
+/// mutation's "moved to {target}") without every other call site needing to
+/// change.
 pub(crate) fn with_issue<F, Fut>(
     app: &mut App,
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
-    done_msg: &'static str,
+    done_msg: impl Into<String> + Send + 'static,
     comments: CommentRefresh,
     op: F,
 ) where
@@ -126,7 +130,7 @@ pub(crate) fn with_issue<F, Fut>(
     tokio::spawn(async move {
         let msg = match op(client, id).await {
             Ok(()) => AppEvent::MutationDone {
-                msg: done_msg.to_string(),
+                msg: done_msg.into(),
                 comments,
             },
             Err(e) => AppEvent::MutationFailed(e.to_string()),

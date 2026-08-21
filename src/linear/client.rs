@@ -357,6 +357,35 @@ impl Client {
         serde_json::from_value(nodes).map_err(|e| ProviderError::Shape(e.to_string()))
     }
 
+    /// Move the issue to another team ("repo" in this app's terminology).
+    /// Linear remaps the issue's workflow state and label set to the target
+    /// team server-side — this app makes no attempt to reconcile them itself.
+    pub async fn move_issue(&self, issue_id: &str, _org: &str, target: &str) -> Result<()> {
+        let data = self
+            .graphql(
+                "query($key: String!) {
+                   teams(filter: {key: {eq: $key}}, first: 1) {
+                     nodes { id }
+                   }
+                 }",
+                json!({ "key": target }),
+            )
+            .await?;
+        let team_id = data
+            .pointer("/teams/nodes/0/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ProviderError::Shape(format!("no team {target}")))?
+            .to_string();
+        self.graphql(
+            "mutation($id: String!, $teamId: String!) {
+               issueUpdate(id: $id, input: {teamId: $teamId}) { success }
+             }",
+            json!({ "id": issue_id, "teamId": team_id }),
+        )
+        .await
+        .map(drop)
+    }
+
     /// Team labels plus the synthetic `priority:*` labels, so the priority
     /// picker (`p`) and label editor (`l`) have priority entries to show.
     pub async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {
@@ -718,6 +747,12 @@ impl crate::provider::IssueProvider for Client {
         self.rate_limit()
     }
     // supports_pr_summary defaults to false — Linear has no GitHub PR links.
+    fn supports_move(&self) -> bool {
+        true
+    }
+    async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<()> {
+        self.move_issue(issue_id, org, target).await
+    }
 }
 
 #[cfg(test)]

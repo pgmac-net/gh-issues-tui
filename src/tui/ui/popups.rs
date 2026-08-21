@@ -74,6 +74,26 @@ fn draw_confirm(f: &mut Frame, app: &App, t: &Theme, title: &str, lines: &[Strin
     f.render_widget(para, area);
 }
 
+/// Confirmation before transferring the selected issue (`Mode::ConfirmMove`),
+/// naming the destination and the transfer's side effects — a move
+/// renumbers the issue and notifies everyone mentioned in it, and is
+/// undoable only by moving it back.
+pub(super) fn draw_confirm_move_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let Some(pending) = &app.pending_move else {
+        return;
+    };
+    let number = app.selected_issue().map(|i| i.number);
+    let subject = match number {
+        Some(n) => format!("move #{n} to {}?", pending.target),
+        None => format!("move this issue to {}?", pending.target),
+    };
+    let lines = vec![
+        subject,
+        "Gets a new number; mentioned users are notified.".to_string(),
+    ];
+    draw_confirm(f, app, t, " move issue ", &lines);
+}
+
 /// The confirmation in front of an irreversible harness action (#23).
 pub(super) fn draw_harness_confirm_popup(
     f: &mut Frame,
@@ -311,6 +331,14 @@ impl PickerSpec {
             )
         }
     }
+
+    /// Choosing a repo to move the selected issue to (`Mode::MovePicker`).
+    pub(super) fn move_target() -> Self {
+        Self::new(
+            " move to repo (type to filter · Enter picks · Esc cancels) ",
+            false,
+        )
+    }
 }
 
 /// The one picker popup. Every `Mode` that shows a list of choices renders
@@ -458,6 +486,7 @@ pub(super) fn draw_help(f: &mut Frame, t: &Theme) {
         ("t", "edit title"),
         ("p", "set priority"),
         ("P", "summarise linked PR (in detail pane)"),
+        ("m", "move issue to another repo"),
         ("n", "new issue"),
         ("r", "reload"),
         ("q", "back / quit"),

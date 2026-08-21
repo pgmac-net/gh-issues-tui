@@ -269,6 +269,21 @@ pub(crate) fn handle_normal_key(
                 spawn_form_options(client, app.org.clone(), repo, tx);
             }
         }
+        // move the selected issue to another repo (#135)
+        KeyCode::Char('m') => {
+            if app.selected_issue().is_some() {
+                if !client.supports_move() {
+                    app.status = Some("moving issues not supported by this provider".into());
+                } else {
+                    let targets = app.move_targets();
+                    if targets.is_empty() {
+                        app.status = Some("no other repo to move this issue to".into());
+                    } else {
+                        app.open_move_picker(targets);
+                    }
+                }
+            }
+        }
         KeyCode::Char('P') if app.detail.open => {
             if !client.supports_pr_summary() {
                 app.status = Some("PR summaries not supported by this provider".into());

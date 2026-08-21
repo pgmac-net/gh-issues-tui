@@ -62,6 +62,9 @@ pub struct App {
     pub filter_menu_idx: usize,
     /// The option-picker popup's state, for every mode that shows one.
     pub picker: PickerState,
+    /// A move committed from `Mode::MovePicker`, awaiting confirmation.
+    /// `None` whenever `Mode` isn't `MovePicker`/`ConfirmMove`.
+    pub pending_move: Option<PendingMove>,
     /// The new-issue form, present while it is open.
     pub issue_form: Option<IssueForm>,
     /// The inline comment/description editor's session state.
@@ -129,6 +132,7 @@ impl App {
             input: InputState::default(),
             filter_menu_idx: 0,
             picker: PickerState::default(),
+            pending_move: None,
             issue_form: None,
             editor: EditorState::default(),
             confirm_choice: ConfirmChoice::No,
