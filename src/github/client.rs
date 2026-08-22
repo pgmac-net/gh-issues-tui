@@ -877,42 +877,45 @@ query($id: ID!) {
 const PR_SUMMARY_QUERY: &str = "
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      title
-      body
-      state
-      isDraft
-      baseRefName
-      headRefName
-      additions
-      deletions
-      changedFiles
-      comments { totalCount }
-      reviewThreads { totalCount }
-      reviewDecision
-      reviews(last: 100) { nodes { state author { login } } }
-      commits(last: 1) {
-        nodes {
-          commit {
-            statusCheckRollup {
-              state
-              contexts(first: 100) {
-                nodes {
-                  __typename
-                  ... on CheckRun { name conclusion detailsUrl }
-                  ... on StatusContext { context state targetUrl }
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on PullRequest {
+        title
+        body
+        state
+        isDraft
+        baseRefName
+        headRefName
+        additions
+        deletions
+        changedFiles
+        comments { totalCount }
+        reviewThreads { totalCount }
+        reviewDecision
+        reviews(last: 100) { nodes { state author { login } } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 100) {
+                  nodes {
+                    __typename
+                    ... on CheckRun { name conclusion detailsUrl }
+                    ... on StatusContext { context state targetUrl }
+                  }
                 }
               }
+              checkSuites(first: 10) { nodes { ...CheckSuiteFields } }
             }
-            checkSuites(first: 10) { nodes { ...CheckSuiteFields } }
           }
         }
       }
-    }
-    issue(number: $number) {
-      number
-      title
-      url
+      ... on Issue {
+        number
+        title
+        url
+      }
     }
     defaultBranchRef {
       name
@@ -937,13 +940,21 @@ fragment CheckSuiteFields on CheckSuite {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PrRepoResponse {
-    pull_request: Option<PullRequestNode>,
-    /// Same number, looked up as an issue. Exactly one of this and
-    /// `pull_request` is non-null for a number that exists — GitHub allocates
-    /// both from one per-repo sequence. `issue` is a single node rather than a
-    /// connection, so it adds no points (`docs/graphql-api-cost.md`).
-    issue: Option<PrIssueNode>,
+    /// One number, resolved to whichever kind it names. **Not** two sibling
+    /// `pullRequest`/`issue` fields: GitHub answers a wrong-type lookup with a
+    /// `NOT_FOUND` entry in `errors`, not a null, and `graphql_data` rejects
+    /// any response carrying errors — so a two-field query fails for *every*
+    /// number, whichever kind it is. The union asks once and is told the type.
+    issue_or_pull_request: Option<IssueOrPr>,
     default_branch_ref: Option<DefaultBranchRefNode>,
+}
+
+/// The `IssueOrPullRequest` union, discriminated by GraphQL's `__typename`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "__typename")]
+enum IssueOrPr {
+    PullRequest(PullRequestNode),
+    Issue(PrIssueNode),
 }
 
 #[derive(Debug, Deserialize)]
@@ -1168,20 +1179,24 @@ fn summarize_reviews(nodes: Vec<ReviewNode>, decision: Option<ReviewDecision>) -
 /// Resolve one reference. A [`PrRef`] parsed from an issue thread is only a
 /// candidate — the shorthand forms (`o/r#N`, `#N`) cannot distinguish a pull
 /// request from an issue, because GitHub numbers both from one per-repo
-/// sequence. So a null `pullRequest` with a non-null `issue` is a normal
-/// outcome, not a failure; only both being null is an error.
+/// sequence. Landing on the issue is therefore a normal outcome, not a failure.
+///
+/// A number that names neither never reaches here: GitHub reports it as a
+/// `NOT_FOUND` error, which `graphql_data` turns into `Err` before the response
+/// is mapped. The `None` arm is defensive only.
 fn map_pr_lookup(pr: PrRef, data: PrRepoResponse) -> Result<PrLookup> {
-    let Some(node) = data.pull_request else {
-        return match data.issue {
-            Some(i) => Ok(PrLookup::Issue(IssueRef {
+    let node = match data.issue_or_pull_request {
+        Some(IssueOrPr::PullRequest(n)) => n,
+        Some(IssueOrPr::Issue(i)) => {
+            return Ok(PrLookup::Issue(IssueRef {
                 owner: pr.owner,
                 repo: pr.repo,
                 number: i.number,
                 title: i.title,
                 url: i.url,
-            })),
-            None => Err(ProviderError::Shape(format!("no such PR {}", pr.label()))),
-        };
+            }));
+        }
+        None => return Err(ProviderError::Shape(format!("no such PR {}", pr.label()))),
     };
 
     let (checks, pr_runs) = match node.commits.nodes.into_iter().next() {
@@ -1577,7 +1592,8 @@ mod tests {
     #[test]
     fn pr_summary_parses_mixed_check_union_and_reviews() {
         let raw = serde_json::json!({
-            "pullRequest": {
+            "issueOrPullRequest": {
+                "__typename": "PullRequest",
                 "title": "Add PR summary",
                 "body": "closes #45",
                 "state": "OPEN",
@@ -1675,7 +1691,8 @@ mod tests {
     #[test]
     fn pr_summary_handles_empty_rollup_and_no_default_branch() {
         let raw = serde_json::json!({
-            "pullRequest": {
+            "issueOrPullRequest": {
+                "__typename": "PullRequest",
                 "title": "Draft PR",
                 "body": "",
                 "state": "OPEN",
@@ -1721,14 +1738,29 @@ mod tests {
         }
     }
 
-    /// #129 depends on one query answering both questions. Losing this field
-    /// would not fail any other test — a shorthand naming an issue would just
-    /// start reporting "no such PR" again — so it is pinned here.
+    /// #129 must resolve the number through the **union**, not through sibling
+    /// `pullRequest`/`issue` fields.
+    ///
+    /// This is the regression that shipped: GitHub answers a wrong-type lookup
+    /// with a `NOT_FOUND` entry in `errors` rather than a null, and
+    /// `graphql_data` rejects any response carrying errors. So a two-field
+    /// query fails for *every* number — a PR errors on `issue`, an issue errors
+    /// on `pullRequest` — and no mapping code ever runs. Nothing else in the
+    /// suite catches it, because the fixtures feed `map_pr_lookup` directly and
+    /// never see the transport.
     #[test]
-    fn pr_summary_query_also_looks_the_number_up_as_an_issue() {
+    fn pr_summary_query_resolves_the_number_through_the_union() {
         assert!(
-            PR_SUMMARY_QUERY.contains("issue(number: $number)"),
-            "the issue lookup is what tells an issue reference from a missing one"
+            PR_SUMMARY_QUERY.contains("issueOrPullRequest(number: $number)"),
+            "the union is what lets one number be resolved without an error"
+        );
+        assert!(
+            !PR_SUMMARY_QUERY.contains("pullRequest(number: $number)"),
+            "a sibling pullRequest field errors for every issue number"
+        );
+        assert!(
+            !PR_SUMMARY_QUERY.contains("issue(number: $number)"),
+            "a sibling issue field errors for every PR number"
         );
     }
 
@@ -1737,8 +1769,8 @@ mod tests {
     #[test]
     fn pr_lookup_reports_an_issue_when_the_number_is_not_a_pr() {
         let raw = serde_json::json!({
-            "pullRequest": null,
-            "issue": {
+            "issueOrPullRequest": {
+                "__typename": "Issue",
                 "number": 72,
                 "title": "Not a PR at all",
                 "url": "https://github.com/pgmac-net/gh-issues-tui/issues/72"
@@ -1759,11 +1791,43 @@ mod tests {
         );
     }
 
+    /// A PR number must still map to the PR case — the half of the union that
+    /// the shipped bug broke in the field while every fixture still passed.
+    #[test]
+    fn pr_lookup_reports_a_pr_when_the_number_is_a_pr() {
+        let raw = serde_json::json!({
+            "issueOrPullRequest": {
+                "__typename": "PullRequest",
+                "title": "Real PR",
+                "body": "",
+                "state": "OPEN",
+                "isDraft": false,
+                "baseRefName": "main",
+                "headRefName": "feature",
+                "additions": 1,
+                "deletions": 0,
+                "changedFiles": 1,
+                "comments": {"totalCount": 0},
+                "reviewThreads": {"totalCount": 0},
+                "reviewDecision": null,
+                "reviews": {"nodes": []},
+                "commits": {"nodes": []}
+            },
+            "defaultBranchRef": null
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(
+            expect_pr(map_pr_lookup(sample_pr_ref(), repo).unwrap()).title,
+            "Real PR"
+        );
+    }
+
+    /// Defensive only — in practice GitHub reports an unknown number as an
+    /// `errors` entry, which fails the request before mapping.
     #[test]
     fn pr_lookup_errors_when_the_number_is_neither() {
         let raw = serde_json::json!({
-            "pullRequest": null,
-            "issue": null,
+            "issueOrPullRequest": null,
             "defaultBranchRef": null
         });
         let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();

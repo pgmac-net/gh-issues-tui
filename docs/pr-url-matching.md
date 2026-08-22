@@ -41,16 +41,49 @@ The issue case is a normal outcome, not an error. Only a number that is
 *neither* — deleted, or never existed — is an error, and it keeps the old
 `no such PR o/r#N` message.
 
-This is done in the existing `PR_SUMMARY_QUERY` by asking for both:
+`PR_SUMMARY_QUERY` resolves the number through GitHub's `IssueOrPullRequest`
+union, which reports the type it found:
 
 ```graphql
-pullRequest(number: $number) { … }
-issue(number: $number) { number title url }
+issueOrPullRequest(number: $number) {
+  __typename
+  ... on PullRequest { … }
+  ... on Issue { number title url }
+}
 ```
 
-`issue` is a single node, not a connection, so per `docs/graphql-api-cost.md` it
-adds **no points** — the cost law only charges for nested connections. One
-request still answers the whole question.
+It is a single node, not a connection, so per `docs/graphql-api-cost.md` it adds
+**no points** — the cost law only charges for nested connections. One request
+answers the whole question.
+
+### Why not two sibling fields
+
+The obvious shape — asking for `pullRequest(number:)` and `issue(number:)` side
+by side and seeing which comes back non-null — **does not work**, and shipped
+broken once before being caught in use.
+
+GitHub does not return null for a wrong-type lookup. It returns a `NOT_FOUND`
+entry in the response's `errors` array:
+
+```
+Could not resolve to an Issue with the number of 137.
+Could not resolve to a PullRequest with the number of 129.
+```
+
+`graphql_data` (`src/provider/http.rs`) rejects any response carrying a
+non-empty `errors` array. So a two-field query fails for *every* number,
+whichever kind it is: a PR errors on the `issue` field, an issue errors on the
+`pullRequest` field, and the mapping code never runs at all.
+
+Nothing in the test suite caught this, because the client tests deserialize
+fixture JSON straight into `map_pr_lookup` and never exercise the transport.
+`pr_summary_query_resolves_the_number_through_the_union` now pins the union in
+and both sibling fields out.
+
+**Consequence for the error path:** a number that names neither an issue nor a
+PR still comes back as a GraphQL error, so `map_pr_lookup`'s `None` arm is
+defensive only — the user sees GitHub's "Could not resolve to an issue or pull
+request with the number of N" rather than our `no such PR` message.
 
 **Rejected: resolving candidates before the picker opens.** It would let the
 picker show only real PRs, but at one request per candidate, paid every time `P`
