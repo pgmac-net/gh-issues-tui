@@ -48,6 +48,10 @@ pub struct SessionMeta {
     pub issue_ref: String,
     /// Key into the `[harnesses.*]` config table.
     pub harness: String,
+    /// The issue's title at launch time, for the identity row (#132). Not
+    /// refreshed if the issue is retitled later — it names the ticket the
+    /// session was started on, which is the useful thing. May be empty.
+    pub title: String,
     pub status: SessionStatus,
 }
 
@@ -92,13 +96,14 @@ pub struct HarnessState {
 impl HarnessState {
     /// Record a new running session and return its id. The caller is
     /// responsible for actually spawning the child under that id.
-    pub fn register(&mut self, issue_ref: String, harness: String) -> SessionId {
+    pub fn register(&mut self, issue_ref: String, harness: String, title: String) -> SessionId {
         let id = self.next_id;
         self.next_id += 1;
         self.sessions.push(SessionMeta {
             id,
             issue_ref,
             harness,
+            title,
             status: SessionStatus::Running,
         });
         id
@@ -236,7 +241,11 @@ mod tests {
     fn state_with(sessions: &[(&str, &str)]) -> HarnessState {
         let mut h = HarnessState::default();
         for (issue_ref, harness) in sessions {
-            h.register((*issue_ref).to_string(), (*harness).to_string());
+            h.register(
+                (*issue_ref).to_string(),
+                (*harness).to_string(),
+                String::new(),
+            );
         }
         h
     }
@@ -255,7 +264,7 @@ mod tests {
         // able to address whichever session was created next.
         let mut h = state_with(&[("o/r#1", "claude")]);
         h.remove(0);
-        let id = h.register("o/r#2".into(), "claude".into());
+        let id = h.register("o/r#2".into(), "claude".into(), String::new());
         assert_eq!(id, 1, "the freed id must not come back");
         assert!(h.get(0).is_none());
     }
@@ -426,7 +435,9 @@ mod tests {
     #[test]
     fn a_live_session_for_the_issue_is_attached_not_duplicated() {
         let mut app = app_with_one_issue();
-        let id = app.harness.register("org/r#7".into(), "claude".into());
+        let id = app
+            .harness
+            .register("org/r#7".into(), "claude".into(), String::new());
         assert_eq!(
             app.launch_action(Some("claude")),
             LaunchAction::Attach(id),
@@ -437,7 +448,9 @@ mod tests {
     #[test]
     fn an_exited_session_asks_before_discarding_its_output() {
         let mut app = app_with_one_issue();
-        let id = app.harness.register("org/r#7".into(), "claude".into());
+        let id = app
+            .harness
+            .register("org/r#7".into(), "claude".into(), String::new());
         app.harness.mark_exited(id, 0);
         assert_eq!(
             app.launch_action(Some("claude")),
@@ -448,7 +461,8 @@ mod tests {
     #[test]
     fn a_session_for_another_issue_does_not_block_this_one() {
         let mut app = app_with_one_issue();
-        app.harness.register("org/r#99".into(), "claude".into());
+        app.harness
+            .register("org/r#99".into(), "claude".into(), String::new());
         assert!(matches!(
             app.launch_action(Some("claude")),
             LaunchAction::Spawn { .. }
@@ -460,7 +474,8 @@ mod tests {
         // An agent working a ticket is unaffected by the list being pointed
         // elsewhere — `switch_org` must not sweep the registry.
         let mut app = app_with_one_issue();
-        app.harness.register("org/r#7".into(), "claude".into());
+        app.harness
+            .register("org/r#7".into(), "claude".into(), String::new());
         app.switch_org("other".into());
         assert_eq!(app.harness.sessions.len(), 1);
         assert!(app.harness.has_running());

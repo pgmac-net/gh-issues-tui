@@ -66,12 +66,14 @@ impl HarnessCtx<'_> {
         };
 
         let areas = layout::harness_areas(layout::from_terminal_size());
-        let id = app
-            .harness
-            .register(issue_ref.to_string(), harness.to_string());
+        let id = app.harness.register(
+            issue_ref.to_string(),
+            harness.to_string(),
+            ctx.title.clone(),
+        );
         match self
             .registry
-            .spawn(id, cfg, &ctx, &cwd, areas.pane, self.tx)
+            .spawn(id, harness, cfg, &ctx, &cwd, areas.pane, self.tx)
         {
             Ok(()) => {
                 app.harness.attach(id);
@@ -106,6 +108,7 @@ fn launch_context(app: &App) -> Option<LaunchContext> {
         repo: repo.repo.clone(),
         number: issue.number,
         url: issue.url.clone(),
+        title: issue.title.clone(),
     })
 }
 
@@ -164,7 +167,10 @@ fn handle_chord(app: &mut App, key: KeyEvent, id: SessionId, hx: &mut HarnessCtx
                 hx.registry.write(id, &bytes);
             }
         }
-        _ => app.status = Some("F12 d detach · s switch · k kill · n new · ? help".into()),
+        _ => {
+            app.status =
+                Some("F12 d detach · s switch · k kill · n new · F12 F12 literal · ? help".into());
+        }
     }
 }
 
@@ -385,7 +391,9 @@ mod tests {
     /// the registry has no PTY for it, which every path here tolerates.
     fn attached_app() -> App {
         let (mut app, _) = app_with_issue(&[]);
-        let id = app.harness.register("org/r#1".into(), "claude".into());
+        let id = app
+            .harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         app.harness.attach(id);
         app.mode = Mode::Harness;
         app
@@ -514,8 +522,11 @@ mod tests {
     #[test]
     fn the_session_picker_attaches_the_row_it_shows() {
         let (mut app, _) = app_with_issue(&[]);
-        app.harness.register("org/r#1".into(), "claude".into());
-        let second = app.harness.register("org/r#2".into(), "codex".into());
+        app.harness
+            .register("org/r#1".into(), "claude".into(), String::new());
+        let second = app
+            .harness
+            .register("org/r#2".into(), "codex".into(), String::new());
         open_session_picker(&mut app);
         app.picker.idx = 1;
         handle_session_picker_key(&mut app, key(KeyCode::Enter));
@@ -528,8 +539,11 @@ mod tests {
         // The picker's index is positional within the *filtered* view; this
         // is the bug class `picker_selected_original` exists to prevent.
         let (mut app, _) = app_with_issue(&[]);
-        app.harness.register("org/r#1".into(), "claude".into());
-        let second = app.harness.register("org/r#2".into(), "codex".into());
+        app.harness
+            .register("org/r#1".into(), "claude".into(), String::new());
+        let second = app
+            .harness
+            .register("org/r#2".into(), "codex".into(), String::new());
         open_session_picker(&mut app);
         for c in "codex".chars() {
             handle_session_picker_key(&mut app, key(KeyCode::Char(c)));
@@ -571,7 +585,8 @@ mod tests {
     #[test]
     fn declining_the_quit_confirmation_does_not_quit() {
         let (mut app, _) = app_with_issue(&[]);
-        app.harness.register("org/r#1".into(), "claude".into());
+        app.harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         let mut h = fixture(None);
         handle_confirm_harness_key(
             &mut app,
@@ -586,7 +601,8 @@ mod tests {
     #[test]
     fn confirming_the_quit_confirmation_quits() {
         let (mut app, _) = app_with_issue(&[]);
-        app.harness.register("org/r#1".into(), "claude".into());
+        app.harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         let mut h = fixture(None);
         handle_confirm_harness_key(
             &mut app,
@@ -602,7 +618,9 @@ mod tests {
         // `F12 n` and the harness picker reach `launch` directly, bypassing
         // `launch_action` — the one-session-per-issue rule must hold anyway.
         let (mut app, _) = app_with_issue(&[]);
-        let id = app.harness.register("org/r#1".into(), "claude".into());
+        let id = app
+            .harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         let mut h = fixture(Some("claude"));
         h.ctx().launch(&mut app, "org/r#1", "opencode");
         assert_eq!(
@@ -617,7 +635,9 @@ mod tests {
     #[test]
     fn launch_replaces_an_exited_session_for_the_same_issue() {
         let (mut app, _) = app_with_issue(&[]);
-        let id = app.harness.register("org/r#1".into(), "claude".into());
+        let id = app
+            .harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         app.harness.mark_exited(id, 0);
         let mut h = fixture(Some("claude"));
         // The spawn itself fails (no clone configured), but the stale exited
@@ -659,7 +679,8 @@ mod tests {
     #[test]
     fn q_with_a_running_session_confirms_instead_of_quitting() {
         let (mut app, _) = app_with_issue(&[]);
-        app.harness.register("org/r#1".into(), "claude".into());
+        app.harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         let mut h = fixture(None);
         let client = test_client();
         let tx = h.tx.clone();
@@ -677,7 +698,9 @@ mod tests {
     #[test]
     fn q_with_only_exited_sessions_quits_straight_away() {
         let (mut app, _) = app_with_issue(&[]);
-        let id = app.harness.register("org/r#1".into(), "claude".into());
+        let id = app
+            .harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         app.harness.mark_exited(id, 0);
         let mut h = fixture(None);
         let client = test_client();
@@ -695,7 +718,9 @@ mod tests {
     #[test]
     fn capital_a_attaches_to_this_issue_s_live_session() {
         let (mut app, _) = app_with_issue(&[]);
-        let id = app.harness.register("org/r#1".into(), "claude".into());
+        let id = app
+            .harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         let mut h = fixture(Some("claude"));
         let client = test_client();
         let tx = h.tx.clone();
@@ -766,7 +791,8 @@ mod tests {
                 .contains("no harness sessions")
         );
 
-        app.harness.register("org/r#1".into(), "claude".into());
+        app.harness
+            .register("org/r#1".into(), "claude".into(), String::new());
         handle_normal_key(
             &mut app,
             key(KeyCode::Char('Z')),

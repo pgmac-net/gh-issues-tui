@@ -99,28 +99,58 @@ pub fn detail_regions(detail: Rect) -> DetailAreas {
     }
 }
 
-/// The harness pane and the status row under it.
+/// The harness pane, the identity row above it and the key row below it.
 pub struct HarnessAreas {
+    /// Whose session this is: launcher, issue and live state (#132). Zero
+    /// height when the terminal is too short to spare it.
+    pub header: Rect,
     /// Where the child's screen is drawn; also the size its PTY is set to.
     pub pane: Rect,
     pub status: Rect,
 }
 
 /// Split the frame for a harness session (#23): the child gets everything
-/// except one status row. A session is drawn full-frame rather than into the
-/// detail split because an agent's own TUI needs the room, and because it
+/// except the two chrome rows. A session is drawn full-frame rather than into
+/// the detail split because an agent's own TUI needs the room, and because it
 /// keeps the PTY size a plain function of the terminal.
+///
+/// Every chrome row is a row taken off the child — `pane` is what reaches
+/// `PtySize` — so the rows are shed as the terminal shrinks, header first: it
+/// is the one that repeats what the key row cannot.
 pub fn harness_areas(area: Rect) -> HarnessAreas {
+    let empty = |y: u16| Rect::new(area.x, y, area.width, 0);
     // Too short to spare a row: the child keeps the lot. Anything that gives
     // the pane zero rows would be handed to `PtySize`, which the OS rejects.
     if area.height <= 1 {
         return HarnessAreas {
+            header: empty(area.y),
             pane: area,
-            status: Rect::new(area.x, area.y, area.width, 0),
+            status: empty(area.y),
         };
     }
-    let [pane, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-    HarnessAreas { pane, status }
+    if area.height == 2 {
+        // One row of chrome is affordable, and the keys are the half a user
+        // cannot recover by looking — the header only names what they just
+        // opened.
+        let [pane, status] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        return HarnessAreas {
+            header: empty(area.y),
+            pane,
+            status,
+        };
+    }
+    let [header, pane, status] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    HarnessAreas {
+        header,
+        pane,
+        status,
+    }
 }
 
 /// The text width inside a bordered area — its width less both border columns.
@@ -251,10 +281,13 @@ mod tests {
     }
 
     #[test]
-    fn harness_areas_give_the_child_everything_but_one_status_row() {
+    fn harness_areas_give_the_child_everything_but_the_two_chrome_rows() {
         let a = harness_areas(Rect::new(0, 0, 120, 40));
-        assert_eq!(a.pane.height, 39);
+        assert_eq!(a.header.height, 1);
+        assert_eq!(a.header.y, 0);
+        assert_eq!(a.pane.height, 38);
         assert_eq!(a.pane.width, 120);
+        assert_eq!(a.pane.y, 1);
         assert_eq!(a.status.height, 1);
         assert_eq!(a.status.y, 39);
     }
@@ -263,10 +296,41 @@ mod tests {
     fn harness_pane_never_collapses_to_zero_rows() {
         // A one-row terminal must still yield a usable PtySize; a zero-row
         // pty is rejected by the OS.
-        for height in [1u16, 2, 3] {
+        for height in [1u16, 2, 3, 4] {
             let a = harness_areas(Rect::new(0, 0, 80, height));
             assert!(a.pane.height >= 1, "at height {height}");
-            assert_eq!(a.pane.height + a.status.height, height);
+            assert_eq!(
+                a.header.height + a.pane.height + a.status.height,
+                height,
+                "at height {height} the regions must tile the frame exactly"
+            );
         }
+    }
+
+    #[test]
+    fn harness_chrome_sheds_the_header_before_the_keys() {
+        // Two rows buys one row of chrome. It goes to the key row: the header
+        // only names the session the user just opened, while the keys are the
+        // half they cannot recover by looking.
+        let a = harness_areas(Rect::new(0, 0, 80, 2));
+        assert_eq!(a.header.height, 0);
+        assert_eq!(a.pane.height, 1);
+        assert_eq!(a.status.height, 1);
+    }
+
+    #[test]
+    fn harness_one_row_terminal_gives_the_child_everything() {
+        let a = harness_areas(Rect::new(0, 0, 80, 1));
+        assert_eq!(a.header.height, 0);
+        assert_eq!(a.pane.height, 1);
+        assert_eq!(a.status.height, 0);
+    }
+
+    #[test]
+    fn harness_header_appears_once_a_third_row_is_available() {
+        let a = harness_areas(Rect::new(0, 0, 80, 3));
+        assert_eq!(a.header.height, 1);
+        assert_eq!(a.pane.height, 1);
+        assert_eq!(a.status.height, 1);
     }
 }

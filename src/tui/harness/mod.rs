@@ -96,6 +96,10 @@ pub struct LaunchContext {
     pub repo: String,
     pub number: u64,
     pub url: String,
+    /// The issue's title, carried so the session's identity row can name the
+    /// ticket rather than only numbering it (#132). Deliberately not an argv
+    /// placeholder: it is display text, and it is long.
+    pub title: String,
 }
 
 impl LaunchContext {
@@ -124,6 +128,32 @@ pub fn expand_argv(command: &[String], ctx: &LaunchContext) -> Vec<String> {
                 .replace("{url}", &ctx.url)
         })
         .collect()
+}
+
+/// Stamp the child's environment with where it came from (#132).
+///
+/// The agent already learns its *ticket* from argv — the builtin `claude`
+/// entry passes `/pgmac-workflows:pickup-ticket {ref}` as the prompt. What it
+/// cannot learn that way is its *launcher*, and neither can anything the agent
+/// itself spawns: hooks, statuslines and scripts would otherwise have to
+/// scrape the parent's argv, which is formatted differently by every harness
+/// and carries no issue reference at all for `opencode`.
+///
+/// `GH_ISSUES_TUI` doubles as the marker and the version, so a hook can both
+/// detect the launcher and branch on it with one variable.
+///
+/// These go through `CommandBuilder::env`, so values are never parsed by a
+/// shell — issue titles containing `$(…)` or backticks stay inert, the same
+/// property the argv array gives `expand_argv`.
+fn set_provenance_env(cmd: &mut CommandBuilder, harness_name: &str, ctx: &LaunchContext) {
+    cmd.env("GH_ISSUES_TUI", env!("CARGO_PKG_VERSION"));
+    cmd.env("GH_ISSUES_TUI_HARNESS", harness_name);
+    cmd.env("GH_ISSUES_TUI_OWNER", &ctx.owner);
+    cmd.env("GH_ISSUES_TUI_REPO", &ctx.repo);
+    cmd.env("GH_ISSUES_TUI_NUMBER", ctx.number.to_string());
+    cmd.env("GH_ISSUES_TUI_ISSUE", ctx.issue_ref());
+    cmd.env("GH_ISSUES_TUI_URL", &ctx.url);
+    cmd.env("GH_ISSUES_TUI_TITLE", &ctx.title);
 }
 
 /// Locate the clone a harness should run in.
@@ -183,9 +213,11 @@ impl HarnessRegistry {
     /// Two threads are spawned per session: one draining the PTY into the
     /// parser, one waiting on the child. Both report through `tx` and exit on
     /// their own when the child goes away.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &mut self,
         id: SessionId,
+        harness_name: &str,
         harness: &HarnessConfig,
         ctx: &LaunchContext,
         cwd: &Path,
@@ -210,6 +242,7 @@ impl HarnessRegistry {
         // pinned because vt100 speaks xterm and the outer terminal's TERM
         // may name something it does not implement.
         cmd.env("TERM", "xterm-256color");
+        set_provenance_env(&mut cmd, harness_name, ctx);
 
         let child = pair
             .slave
@@ -369,6 +402,7 @@ mod tests {
             repo: "gh-issues-tui".into(),
             number: 23,
             url: "https://github.com/pgmac-net/gh-issues-tui/issues/23".into(),
+            title: "Send to Claude/harness".into(),
         }
     }
 
@@ -414,6 +448,7 @@ mod tests {
             repo: "r".into(),
             number: 1,
             url: "https://x/$(touch /tmp/pwned) `id` ; rm -rf ~".into(),
+            title: "$(id) `whoami` ; rm -rf ~".into(),
         };
         let argv = expand_argv(&["agent".into(), "{url}".into()], &ctx);
         assert_eq!(argv.len(), 2, "the url must not become several arguments");
@@ -506,6 +541,7 @@ mod tests {
         registry
             .spawn(
                 0,
+                "test-harness",
                 &harness,
                 &ctx(),
                 Path::new("/"),

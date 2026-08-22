@@ -143,7 +143,17 @@ async fn event_loop(
     // parser either way. Only a dirty *visible* session needs a frame.
     let mut redraw = true;
 
+    // Restored by `Drop` on every exit path out of this function, and by the
+    // panic hook in `main` on the ones that never unwind this far.
+    let mut title = crate::tui::title::TerminalTitle::new();
+
     loop {
+        // Driven off the drawn state rather than hooked into attach/detach/
+        // kill/exit separately: one place to be right, and it cannot drift
+        // out of step with what is actually on screen. `sync` is a no-op
+        // unless the title really changed, so this costs nothing per frame.
+        title.sync(app.harness.active_meta().map(|s| s.issue_ref.as_str()));
+
         if redraw {
             terminal.draw(|f| ui::draw(f, &app, &theme, &registry))?;
         }
