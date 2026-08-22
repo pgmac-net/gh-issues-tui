@@ -130,8 +130,26 @@ impl App {
     /// loaded issue has that number; closed issues must be fetched (`f`/
     /// `--all`) before they can be jumped to.
     pub fn jump_to_number(&mut self, number: u64) -> bool {
+        if self.jump_to_ref(None, number) {
+            return true;
+        }
+        self.status = Some(format!("no issue #{number} loaded"));
+        false
+    }
+
+    /// As [`Self::jump_to_number`], but optionally pinned to one repo.
+    ///
+    /// A reference names the repo it belongs to (`o/r#N`) and numbers repeat
+    /// across repos, so following one must not land on a same-numbered issue
+    /// somewhere else — with `repo` set, only that group is searched.
+    ///
+    /// Reports failure **without setting `status`**, unlike `jump_to_number`.
+    /// A reference can point outside the loaded data entirely (another org, or
+    /// a closed issue not yet fetched), and #129's caller answers that by
+    /// opening it in a browser instead — so the message belongs to whichever
+    /// caller actually gives up.
+    pub fn jump_to_ref(&mut self, repo: Option<&str>, number: u64) -> bool {
         if self.repos.is_empty() {
-            self.status = Some(format!("no issue #{number} loaded"));
             return false;
         }
         // Start the search at the currently-selected repo group.
@@ -143,13 +161,15 @@ impl App {
         let mut found: Option<usize> = None;
         for k in 0..n {
             let ri = (start + k) % n;
+            if repo.is_some_and(|want| self.repos[ri].repo != want) {
+                continue;
+            }
             if self.repos[ri].issues.iter().any(|i| i.number == number) {
                 found = Some(ri);
                 break;
             }
         }
         let Some(repo_idx) = found else {
-            self.status = Some(format!("no issue #{number} loaded"));
             return false;
         };
         let repo_name = self.repos[repo_idx].repo.clone();
@@ -192,8 +212,8 @@ impl App {
             true
         } else {
             // Shouldn't happen — the issue was found in loaded data and the
-            // group was expanded — but never leave a misleading status.
-            self.status = Some(format!("no issue #{number} loaded"));
+            // group was expanded. Reporting failure lets the caller decide the
+            // message rather than leaving a misleading one here.
             false
         }
     }

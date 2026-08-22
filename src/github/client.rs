@@ -9,9 +9,9 @@ use crate::provider::http::{
     parse_at,
 };
 use crate::provider::types::{
-    CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueState, Label,
-    NewIssueParams, PrRef, PrState, PrSummary, RateLimitData, RepoIssues, RepoLabel,
-    ReviewDecision, ReviewSummary, WorkflowRunInfo,
+    CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueRef, IssueState,
+    Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary, RateLimitData, RepoIssues,
+    RepoLabel, ReviewDecision, ReviewSummary, WorkflowRunInfo,
 };
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
@@ -599,7 +599,7 @@ impl Client {
     /// Fetch a summary of a linked pull request: title/description, state,
     /// review status, checks, the PR's own Actions runs, and recent runs on
     /// the repo's default branch (the "merge to main" runs).
-    pub async fn pull_request(&self, pr: &PrRef) -> Result<PrSummary> {
+    pub async fn pull_request(&self, pr: &PrRef) -> Result<PrLookup> {
         let data = self
             .graphql(
                 PR_SUMMARY_QUERY,
@@ -613,7 +613,7 @@ impl Client {
             )));
         }
         let repo: PrRepoResponse = parse_at(&data, &["repository"])?;
-        map_pr_summary(pr.clone(), repo)
+        map_pr_lookup(pr.clone(), repo)
     }
 }
 
@@ -877,36 +877,44 @@ query($id: ID!) {
 const PR_SUMMARY_QUERY: &str = "
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      title
-      body
-      state
-      isDraft
-      baseRefName
-      headRefName
-      additions
-      deletions
-      changedFiles
-      comments { totalCount }
-      reviewThreads { totalCount }
-      reviewDecision
-      reviews(last: 100) { nodes { state author { login } } }
-      commits(last: 1) {
-        nodes {
-          commit {
-            statusCheckRollup {
-              state
-              contexts(first: 100) {
-                nodes {
-                  __typename
-                  ... on CheckRun { name conclusion detailsUrl }
-                  ... on StatusContext { context state targetUrl }
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on PullRequest {
+        title
+        body
+        state
+        isDraft
+        baseRefName
+        headRefName
+        additions
+        deletions
+        changedFiles
+        comments { totalCount }
+        reviewThreads { totalCount }
+        reviewDecision
+        reviews(last: 100) { nodes { state author { login } } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 100) {
+                  nodes {
+                    __typename
+                    ... on CheckRun { name conclusion detailsUrl }
+                    ... on StatusContext { context state targetUrl }
+                  }
                 }
               }
+              checkSuites(first: 10) { nodes { ...CheckSuiteFields } }
             }
-            checkSuites(first: 10) { nodes { ...CheckSuiteFields } }
           }
         }
+      }
+      ... on Issue {
+        number
+        title
+        url
       }
     }
     defaultBranchRef {
@@ -932,8 +940,28 @@ fragment CheckSuiteFields on CheckSuite {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PrRepoResponse {
-    pull_request: Option<PullRequestNode>,
+    /// One number, resolved to whichever kind it names. **Not** two sibling
+    /// `pullRequest`/`issue` fields: GitHub answers a wrong-type lookup with a
+    /// `NOT_FOUND` entry in `errors`, not a null, and `graphql_data` rejects
+    /// any response carrying errors — so a two-field query fails for *every*
+    /// number, whichever kind it is. The union asks once and is told the type.
+    issue_or_pull_request: Option<IssueOrPr>,
     default_branch_ref: Option<DefaultBranchRefNode>,
+}
+
+/// The `IssueOrPullRequest` union, discriminated by GraphQL's `__typename`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "__typename")]
+enum IssueOrPr {
+    PullRequest(PullRequestNode),
+    Issue(PrIssueNode),
+}
+
+#[derive(Debug, Deserialize)]
+struct PrIssueNode {
+    number: u64,
+    title: String,
+    url: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1148,10 +1176,28 @@ fn summarize_reviews(nodes: Vec<ReviewNode>, decision: Option<ReviewDecision>) -
     summary
 }
 
-fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
-    let node = data
-        .pull_request
-        .ok_or_else(|| ProviderError::Shape(format!("no such PR {}", pr.label())))?;
+/// Resolve one reference. A [`PrRef`] parsed from an issue thread is only a
+/// candidate — the shorthand forms (`o/r#N`, `#N`) cannot distinguish a pull
+/// request from an issue, because GitHub numbers both from one per-repo
+/// sequence. Landing on the issue is therefore a normal outcome, not a failure.
+///
+/// A number that names neither never reaches here: GitHub reports it as a
+/// `NOT_FOUND` error, which `graphql_data` turns into `Err` before the response
+/// is mapped. The `None` arm is defensive only.
+fn map_pr_lookup(pr: PrRef, data: PrRepoResponse) -> Result<PrLookup> {
+    let node = match data.issue_or_pull_request {
+        Some(IssueOrPr::PullRequest(n)) => n,
+        Some(IssueOrPr::Issue(i)) => {
+            return Ok(PrLookup::Issue(IssueRef {
+                owner: pr.owner,
+                repo: pr.repo,
+                number: i.number,
+                title: i.title,
+                url: i.url,
+            }));
+        }
+        None => return Err(ProviderError::Shape(format!("no such PR {}", pr.label()))),
+    };
 
     let (checks, pr_runs) = match node.commits.nodes.into_iter().next() {
         Some(PrCommitWrapper { commit }) => {
@@ -1200,7 +1246,7 @@ fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
         None => (String::new(), Vec::new()),
     };
 
-    Ok(PrSummary {
+    Ok(PrLookup::Pr(Box::new(PrSummary {
         title: node.title,
         body: node.body,
         state: node.state.into(),
@@ -1218,7 +1264,7 @@ fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
         default_branch_name,
         default_branch_runs,
         pr,
-    })
+    })))
 }
 
 /// Thin delegation to the inherent methods above, which keep their own
@@ -1288,7 +1334,7 @@ impl crate::provider::IssueProvider for Client {
         true
     }
 
-    async fn pull_request(&self, pr: &PrRef) -> Result<PrSummary> {
+    async fn pull_request(&self, pr: &PrRef) -> Result<PrLookup> {
         self.pull_request(pr).await
     }
 
@@ -1534,10 +1580,20 @@ mod tests {
         }
     }
 
+    /// Unwrap the PR case; panics on the issue case, which these tests never
+    /// exercise (see `pr_lookup_*` below for that side).
+    fn expect_pr(lookup: PrLookup) -> PrSummary {
+        match lookup {
+            PrLookup::Pr(s) => *s,
+            PrLookup::Issue(i) => panic!("expected a PR, got issue {}", i.label()),
+        }
+    }
+
     #[test]
     fn pr_summary_parses_mixed_check_union_and_reviews() {
         let raw = serde_json::json!({
-            "pullRequest": {
+            "issueOrPullRequest": {
+                "__typename": "PullRequest",
                 "title": "Add PR summary",
                 "body": "closes #45",
                 "state": "OPEN",
@@ -1598,7 +1654,7 @@ mod tests {
             }
         });
         let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
-        let summary = map_pr_summary(sample_pr_ref(), repo).unwrap();
+        let summary = expect_pr(map_pr_lookup(sample_pr_ref(), repo).unwrap());
 
         assert_eq!(summary.state, PrState::Open);
         assert!(!summary.is_draft);
@@ -1635,7 +1691,8 @@ mod tests {
     #[test]
     fn pr_summary_handles_empty_rollup_and_no_default_branch() {
         let raw = serde_json::json!({
-            "pullRequest": {
+            "issueOrPullRequest": {
+                "__typename": "PullRequest",
                 "title": "Draft PR",
                 "body": "",
                 "state": "OPEN",
@@ -1654,7 +1711,7 @@ mod tests {
             "defaultBranchRef": null
         });
         let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
-        let summary = map_pr_summary(sample_pr_ref(), repo).unwrap();
+        let summary = expect_pr(map_pr_lookup(sample_pr_ref(), repo).unwrap());
 
         assert!(summary.is_draft);
         assert!(summary.checks.contexts.is_empty());
@@ -1679,6 +1736,107 @@ mod tests {
         ] {
             assert!(PR_SUMMARY_QUERY.contains(field), "missing {field}");
         }
+    }
+
+    /// #129 must resolve the number through the **union**, not through sibling
+    /// `pullRequest`/`issue` fields.
+    ///
+    /// This is the regression that shipped: GitHub answers a wrong-type lookup
+    /// with a `NOT_FOUND` entry in `errors` rather than a null, and
+    /// `graphql_data` rejects any response carrying errors. So a two-field
+    /// query fails for *every* number — a PR errors on `issue`, an issue errors
+    /// on `pullRequest` — and no mapping code ever runs. Nothing else in the
+    /// suite catches it, because the fixtures feed `map_pr_lookup` directly and
+    /// never see the transport.
+    #[test]
+    fn pr_summary_query_resolves_the_number_through_the_union() {
+        assert!(
+            PR_SUMMARY_QUERY.contains("issueOrPullRequest(number: $number)"),
+            "the union is what lets one number be resolved without an error"
+        );
+        assert!(
+            !PR_SUMMARY_QUERY.contains("pullRequest(number: $number)"),
+            "a sibling pullRequest field errors for every issue number"
+        );
+        assert!(
+            !PR_SUMMARY_QUERY.contains("issue(number: $number)"),
+            "a sibling issue field errors for every PR number"
+        );
+    }
+
+    /// #129: a shorthand like `o/r#72` cannot say whether 72 is a PR or an
+    /// issue, so resolving it to an issue is a normal outcome.
+    #[test]
+    fn pr_lookup_reports_an_issue_when_the_number_is_not_a_pr() {
+        let raw = serde_json::json!({
+            "issueOrPullRequest": {
+                "__typename": "Issue",
+                "number": 72,
+                "title": "Not a PR at all",
+                "url": "https://github.com/pgmac-net/gh-issues-tui/issues/72"
+            },
+            "defaultBranchRef": null
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        let lookup = map_pr_lookup(sample_pr_ref(), repo).unwrap();
+
+        let PrLookup::Issue(i) = lookup else {
+            panic!("expected the issue case");
+        };
+        assert_eq!(i.label(), "pgmac-net/gh-issues-tui#72");
+        assert_eq!(i.title, "Not a PR at all");
+        assert_eq!(
+            i.url,
+            "https://github.com/pgmac-net/gh-issues-tui/issues/72"
+        );
+    }
+
+    /// A PR number must still map to the PR case — the half of the union that
+    /// the shipped bug broke in the field while every fixture still passed.
+    #[test]
+    fn pr_lookup_reports_a_pr_when_the_number_is_a_pr() {
+        let raw = serde_json::json!({
+            "issueOrPullRequest": {
+                "__typename": "PullRequest",
+                "title": "Real PR",
+                "body": "",
+                "state": "OPEN",
+                "isDraft": false,
+                "baseRefName": "main",
+                "headRefName": "feature",
+                "additions": 1,
+                "deletions": 0,
+                "changedFiles": 1,
+                "comments": {"totalCount": 0},
+                "reviewThreads": {"totalCount": 0},
+                "reviewDecision": null,
+                "reviews": {"nodes": []},
+                "commits": {"nodes": []}
+            },
+            "defaultBranchRef": null
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(
+            expect_pr(map_pr_lookup(sample_pr_ref(), repo).unwrap()).title,
+            "Real PR"
+        );
+    }
+
+    /// Defensive only — in practice GitHub reports an unknown number as an
+    /// `errors` entry, which fails the request before mapping.
+    #[test]
+    fn pr_lookup_errors_when_the_number_is_neither() {
+        let raw = serde_json::json!({
+            "issueOrPullRequest": null,
+            "defaultBranchRef": null
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        let err = map_pr_lookup(sample_pr_ref(), repo).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no such PR pgmac-net/gh-issues-tui#72"),
+            "unexpected error: {err}"
+        );
     }
 
     // ---- Characterisation goldens (issue #87) ---------------------------

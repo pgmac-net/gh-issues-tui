@@ -1,6 +1,6 @@
 use super::prelude::*;
 use super::widgets::{apply_hyperlinks, centered, inner_area, render_region_scrollbar};
-use crate::provider::types::{PrState, PrSummary, WorkflowRunInfo};
+use crate::provider::types::{IssueRef, PrLookup, PrState, WorkflowRunInfo};
 use crate::tui::app::PrTarget;
 use crate::tui::markdown;
 use crate::tui::markdown::LinkSpan;
@@ -72,7 +72,7 @@ pub struct PrRow {
 /// resulting rects rebased back out — [`linkmap::wrap`] treats lines
 /// independently, so this is exact.
 pub fn pr_summary_rows(
-    summary: Option<&Result<PrSummary, String>>,
+    summary: Option<&Result<PrLookup, String>>,
     t: &Theme,
     width: u16,
 ) -> (Vec<PrRow>, Vec<LinkRect>) {
@@ -119,7 +119,7 @@ pub fn pr_summary_rows(
 
 /// The navigable rows of the PR summary popup, as positions in
 /// [`pr_summary_rows`]' output. Derived, never separately computed.
-pub fn pr_targets(summary: Option<&Result<PrSummary, String>>, width: u16) -> Vec<PrTarget> {
+pub fn pr_targets(summary: Option<&Result<PrLookup, String>>, width: u16) -> Vec<PrTarget> {
     // Styling does not affect row count or URLs, so the default theme is a
     // sound basis for measurement — the same convention `body_content_height`
     // uses.
@@ -141,7 +141,7 @@ pub fn pr_targets(summary: Option<&Result<PrSummary, String>>, width: u16) -> Ve
 /// pane's `body_content_height`, and measured through the same row model the
 /// popup draws so the two cannot disagree.
 pub fn pr_max_scroll(
-    summary: Option<&Result<PrSummary, String>>,
+    summary: Option<&Result<PrLookup, String>>,
     width: u16,
     inner_height: u16,
 ) -> u16 {
@@ -151,13 +151,40 @@ pub fn pr_max_scroll(
         .saturating_sub(inner_height)
 }
 
+/// The popup for a reference that resolved to an issue (#129).
+///
+/// The header row carries the issue's URL, so the browser fallback reaches it
+/// through the same [`PrTarget`] path a PR summary uses — nothing new is needed
+/// on the open path.
+fn issue_rows(i: &IssueRef, t: &Theme) -> Vec<(Line<'static>, Option<String>)> {
+    vec![
+        (
+            Line::from(vec![
+                Span::styled(format!("{} ", i.label()), Style::default().fg(t.dim)),
+                Span::styled(
+                    i.title.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Some(i.url.clone()),
+        ),
+        (
+            Line::styled(
+                "issue, not a pull request — o/Enter jumps to it",
+                Style::default().fg(t.dim),
+            ),
+            None,
+        ),
+    ]
+}
+
 /// The popup's unwrapped lines, each tagged with the URL it opens (if any),
 /// plus the body's link spans indexed against that line list.
 ///
 /// `width` is passed through to the markdown renderer, which consults it to lay
 /// out tables; every other block is emitted unwrapped for [`pr_summary_rows`].
 pub(super) fn pr_summary_logical_rows(
-    summary: Option<&Result<PrSummary, String>>,
+    summary: Option<&Result<PrLookup, String>>,
     t: &Theme,
     width: u16,
 ) -> (Vec<(Line<'static>, Option<String>)>, Vec<LinkSpan>) {
@@ -182,7 +209,10 @@ pub(super) fn pr_summary_logical_rows(
                 Vec::new(),
             );
         }
-        Some(Ok(s)) => s,
+        // #129: the reference named an issue, not a PR. Not a failure — the
+        // shorthand forms cannot tell the two apart before fetching.
+        Some(Ok(PrLookup::Issue(i))) => return (issue_rows(i, t), Vec::new()),
+        Some(Ok(PrLookup::Pr(s))) => s.as_ref(),
     };
 
     let mut links: Vec<LinkSpan> = Vec::new();
@@ -428,7 +458,7 @@ mod tests {
             number: 7,
         };
         app.pr.target = Some(pr);
-        app.pr.summary = Some(Ok(pr_summary_fixture(body)));
+        app.pr.summary = Some(Ok(PrLookup::Pr(Box::new(pr_summary_fixture(body)))));
         app.mode = Mode::PrSummary;
         app
     }
@@ -476,6 +506,39 @@ mod tests {
                 popup.text()
             );
         }
+    }
+
+    /// #129: a reference that resolved to an issue draws the issue and yields
+    /// exactly one navigable target — its own URL — so the `o`/Enter fallback
+    /// reaches it through the same path a PR summary uses.
+    #[test]
+    fn golden_issue_reference_draws_the_issue_and_targets_its_url() {
+        let mut app = pr_summary_app("unused");
+        app.pr.summary = Some(Ok(PrLookup::Issue(IssueRef {
+            owner: "pgmac-net".into(),
+            repo: "gh-issues-tui".into(),
+            number: 129,
+            title: "PR URL matching".into(),
+            url: "https://github.com/pgmac-net/gh-issues-tui/issues/129".into(),
+        })));
+
+        let popup = popup_box(&render_app(&app, 100, 30));
+        let text = popup.text();
+        for needle in [
+            "pgmac-net/gh-issues-tui#129",
+            "PR URL matching",
+            "issue, not a pull request",
+        ] {
+            assert!(text.contains(needle), "{needle:?} missing from:\n{text}");
+        }
+
+        let targets = app_pr_targets(&app, 100);
+        assert_eq!(targets.len(), 1, "only the issue itself is navigable");
+        assert_eq!(
+            targets[0].url,
+            "https://github.com/pgmac-net/gh-issues-tui/issues/129"
+        );
+        assert_eq!(targets[0].line as usize, content_row_of(&popup, "#129"));
     }
 
     /// The selected row is the one that gets the highlight background, and

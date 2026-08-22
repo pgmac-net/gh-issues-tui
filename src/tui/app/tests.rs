@@ -6,7 +6,7 @@
 //! rather than any one module's functions.
 
 use super::*;
-use crate::provider::types::RepoIssues;
+use crate::provider::types::{PrSummary, RepoIssues};
 use chrono::TimeZone;
 
 fn issue(number: u64, title: &str, state: IssueState) -> Issue {
@@ -141,6 +141,55 @@ fn jump_to_number_prefers_current_repo_on_collision() {
     assert_eq!(
         app.selected_issue().map(|i| i.title.clone()),
         Some("beta seven".into())
+    );
+}
+
+/// #129: following `o/r#7` must land in *that* repo. `jump_to_number` would
+/// have preferred the group the selection already sits in, which is the wrong
+/// answer when the reference named the other one.
+#[test]
+fn jump_to_ref_stays_in_the_named_repo_against_the_current_one() {
+    let mut app = app_with(vec![
+        RepoIssues {
+            repo: "alpha".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(7, "alpha seven", IssueState::Open)],
+        },
+        RepoIssues {
+            repo: "beta".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(7, "beta seven", IssueState::Open)],
+        },
+    ]);
+    let beta_header = app
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::RepoHeader { repo_idx: 1 }))
+        .unwrap();
+    app.selected = beta_header;
+
+    assert!(app.jump_to_ref(Some("alpha"), 7));
+    assert_eq!(
+        app.selected_issue().map(|i| i.title.clone()),
+        Some("alpha seven".into()),
+        "the reference named alpha, so beta's #7 must not win"
+    );
+}
+
+/// The browser fallback depends on this returning false quietly — a status
+/// message here would overwrite the "opened …" one the caller sets.
+#[test]
+fn jump_to_ref_is_silent_when_the_named_repo_is_not_loaded() {
+    let mut app = two_repo_app();
+    app.selected = 1;
+    let before = app.selected;
+    app.status = None;
+
+    assert!(!app.jump_to_ref(Some("gamma"), 1));
+    assert_eq!(app.selected, before);
+    assert_eq!(
+        app.status, None,
+        "the caller owns the message, not the jump"
     );
 }
 
@@ -1982,6 +2031,12 @@ fn auto_refresh_gated_by_loading_rate_limit_and_mode() {
     assert!(app.should_auto_refresh());
 }
 
+/// A resolved reference that is a PR — what most of these tests mean when
+/// they say "the fetch landed".
+fn sample_pr_lookup(pr: PrRef) -> PrLookup {
+    PrLookup::Pr(Box::new(sample_pr_summary(pr)))
+}
+
 fn sample_pr_summary(pr: PrRef) -> PrSummary {
     PrSummary {
         pr,
@@ -2002,6 +2057,47 @@ fn sample_pr_summary(pr: PrRef) -> PrSummary {
         default_branch_name: "main".into(),
         default_branch_runs: vec![],
     }
+}
+
+/// #129: a bare `#N` means "this repo", so it resolves against the repo the
+/// selected issue belongs to — not against whatever repo was mentioned last.
+#[test]
+fn collect_pr_links_resolves_bare_shorthand_against_the_selected_repo() {
+    let mut app = two_repo_app();
+    app.selected = 1; // first issue in alpha
+    app.repos[0].issues[0].body = "closes #7 and pgmac-net/other#8".into();
+
+    assert_eq!(
+        app.collect_pr_links(),
+        vec![
+            PrRef {
+                owner: "org".into(),
+                repo: "alpha".into(),
+                number: 7
+            },
+            PrRef {
+                owner: "pgmac-net".into(),
+                repo: "other".into(),
+                number: 8
+            },
+        ]
+    );
+}
+
+/// The repo's own URL is the source of truth for the owner, so a list that
+/// mixes owners still resolves each thread's bare `#N` correctly.
+#[test]
+fn current_repo_takes_the_owner_from_the_repo_url() {
+    let mut app = app_with(vec![RepoIssues {
+        repo: "gh-issues-tui".into(),
+        repo_url: "https://github.com/pgmac-net/gh-issues-tui".into(),
+        issues: vec![issue(1, "a", IssueState::Open)],
+    }]);
+    app.selected = 1;
+    assert_eq!(
+        app.current_repo(),
+        Some(("pgmac-net".into(), "gh-issues-tui".into()))
+    );
 }
 
 #[test]
@@ -2086,10 +2182,10 @@ fn set_pr_summary_applies_only_to_current_target() {
     app.open_pr_summary(pr1.clone());
     // A response for a different PR (the popup retargeted before this
     // landed) must not overwrite the current summary.
-    app.pr.set_summary(&pr2, Ok(sample_pr_summary(pr2.clone())));
+    app.pr.set_summary(&pr2, Ok(sample_pr_lookup(pr2.clone())));
     assert!(app.pr.summary.is_none());
 
-    app.pr.set_summary(&pr1, Ok(sample_pr_summary(pr1.clone())));
+    app.pr.set_summary(&pr1, Ok(sample_pr_lookup(pr1.clone())));
     assert!(app.pr.summary.is_some());
 }
 
@@ -2104,7 +2200,7 @@ fn close_detail_clears_pr_state() {
         number: 1,
     };
     app.open_pr_summary(pr.clone());
-    app.pr.set_summary(&pr.clone(), Ok(sample_pr_summary(pr)));
+    app.pr.set_summary(&pr.clone(), Ok(sample_pr_lookup(pr)));
     app.close_detail();
     assert!(app.pr.target.is_none());
     assert!(app.pr.summary.is_none());
@@ -2112,9 +2208,9 @@ fn close_detail_clears_pr_state() {
 
 /// A `sample_pr_summary` with two checks, one PR run, and one
 /// default-branch run, so `pr_targets()` has more than the header row.
-fn sample_pr_summary_with_checks(pr: PrRef) -> PrSummary {
+fn sample_pr_summary_with_checks(pr: PrRef) -> PrLookup {
     use crate::provider::types::{CheckContextInfo, CheckRollup, WorkflowRunInfo};
-    PrSummary {
+    PrLookup::Pr(Box::new(PrSummary {
         checks: CheckRollup {
             state: Some("FAILURE".into()),
             contexts: vec![
@@ -2147,7 +2243,7 @@ fn sample_pr_summary_with_checks(pr: PrRef) -> PrSummary {
             url: "https://github.com/o/r/actions/runs/7".into(),
         }],
         ..sample_pr_summary(pr)
-    }
+    }))
 }
 
 /// Targets as `ui::pr_targets` would report them: the PR header at row 0,

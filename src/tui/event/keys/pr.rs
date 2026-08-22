@@ -27,6 +27,14 @@ pub(crate) fn handle_pr_picker_key(
 
 /// The PR summary popup's navigable rows at the live terminal width. Read off
 /// the same row model the popup draws, so a target's row index is exactly the
+/// Hand a URL to the desktop browser, reporting either way on the status line.
+fn open_url(app: &mut App, url: &str) {
+    match open::that(url) {
+        Ok(()) => app.status = Some(format!("opened {url}")),
+        Err(e) => app.status = Some(format!("open failed: {e}")),
+    }
+}
+
 pub(crate) fn handle_pr_summary_key(
     app: &mut App,
     key: KeyEvent,
@@ -74,11 +82,26 @@ pub(crate) fn handle_pr_summary_key(
             app.pr.clamp_scroll(max);
         }
         KeyCode::Char('o') | KeyCode::Enter => {
-            if let Some(url) = app.pr.selected_url(&pr_targets(app)) {
-                match open::that(&url) {
-                    Ok(()) => app.status = Some(format!("opened {url}")),
-                    Err(e) => app.status = Some(format!("open failed: {e}")),
+            // #129: a reference that resolved to an issue moves the selector to
+            // it instead of opening a browser — but only when it is actually in
+            // the loaded data. Another org, an unloaded repo, or a closed issue
+            // not yet fetched all fall back to opening it.
+            if let Some(issue) = app.pr_issue_ref() {
+                let mut jumped = false;
+                if app.org.eq_ignore_ascii_case(&issue.owner) {
+                    nav(app, client, tx, |a| {
+                        jumped = a.jump_to_ref(Some(&issue.repo), issue.number);
+                    });
                 }
+                if jumped {
+                    app.close_pr_summary();
+                } else {
+                    open_url(app, &issue.url);
+                }
+                return;
+            }
+            if let Some(url) = app.pr.selected_url(&pr_targets(app)) {
+                open_url(app, &url);
             }
         }
         KeyCode::Char('r') => {

@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::provider::Provider;
 use crate::provider::error::RATE_LIMIT_MSG_PREFIX;
-use crate::provider::types::{Comment, FormOptions, PrRef, PrSummary, RepoIssues, RepoLabel};
+use crate::provider::types::{Comment, FormOptions, PrLookup, PrRef, RepoIssues, RepoLabel};
 
 use super::app::{App, Mode, SessionId, priority_set_options};
 use super::harness::{HarnessRegistry, HarnessSettings};
@@ -52,10 +52,11 @@ pub enum AppEvent {
         issue_id: String,
         result: Result<Vec<RepoLabel>, String>,
     },
-    /// A linked PR's summary, fetched for the PR-summary popup.
+    /// A resolved reference, fetched for the PR-summary popup. May be an issue
+    /// rather than a PR — the shorthand forms cannot tell them apart.
     PrSummary {
         pr: PrRef,
-        result: Box<Result<PrSummary, String>>,
+        result: Box<Result<PrLookup, String>>,
     },
     /// A harness session produced output. Payload-free by design: the bytes
     /// went straight into that session's parser on its reader thread, so a

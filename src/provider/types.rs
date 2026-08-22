@@ -167,8 +167,15 @@ impl RateLimitData {
     }
 }
 
-/// A reference to a pull request, parsed from a `github.com/{owner}/{repo}/pull/{N}`
-/// link — owner/repo always come from the URL itself, never inferred.
+/// A reference to a pull request *or* an issue: `github.com/{owner}/{repo}/pull/{N}`
+/// links and the `{owner}/{repo}#{N}` and `#{N}` shorthands all parse to this.
+/// `owner`/`repo` come from the reference itself, except for bare `#{N}`, which
+/// inherits the repo of the thread it was written in.
+///
+/// The name is historical. A reference is only *known* to be a pull request
+/// once [`crate::provider::IssueProvider::pull_request`] resolves it: GitHub
+/// draws pull request and issue numbers from one per-repo sequence, so the
+/// shorthand carries no way to tell the two apart. See [`PrLookup`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PrRef {
     pub owner: String,
@@ -189,38 +196,249 @@ impl PrRef {
     }
 }
 
-/// Scan `text` for explicit `github.com/{owner}/{repo}/pull/{N}` links.
-/// Deliberately does not match bare `#N` shorthand — in an issues tool that's
-/// ambiguous between an issue and a PR. Dedupes, preserving first-seen order.
-pub fn parse_pr_links(text: &str) -> Vec<PrRef> {
-    const MARKER: &str = "github.com/";
-    let mut out: Vec<PrRef> = Vec::new();
+/// The issue a [`PrRef`] turned out to name, when it was not a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+}
 
-    let mut search_from = 0;
-    while let Some(rel) = text[search_from..].find(MARKER) {
-        let start = search_from + rel + MARKER.len();
-        search_from = start;
-        let rest = &text[start..];
-        let mut parts = rest.splitn(4, '/');
-        let (Some(owner), Some(repo), Some("pull"), Some(after_pull)) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        let digits: String = after_pull
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        let Ok(number) = digits.parse::<u64>() else {
-            continue;
-        };
-        let pr = PrRef {
-            owner: owner.to_string(),
-            repo: repo.to_string(),
+impl IssueRef {
+    pub fn label(&self) -> String {
+        format!("{}/{}#{}", self.owner, self.repo, self.number)
+    }
+}
+
+/// One resolved reference. Because a [`PrRef`] parsed from text is only a
+/// candidate, fetching it can legitimately land on an issue instead — that is
+/// not an error, and the popup offers to jump to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrLookup {
+    Pr(Box<PrSummary>),
+    Issue(IssueRef),
+}
+
+/// Characters allowed in a GitHub owner or repository name.
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
+}
+
+/// Whether `prev` — the character before a shorthand — lets it start a
+/// reference. Excluding `/` is what keeps the shorthand matcher off the tail of
+/// a URL (`github.com/o/r#readme`), and excluding name characters is what keeps
+/// `abc#1` and `v2.0#3` from matching.
+fn is_ref_boundary(prev: Option<char>) -> bool {
+    match prev {
+        None => true,
+        Some(c) => {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '(' | '[' | '{' | '<' | '"' | '\'' | ',' | ';' | ':' | '|' | '*'
+                )
+        }
+    }
+}
+
+/// Whether the character after a shorthand's digits ends it. Rejecting a
+/// trailing alphanumeric is what keeps `#12abc` and `#L12`-style anchors out.
+fn ends_ref(next: Option<char>) -> bool {
+    !matches!(next, Some(c) if c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Leading run of name characters, and the rest of the input.
+fn take_name(s: &str) -> Option<(String, &str)> {
+    let end = s.find(|c: char| !is_name_char(c)).unwrap_or(s.len());
+    (end > 0).then(|| (s[..end].to_string(), &s[end..]))
+}
+
+/// Leading run of digits as a number, and the rest of the input.
+fn take_number(s: &str) -> Option<(u64, &str)> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    s[..end].parse::<u64>().ok().map(|n| (n, &s[end..]))
+}
+
+/// `{owner}/{repo}/pull/{N}`, positioned just past the `github.com/` marker.
+/// No terminator rule: a link may legitimately continue into a path or query
+/// (`/pull/9/files?diff=split`).
+fn match_pull_url(rest: &str) -> Option<(PrRef, usize)> {
+    let (owner, r) = take_name(rest)?;
+    let (repo, r) = take_name(r.strip_prefix('/')?)?;
+    let (number, r) = take_number(r.strip_prefix("/pull/")?)?;
+    Some((
+        PrRef {
+            owner,
+            repo,
             number,
+        },
+        rest.len() - r.len(),
+    ))
+}
+
+/// `{owner}/{repo}#{N}` shorthand.
+fn match_qualified(rest: &str) -> Option<(PrRef, usize)> {
+    let (owner, r) = take_name(rest)?;
+    let (repo, r) = take_name(r.strip_prefix('/')?)?;
+    let (number, r) = take_number(r.strip_prefix('#')?)?;
+    ends_ref(r.chars().next()).then(|| {
+        (
+            PrRef {
+                owner,
+                repo,
+                number,
+            },
+            rest.len() - r.len(),
+        )
+    })
+}
+
+/// `#{N}` shorthand, resolved against the repo whose thread is being read.
+fn match_bare(rest: &str, current: Option<(&str, &str)>) -> Option<(PrRef, usize)> {
+    let (owner, repo) = current?;
+    let (number, r) = take_number(rest.strip_prefix('#')?)?;
+    ends_ref(r.chars().next()).then(|| {
+        (
+            PrRef {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                number,
+            },
+            rest.len() - r.len(),
+        )
+    })
+}
+
+/// Backtick-delimited spans within one line, appended to `out` as absolute byte
+/// ranges. A run of N backticks is closed by the next run of exactly N; an
+/// unclosed run masks nothing. Backticks are ASCII, so byte indices here are
+/// always char boundaries.
+fn inline_code_ranges(line: &str, offset: usize, out: &mut Vec<std::ops::Range<usize>>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let open = i;
+        while i < bytes.len() && bytes[i] == b'`' {
+            i += 1;
+        }
+        let n = i - open;
+        let mut j = i;
+        let mut closed = None;
+        while j < bytes.len() {
+            if bytes[j] != b'`' {
+                j += 1;
+                continue;
+            }
+            let run = j;
+            while j < bytes.len() && bytes[j] == b'`' {
+                j += 1;
+            }
+            if j - run == n {
+                closed = Some(j);
+                break;
+            }
+        }
+        match closed {
+            Some(end) => {
+                out.push(offset + open..offset + end);
+                i = end;
+            }
+            None => break,
+        }
+    }
+}
+
+/// Byte ranges of fenced code blocks and inline code spans. These are excluded
+/// from the scan: literal examples, diffs and hex colours (`#123456` is six
+/// digits) live there and are not references. An unterminated fence masks the
+/// rest of the text, which is the safe direction to err in.
+fn code_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut fence: Option<(usize, char, usize)> = None;
+    let mut pos = 0usize;
+    for line in text.split_inclusive('\n') {
+        let line_start = pos;
+        pos += line.len();
+        let trimmed = line.trim_start();
+        let marker = trimmed.chars().next();
+        let run = match marker {
+            Some(c @ ('`' | '~')) => trimmed.chars().take_while(|&x| x == c).count(),
+            _ => 0,
         };
-        if !out.contains(&pr) {
-            out.push(pr);
+        match fence {
+            Some((start, fc, flen)) => {
+                if marker == Some(fc) && run >= flen {
+                    out.push(start..pos);
+                    fence = None;
+                }
+            }
+            None if run >= 3 => fence = Some((line_start, marker.expect("run >= 3"), run)),
+            None => inline_code_ranges(line, line_start, &mut out),
+        }
+    }
+    if let Some((start, _, _)) = fence {
+        out.push(start..text.len());
+    }
+    out
+}
+
+/// Scan `text` for pull-request references, in first-seen order, deduped.
+///
+/// Three forms are recognised:
+///
+/// - `github.com/{owner}/{repo}/pull/{N}` — an explicit link.
+/// - `{owner}/{repo}#{N}` — qualified shorthand.
+/// - `#{N}` — bare shorthand, resolved against `current`, the `(owner, repo)`
+///   of the thread being read. Ignored when `current` is `None`.
+///
+/// The two shorthands are ambiguous between issues and pull requests, since
+/// GitHub numbers both from one per-repo sequence. A match is therefore a
+/// *candidate*; the type is settled by fetching it (see [`PrLookup`]).
+///
+/// False positives are held down by three rules: matches inside fenced code
+/// blocks and inline code spans are skipped, a shorthand must be preceded by a
+/// boundary ([`is_ref_boundary`]), and its digits must be terminated
+/// ([`ends_ref`]). One consequence worth knowing: `github.com/o/r#129` — a repo
+/// URL with a numeric fragment — matches nothing, because the owner is
+/// preceded by `/`. That same rule is what keeps the scanner out of URLs at
+/// large, so the trade is deliberate.
+pub fn parse_pr_links(text: &str, current: Option<(&str, &str)>) -> Vec<PrRef> {
+    const MARKER: &str = "github.com/";
+    let masks = code_ranges(text);
+
+    let mut out: Vec<PrRef> = Vec::new();
+    let mut prev: Option<char> = None;
+    let mut i = 0usize;
+    while i < text.len() {
+        let rest = &text[i..];
+        let ch = rest.chars().next().expect("i is a char boundary below len");
+        let matched = if masks.iter().any(|r| r.contains(&i)) {
+            None
+        } else if let Some(after) = rest.strip_prefix(MARKER) {
+            match_pull_url(after).map(|(pr, len)| (pr, MARKER.len() + len))
+        } else if is_ref_boundary(prev) {
+            match_qualified(rest).or_else(|| match_bare(rest, current))
+        } else {
+            None
+        };
+        match matched {
+            Some((pr, len)) => {
+                if !out.contains(&pr) {
+                    out.push(pr);
+                }
+                prev = text[..i + len].chars().next_back();
+                i += len;
+            }
+            None => {
+                prev = Some(ch);
+                i += ch.len_utf8();
+            }
         }
     }
     out
@@ -445,11 +663,14 @@ mod tests {
         }
     }
 
+    /// The repo a thread is being read in, for bare `#N` resolution.
+    const HERE: Option<(&str, &str)> = Some(("o", "r"));
+
     #[test]
     fn parse_pr_links_full_url() {
         let text = "fixed by https://github.com/pgmac-net/gh-issues-tui/pull/72 thanks";
         assert_eq!(
-            parse_pr_links(text),
+            parse_pr_links(text, None),
             vec![pr("pgmac-net", "gh-issues-tui", 72)]
         );
     }
@@ -458,7 +679,7 @@ mod tests {
     fn parse_pr_links_multiple_preserves_order() {
         let text = "see https://github.com/o/r/pull/1 and https://github.com/o/r2/pull/2";
         assert_eq!(
-            parse_pr_links(text),
+            parse_pr_links(text, None),
             vec![pr("o", "r", 1), pr("o", "r2", 2)]
         );
     }
@@ -466,14 +687,14 @@ mod tests {
     #[test]
     fn parse_pr_links_dedupes() {
         let text = "https://github.com/o/r/pull/5 mentioned again: github.com/o/r/pull/5";
-        assert_eq!(parse_pr_links(text), vec![pr("o", "r", 5)]);
+        assert_eq!(parse_pr_links(text, None), vec![pr("o", "r", 5)]);
     }
 
     #[test]
     fn parse_pr_links_trailing_path_and_query() {
         let text = "https://github.com/o/r/pull/9/files?diff=split and (github.com/o/r/pull/10)";
         assert_eq!(
-            parse_pr_links(text),
+            parse_pr_links(text, None),
             vec![pr("o", "r", 9), pr("o", "r", 10)]
         );
     }
@@ -481,12 +702,91 @@ mod tests {
     #[test]
     fn parse_pr_links_ignores_non_pull_github_urls() {
         let text = "https://github.com/o/r/issues/3 and https://github.com/o/r/commit/abc123";
-        assert!(parse_pr_links(text).is_empty());
+        assert!(parse_pr_links(text, None).is_empty());
+    }
+
+    /// #129: the shortened form GitHub renders for cross-repo references.
+    #[test]
+    fn parse_pr_links_qualified_shorthand() {
+        let text = "superseded by pgmac-net/gh-issues-tui#72 now";
+        assert_eq!(
+            parse_pr_links(text, HERE),
+            vec![pr("pgmac-net", "gh-issues-tui", 72)]
+        );
+    }
+
+    /// #129: bare `#N` means "this repo", so it can only resolve when the
+    /// caller says which repo the thread belongs to.
+    #[test]
+    fn parse_pr_links_bare_shorthand_uses_the_current_repo() {
+        let text = "closes #45, see also PR #72";
+        assert_eq!(
+            parse_pr_links(text, HERE),
+            vec![pr("o", "r", 45), pr("o", "r", 72)]
+        );
     }
 
     #[test]
-    fn parse_pr_links_ignores_bare_hash_shorthand() {
-        let text = "closes #45, see also PR #72";
-        assert!(parse_pr_links(text).is_empty());
+    fn parse_pr_links_bare_shorthand_needs_a_current_repo() {
+        assert!(parse_pr_links("closes #45", None).is_empty());
+    }
+
+    #[test]
+    fn parse_pr_links_interleaves_forms_in_first_seen_order() {
+        let text = "a/b#7 then https://github.com/o/r/pull/8 then #9";
+        assert_eq!(
+            parse_pr_links(text, HERE),
+            vec![pr("a", "b", 7), pr("o", "r", 8), pr("o", "r", 9)]
+        );
+    }
+
+    /// A thread routinely carries both a link and its shorthand for the same
+    /// PR; they must collapse to one candidate.
+    #[test]
+    fn parse_pr_links_dedupes_a_url_against_its_own_shorthand() {
+        let text = "https://github.com/o/r/pull/5 aka o/r#5 aka #5";
+        assert_eq!(parse_pr_links(text, HERE), vec![pr("o", "r", 5)]);
+    }
+
+    #[test]
+    fn parse_pr_links_requires_a_boundary_before_the_hash() {
+        // `abc#1` is not a reference; `#L12` is a line anchor, not a number.
+        assert!(parse_pr_links("abc#1 and #L12", HERE).is_empty());
+    }
+
+    #[test]
+    fn parse_pr_links_requires_the_digits_to_be_terminated() {
+        assert!(parse_pr_links("#12abc", HERE).is_empty());
+    }
+
+    /// The rule that keeps the scanner out of URLs also costs this case: a
+    /// repo URL with a numeric fragment matches nothing, because the owner is
+    /// preceded by `/`. Pinned so the trade-off is deliberate, not discovered.
+    #[test]
+    fn parse_pr_links_skips_a_repo_url_with_a_numeric_fragment() {
+        assert!(parse_pr_links("https://github.com/o/r#129", HERE).is_empty());
+    }
+
+    #[test]
+    fn parse_pr_links_skips_fenced_code_blocks() {
+        let text = "before #1\n```\n#2\no/r#22\n```\nafter #3";
+        assert_eq!(
+            parse_pr_links(text, HERE),
+            vec![pr("o", "r", 1), pr("o", "r", 3)]
+        );
+    }
+
+    #[test]
+    fn parse_pr_links_skips_inline_code_spans() {
+        // `#123456` is a valid hex colour as well as a plausible issue number,
+        // which is exactly why code spans are excluded.
+        let text = "use `#123456` for the border, tracked in #5";
+        assert_eq!(parse_pr_links(text, HERE), vec![pr("o", "r", 5)]);
+    }
+
+    #[test]
+    fn parse_pr_links_treats_an_unterminated_fence_as_code_to_the_end() {
+        let text = "real #1\n```\n#2\nstill code #3";
+        assert_eq!(parse_pr_links(text, HERE), vec![pr("o", "r", 1)]);
     }
 }

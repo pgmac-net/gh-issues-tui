@@ -9,7 +9,7 @@ use async_trait::async_trait;
 
 use error::{ProviderError, Result};
 use types::{
-    Comment, FormOptions, IssueState, NewIssueParams, PrRef, PrSummary, RateLimitData, RepoIssues,
+    Comment, FormOptions, IssueState, NewIssueParams, PrLookup, PrRef, RateLimitData, RepoIssues,
     RepoLabel,
 };
 
@@ -73,9 +73,13 @@ pub trait IssueProvider: Send + Sync {
         false
     }
 
-    /// Fetch the PR-summary popup's data. Capability method — only
+    /// Resolve a reference found in an issue thread. Capability method — only
     /// meaningful when [`IssueProvider::supports_pr_summary`] is `true`.
-    async fn pull_request(&self, _pr: &PrRef) -> Result<PrSummary> {
+    ///
+    /// Returns [`PrLookup::Issue`] rather than an error when the number turns
+    /// out to name an issue: the shorthand forms `parse_pr_links` matches
+    /// cannot tell the two apart before fetching.
+    async fn pull_request(&self, _pr: &PrRef) -> Result<PrLookup> {
         Err(ProviderError::Unsupported("pull request summaries"))
     }
 
