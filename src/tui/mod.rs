@@ -5,6 +5,7 @@ pub mod layout;
 pub mod linkmap;
 pub mod markdown;
 pub mod theme;
+pub mod title;
 pub mod ui;
 
 pub use event::run;

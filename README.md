@@ -297,7 +297,51 @@ Inside a session **every key goes to the agent** — arrows, `Esc`, `Ctrl+C` and
 | `F12 ?` | help |
 | `F12 F12` | send a literal `F12` to the agent |
 
+`F12 ?` shows that table in-app. Help opened from inside a session lists these chords; `?` from the issue list keeps the list's own keys. The two tables are disjoint on purpose — a session forwards `n` and `/` to the agent, so offering them as app keys there would be actively wrong.
+
 Detaching is not killing: the agent keeps working and `Z` returns to it. When an agent exits, its session stays with the final screen frozen so the closing summary is still readable — `k`/`j` scroll, `G` jumps to the end, `q` leaves it in place, `x` dismisses it. The bottom status line shows `n running, m exited (Z)` whenever any session exists, and `q` with agents still running asks first, naming them.
+
+#### Telling a session apart from a normal terminal
+
+An agent's own TUI fills the screen, so a session carries two rows of chrome that belong to the app rather than the agent:
+
+```
+█ gh-issues-tui █ pgmac-net/gh-issues-tui#132 · Send to Claude/harness · claude · ● running
+  (the agent's own full-screen UI)
+ F12 d detach · s switch · k kill · n new · F12 F12 literal · ? help
+```
+
+The top row is the identity row: a reverse-video badge, the issue, its title, which harness, and whether the child is alive. It costs the agent one row of its PTY, so on a very short terminal it is shed before the key row is. Under width pressure the title elides first, then the owner drops off the reference (`…/gh-issues-tui#132`); the badge and the running state never elide.
+
+The window/tab title is set to `gh-issues-tui · <issue>` while attached and back to `gh-issues-tui` on detach, so provenance survives the TUI not being the focused pane. An agent that emits its own title escape will win — the identity row is the signal that cannot be overwritten.
+
+#### Environment passed to the agent
+
+Every harness child gets these on top of the inherited environment:
+
+| Variable | Example |
+|---|---|
+| `GH_ISSUES_TUI` | `0.12.0` — presence marks the launcher, the value is its version |
+| `GH_ISSUES_TUI_HARNESS` | `claude` |
+| `GH_ISSUES_TUI_OWNER` | `pgmac-net` |
+| `GH_ISSUES_TUI_REPO` | `gh-issues-tui` |
+| `GH_ISSUES_TUI_NUMBER` | `132` |
+| `GH_ISSUES_TUI_ISSUE` | `pgmac-net/gh-issues-tui#132` |
+| `GH_ISSUES_TUI_URL` | `https://github.com/pgmac-net/gh-issues-tui/issues/132` |
+| `GH_ISSUES_TUI_TITLE` | `Send to Claude/harness` |
+
+The agent itself already learns its ticket from the prompt in its `command`; these are for everything that cannot read that — hooks, statuslines and scripts, including ones the agent spawns. Scraping the parent's argv instead does not generalise: every harness formats its command differently, and the `opencode` default carries a URL with no `#N` in it at all.
+
+To render provenance inside Claude Code's own UI, in `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "[ -n \"$GH_ISSUES_TUI\" ] && echo \"⬡ gh-issues-tui · $GH_ISSUES_TUI_ISSUE\" || true"
+  }
+}
+```
 
 Full detail: [`docs/harness-sessions.md`](docs/harness-sessions.md).
 

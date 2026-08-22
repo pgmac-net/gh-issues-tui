@@ -35,6 +35,79 @@ it in place, `x` dismisses it.
 The bottom status line carries `n running, m exited (Z)` whenever any session exists —
 without it a detached agent would be working with nothing on screen to say so.
 
+`F12 ?` and `?` open the same `Mode::Help` popup but render different tables, chosen on
+`harness.active.is_some()` — the flag the dismiss path already uses to decide where help
+returns to, and which `detach()` clears. The tables share no keys: a session forwards `n`
+and `/` to the child, so listing them as app keys inside one would be wrong, and before
+#132 the `F12` chords appeared nowhere in the app at all.
+
+## Session chrome (#132)
+
+A session is drawn full-frame and the agent owns everything between the two chrome rows:
+
+```
+█ gh-issues-tui █ pgmac-net/gh-issues-tui#132 · Send to Claude/harness · claude · ● running
+  (the child's screen, from its vt100 parser)
+ F12 d detach · s switch · k kill · n new · F12 F12 literal · ? help
+```
+
+**The rows come out of the child's PTY.** `layout::harness_areas().pane` is what reaches
+`PtySize`, both at spawn and through `resize_sessions`, so each row of chrome is a row the
+agent does not get. That is why the identity row is one row and not a border: a border
+costs two rows *and* two columns, narrowing every agent TUI permanently.
+
+The rows are shed as the terminal shrinks, header first — the keys are the half a user
+cannot recover by looking, while the header only names the session they just opened:
+
+| Frame height | header | pane | keys |
+|---|---|---|---|
+| `>= 3` | 1 | rest | 1 |
+| `2` | 0 | 1 | 1 |
+| `1` | 0 | 1 | 0 |
+
+The pane never reaches zero rows: a `PtySize` with zero rows is rejected by the OS.
+
+Under width pressure the identity row gives up its parts in order — the title elides
+first, then the owner drops off the reference (`…/gh-issues-tui#132`). The brand badge and
+the running state never elide.
+
+### Terminal title
+
+`tui/title.rs` sets `OSC 2` to `gh-issues-tui · <issue>` while a session is attached, and
+back to `gh-issues-tui` on detach, so provenance survives the TUI not being the focused
+pane. It is driven off the drawn state once per loop iteration rather than hooked into
+attach/detach/kill/exit separately, so it cannot drift out of step with what is on screen;
+a dedup on the last-written value makes the repeat calls free.
+
+Restoration is covered twice: `Drop` on the guard for normal exits and unwinding panics,
+and `title::restore()` in `main`'s panic hook, which runs *before* unwinding and so may be
+the only one reached.
+
+Titles are sanitised before they are written. Repo names and issue titles come from the
+API, and a `BEL` in one would terminate the `OSC` early, leaving the rest to reach the
+terminal as its own input; an `ESC` could open a fresh sequence. Every control character
+is dropped and the result capped at 128 chars.
+
+Two deliberate non-goals. There is no portable way to read the previous title back (the
+`21t` query is widely disabled as a security measure), so restore writes a fixed name
+rather than whatever was there before. And a child that emits its own `OSC 2` will win —
+the title is a secondary signal, which is exactly why the identity row exists.
+
+### Provenance environment
+
+`set_provenance_env` stamps every child with `GH_ISSUES_TUI` (marker and version),
+`_HARNESS`, `_OWNER`, `_REPO`, `_NUMBER`, `_ISSUE`, `_URL` and `_TITLE`. The README lists
+the values and a worked Claude Code `statusLine` recipe.
+
+The agent already learns its ticket from argv — the builtin `claude` command passes
+`/pgmac-workflows:pickup-ticket {ref}` as the prompt. What argv cannot tell anything is
+the *launcher*, and that is what hooks, statuslines and scripts need, including ones the
+agent spawns itself. Scraping the parent's argv does not generalise: the `opencode`
+default carries a URL with no `#N` in it.
+
+These go through `CommandBuilder::env`, so the values are never parsed by a shell — the
+same property the argv array gives placeholder expansion (see [Security](#security)).
+
 ## Configuration
 
 `~/.config/gh-issues/config.toml`:

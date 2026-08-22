@@ -42,6 +42,9 @@ fn install_panic_hook() {
         // Best-effort terminal restore so the panic message is readable.
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen);
+        // A hook runs before unwinding, so `TerminalTitle`'s Drop may never be
+        // reached — without this the tab keeps an issue's name after a crash.
+        tui::title::restore();
         original(info);
     }));
 }

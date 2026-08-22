@@ -303,9 +303,12 @@ impl PickerSpec {
     }
 
     /// Choosing which coding harness to launch (`Mode::HarnessPicker`).
+    ///
+    /// Branded like the session's own identity row (#132) so the whole harness
+    /// surface reads as one thing rather than only the attached view.
     pub(super) fn harnesses() -> Self {
         Self::new(
-            " send to harness (type to filter · Enter starts · Esc cancels) ",
+            " gh-issues-tui \u{00b7} send to harness (type to filter · Enter starts · Esc cancels) ",
             false,
         )
     }
@@ -315,7 +318,7 @@ impl PickerSpec {
         Self {
             width: PR_PICKER_WIDTH,
             ..Self::new(
-                " harness sessions (type to filter · Enter attaches · Esc cancels) ",
+                " gh-issues-tui \u{00b7} sessions (type to filter · Enter attaches · Esc cancels) ",
                 false,
             )
         }
@@ -457,56 +460,79 @@ pub(super) fn draw_calendar_popup(f: &mut Frame, app: &App, t: &Theme, idx: usiz
     f.render_widget(para, area);
 }
 
-pub(super) fn draw_help(f: &mut Frame, t: &Theme) {
-    const HELP: &[(&str, &str)] = &[
-        ("j/k ↑/↓", "move list / scroll detail region"),
-        ("Space", "collapse/expand repo group"),
-        ("←", "collapse repo group / back to list"),
-        ("→", "expand repo group / into detail pane"),
-        ("[ / ]", "collapse all / expand all"),
-        ("Enter", "open issue in detail pane"),
-        (
-            "Tab",
-            "next comment in pane / switch pane (Shift+Tab reverse)",
-        ),
-        ("Esc / q", "close detail pane"),
-        ("o / O", "open issue / repo in browser"),
-        ("y", "copy issue ref to clipboard"),
-        ("/", "text search"),
-        ("#", "jump to issue number"),
-        ("f", "cycle state filter (open/closed/all)"),
-        ("F", "filter editor (pickers + calendar)"),
-        ("s / S", "cycle sort key / toggle direction"),
-        ("w", "switch org/owner"),
-        ("c", "add comment (inline, Tab to buttons, Ctrl+S save)"),
-        ("e", "edit description / comment (detail pane)"),
-        ("x", "close / reopen issue"),
-        ("a", "edit assignees"),
-        ("l", "edit labels"),
-        ("t", "edit title"),
-        ("p", "set priority"),
-        ("P", "summarise linked PR (in detail pane)"),
-        ("m", "move issue to another repo"),
-        ("n", "new issue"),
-        ("r", "reload"),
-        ("q", "back / quit"),
-    ];
-    let area = centered(f.area(), 52, HELP.len() as u16 + 2);
+/// Keys that only exist inside a session (#23, documented in-app by #132).
+///
+/// A session forwards every key to the agent bar the `F12` prefix, so this
+/// table is the only place the chords are discoverable from inside the app —
+/// the list-mode table below shares none of them.
+const HARNESS_HELP: &[(&str, &str)] = &[
+    (
+        "F12 d",
+        "detach \u{2014} back to the list, agent keeps running",
+    ),
+    ("F12 s", "switch session"),
+    ("F12 k", "kill (confirmed while the agent is alive)"),
+    ("F12 n", "start another harness for this issue"),
+    ("F12 ?", "this help"),
+    ("F12 F12", "send a literal F12 to the agent"),
+    ("", ""),
+    ("j/k", "scroll scrollback"),
+    ("x", "dismiss an exited session"),
+    ("q", "back to the list"),
+];
+
+/// Which key table `?` should show. Help is reachable from exactly two places
+/// — `?` in the list and `F12 ?` in a session — and showing the list's keys to
+/// someone inside a session is the gap #132 closes.
+pub(super) fn draw_help(f: &mut Frame, t: &Theme, in_session: bool) {
+    if in_session {
+        draw_key_table(
+            f,
+            t,
+            " session keys ",
+            HARNESS_HELP,
+            Some("every key goes to the agent, except:"),
+            52,
+        );
+    } else {
+        draw_key_table(f, t, " keys ", LIST_HELP, None, 52);
+    }
+}
+
+fn draw_key_table(
+    f: &mut Frame,
+    t: &Theme,
+    title: &str,
+    rows: &[(&str, &str)],
+    preamble: Option<&str>,
+    width: u16,
+) {
+    let mut lines: Vec<Line> = Vec::with_capacity(rows.len() + 2);
+    if let Some(p) = preamble {
+        lines.push(Line::from(Span::styled(
+            format!(" {p}"),
+            Style::default().fg(t.dim).italic(),
+        )));
+        lines.push(Line::raw(""));
+    }
+    lines.extend(rows.iter().map(|(k, v)| {
+        // A blank pair is a spacer between groups, not a key.
+        if k.is_empty() && v.is_empty() {
+            return Line::raw("");
+        }
+        Line::from(vec![
+            Span::styled(format!(" {k:<10}"), Style::default().fg(t.accent).bold()),
+            Span::raw(*v),
+        ])
+    }));
+
+    let area = centered(f.area(), width, lines.len() as u16 + 2);
     f.render_widget(Clear, area);
-    let lines: Vec<Line> = HELP
-        .iter()
-        .map(|(k, v)| {
-            Line::from(vec![
-                Span::styled(format!(" {k:<10}"), Style::default().fg(t.accent).bold()),
-                Span::raw(*v),
-            ])
-        })
-        .collect();
     f.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" keys ")
+                .title(title.to_string())
                 .title_bottom(
                     Line::from(format!(" v{} ", env!("CARGO_PKG_VERSION"))).right_aligned(),
                 ),
@@ -514,6 +540,42 @@ pub(super) fn draw_help(f: &mut Frame, t: &Theme) {
         area,
     );
 }
+
+/// Keys available from the issue list and detail pane.
+const LIST_HELP: &[(&str, &str)] = &[
+    ("j/k ↑/↓", "move list / scroll detail region"),
+    ("Space", "collapse/expand repo group"),
+    ("←", "collapse repo group / back to list"),
+    ("→", "expand repo group / into detail pane"),
+    ("[ / ]", "collapse all / expand all"),
+    ("Enter", "open issue in detail pane"),
+    (
+        "Tab",
+        "next comment in pane / switch pane (Shift+Tab reverse)",
+    ),
+    ("Esc / q", "close detail pane"),
+    ("o / O", "open issue / repo in browser"),
+    ("y", "copy issue ref to clipboard"),
+    ("/", "text search"),
+    ("#", "jump to issue number"),
+    ("f", "cycle state filter (open/closed/all)"),
+    ("F", "filter editor (pickers + calendar)"),
+    ("s / S", "cycle sort key / toggle direction"),
+    ("w", "switch org/owner"),
+    ("c", "add comment (inline, Tab to buttons, Ctrl+S save)"),
+    ("e", "edit description / comment (detail pane)"),
+    ("x", "close / reopen issue"),
+    ("a", "edit assignees"),
+    ("l", "edit labels"),
+    ("t", "edit title"),
+    ("p", "set priority"),
+    ("P", "summarise linked PR (in detail pane)"),
+    ("m", "move issue to another repo"),
+    ("n", "new issue"),
+    ("A", "start a coding harness (F12 ? for its keys)"),
+    ("r", "reload"),
+    ("q", "back / quit"),
+];
 
 #[cfg(test)]
 mod tests {
@@ -555,20 +617,69 @@ mod tests {
         assert!(is_reversed_at(&buf, "No"));
     }
 
-    #[test]
-    fn help_popup_renders_version() {
+    /// The help popup's text, for whichever table `in_session` selects.
+    fn rendered_help(in_session: bool) -> String {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let backend = TestBackend::new(60, 30);
+        let backend = TestBackend::new(60, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw_help(f, &Theme::default())).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        terminal
+            .draw(|f| draw_help(f, &Theme::default(), in_session))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn help_popup_renders_version() {
         assert!(
-            content.contains(concat!("v", env!("CARGO_PKG_VERSION"))),
+            rendered_help(false).contains(concat!("v", env!("CARGO_PKG_VERSION"))),
             "version not found in help popup"
         );
+    }
+
+    #[test]
+    fn help_from_a_session_documents_the_f12_chords() {
+        // The gap #132 closes: these chords existed only in the README, so
+        // `F12 ?` inside a session answered a question nobody had asked.
+        let text = rendered_help(true);
+        for chord in ["F12 d", "F12 s", "F12 k", "F12 n", "F12 F12"] {
+            assert!(text.contains(chord), "{chord} missing from: {text}");
+        }
+        assert!(
+            text.contains("every key goes to the agent"),
+            "the session table must lead with why the chords exist: {text}"
+        );
+    }
+
+    #[test]
+    fn help_from_the_list_keeps_the_list_keys() {
+        let text = rendered_help(false);
+        assert!(text.contains("new issue"), "got: {text}");
+        assert!(text.contains("text search"), "got: {text}");
+    }
+
+    #[test]
+    fn the_two_help_tables_do_not_bleed_into_each_other() {
+        // A session forwards `n` and `/` to the agent, so offering them as
+        // app keys inside a session would be actively wrong.
+        let session = rendered_help(true);
+        assert!(!session.contains("new issue"), "got: {session}");
+        assert!(!session.contains("text search"), "got: {session}");
+
+        let list = rendered_help(false);
+        assert!(!list.contains("F12 d"), "got: {list}");
+    }
+
+    #[test]
+    fn help_popup_versions_both_tables() {
+        assert!(rendered_help(true).contains(concat!("v", env!("CARGO_PKG_VERSION"))));
     }
 
     // ----------------------------------------------------------------------
