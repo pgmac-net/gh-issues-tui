@@ -612,3 +612,46 @@ None — implemented as approved.
 
 - `cargo test` — 408 passed (5 new): selection vanishing resyncs the pane to the new issue's thread, clamping onto a repo header/empty list clears `detail.comments`, an unchanged selection leaves scroll and the loaded thread untouched, and `MutationDone`'s `Skip`/`Refetch` correctly gate cache invalidation.
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — clean.
+
+# Development log — harness provenance and contextual help (2026-08-22)
+
+Work driven by [pgmac-net/gh-issues-tui#132](https://github.com/pgmac-net/gh-issues-tui/issues/132), delivered in PR #138 on branch `132-harness-provenance`.
+
+## Process
+
+1. **Grilling before planning** — the ticket asked for two things ("make the spawned harness more obvious that it's spawned from here" and "F12 commands visible on the help panel, ideally contextual") and both were ambiguous enough that guessing would have produced the wrong work. Six decisions were pinned down with ASCII mockups of each candidate before a plan was written; the mockups were rendered as option previews so alternatives could be compared side by side rather than described.
+2. **Plan posted to the ticket** and approved before any implementation, per `pickup-ticket`.
+3. **Implementation** in one branch, verified with `TestBackend` buffer scraping and then end-to-end under tmux against the live API.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Who the provenance signal is for | Both the human and the agent | They need different mechanisms — screen chrome vs. environment — and neither substitutes for the other |
+| How much screen chrome costs | One extra row, no columns | `harness_areas().pane` feeds `PtySize`, so a full border would cost 2 rows **and** 2 columns and narrow every agent TUI permanently |
+| Which chrome row sheds first on a short frame | Header | The keys are the half a user cannot recover by looking; the header only names the session they just opened |
+| What elides first under width pressure | Title, then the ref's owner | The brand is the reason the row exists, and the running state is the smallest load-bearing part |
+| How contextual the help is | Two tables keyed on origin | Help is entered from exactly two keys; per-mode tables for all ~20 modes would collide with `?` in the text-input modes |
+| What the env vars carry | Launcher identity, not the ticket | argv already carries the ticket; the launcher is what hooks/statuslines/spawned tools cannot otherwise learn |
+| Which flag selects the help table | `harness.active.is_some()` | Already trusted by the dismiss path to decide where help returns to, and `detach()` clears it |
+| How the terminal title is driven | Off the drawn state, once per loop iteration | One place to be right; hooking attach/detach/kill/exit separately can drift out of step with the screen |
+
+## Diversions from plan
+
+- **Scope grew during grilling, deliberately.** The plan's own "close it here" option was declined in favour of also shipping the `OSC 2` terminal title and the picker branding. Both were listed as explicitly out of scope in the first draft.
+- **`GH_ISSUES_TUI_TITLE` was added** beyond the seven variables the plan enumerated — the identity row needed the title in `SessionMeta` anyway, so exporting it cost nothing and spares hooks a second lookup.
+- **`A` was undocumented in the list help table** and was added while splitting the tables. Not in the plan; found because the split forced a read of every row.
+- **The unknown-chord status hint** (`event/keys/harness.rs`) was updated to match the new key row, which the plan did not mention.
+- **Title sanitisation was not in the plan.** Repo names and issue titles are API-supplied, and a `BEL` in one would terminate the `OSC 2` sequence early, leaving the remainder to reach the terminal as its own input. Five tests pin it.
+- **`spawn` gained a `harness_name` parameter**, taking it to 8 arguments and an `#[allow(clippy::too_many_arguments)]` — matching the existing convention on `run`/`event_loop` rather than inventing a parameter struct. The registry previously received only the `HarnessConfig`, not the key it was found under.
+- **Implemented on Opus 5**, though the plan rated the work COMPLEX and nominated Fable 5. Proceeded at the requester's go-ahead rather than blocking on a model switch.
+
+## Verification
+
+- `cargo test` — 553 passed (53 new); `cargo clippy --all-targets` and `cargo fmt --check` clean.
+- New coverage: layout degradation at heights 1/2/3/4 (the pane must never reach zero rows, which the OS rejects for `PtySize`), identity-row content and reverse-video badge, elision order under a 56-column frame, exited-session key swap, empty-title rendering, `fit_ref`/`truncate` char-vs-byte handling, both help tables and their disjointness, and title sanitisation against `BEL`/`ESC`/newlines plus the length cap.
+- **Live tmux run against the API** with a stub harness (temporary `XDG_CONFIG_HOME`, so the real config was untouched): identity row rendered with brand/ref/title/harness/state; all seven `GH_ISSUES_TUI*` variables arrived in the child with correct values; `OSC 2` observed via `tmux display-message` as `gh-issues-tui · pgmac-net/gh-issues-tui#132` while attached and `gh-issues-tui` after both detach and quit; both help tables; session-picker branding; and resizes to 56 columns, 3 rows and 2 rows degraded as designed without a PTY crash.
+
+## Follow-up found
+
+Opening help from inside a session flips the background back to the issue list — `Mode::Help` is absent from the full-frame match arm in `tui/ui/mod.rs`. Pre-existing since #23, but the new "session keys" table drawn over an issue list makes it conspicuous. Left out of scope.
