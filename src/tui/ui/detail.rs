@@ -366,18 +366,26 @@ mod tests {
     /// force the fence renderer's own hard-break.
     #[test]
     fn fence_measured_height_matches_the_rendered_rows() {
-        let body = "```rust\nfn very_long_function_name_that_will_need_to_wrap(a, b, c) {}\n```";
-        let mut with_fence = issue(vec![]);
-        with_fence.body = body.into();
+        // Second body: syntax highlighting (#122) splits a row into several
+        // spans and carries block-comment state across lines, so re-pin that
+        // it still changes no row *counts*.
+        let bodies = [
+            "```rust\nfn very_long_function_name_that_will_need_to_wrap(a, b, c) {}\n```",
+            "```rust\n/* a block comment\n   spanning three lines\n*/\nlet s = \"a string long enough to be broken across rows\";\n```",
+        ];
+        for body in bodies {
+            let mut with_fence = issue(vec![]);
+            with_fence.body = body.into();
 
-        for width in [20u16, 46, 80] {
-            let lines = body_lines(&with_fence, false, width as usize, &Theme::default());
-            let drawn = linkmap::wrap(&lines, &[], width as usize).0.len();
-            assert_eq!(
-                body_content_height(&with_fence, width) as usize,
-                drawn,
-                "at width {width}"
-            );
+            for width in [20u16, 46, 80] {
+                let lines = body_lines(&with_fence, false, width as usize, &Theme::default());
+                let drawn = linkmap::wrap(&lines, &[], width as usize).0.len();
+                assert_eq!(
+                    body_content_height(&with_fence, width) as usize,
+                    drawn,
+                    "at width {width} for {body:?}"
+                );
+            }
         }
     }
 

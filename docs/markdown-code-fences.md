@@ -129,3 +129,10 @@ Filed as a follow-up: an in-house, dependency-free per-language token
 highlighter (keywords/strings/comments/numbers), built directly on the
 span-based row structure this change introduces so it can slot in as a second
 pass over `Fence::content` rather than a rewrite of `fence::render`.
+
+**Delivered in #122** — see
+[`markdown-syntax-highlighting.md`](markdown-syntax-highlighting.md). It landed
+close to the shape predicted here, with one change: the token pass runs
+*before* `hard_break` rather than after it, so `hard_break` now splits styled
+segments instead of a flat string. Tokenising a post-break chunk would have
+misparsed any token straddling the pane edge, and recoloured code on resize.

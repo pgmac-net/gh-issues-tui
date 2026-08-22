@@ -27,8 +27,18 @@ pub struct Theme {
     pub label_fallback: Color,
     /// Background fill for fenced and inline code.
     pub code_bg: Color,
-    /// Foreground for fenced and inline code text.
+    /// Foreground for fenced and inline code text, and for any token the
+    /// syntax scanner doesn't classify.
     pub code_fg: Color,
+    /// Language keywords in a fenced block, and the structural keys of a
+    /// `json`/`yaml`/`toml` block.
+    pub code_keyword: Color,
+    /// String literals in a fenced block.
+    pub code_string: Color,
+    /// Comments in a fenced block.
+    pub code_comment: Color,
+    /// Numeric literals in a fenced block.
+    pub code_number: Color,
 }
 
 impl Default for Theme {
@@ -45,6 +55,13 @@ impl Default for Theme {
             label_fallback: Color::Blue,
             code_bg: Color::Rgb(38, 38, 38),
             code_fg: Color::Rgb(220, 220, 220),
+            // One Dark derived, chosen for contrast against `code_bg` rather
+            // than against the terminal's own palette — same reasoning as the
+            // explicit RGB for `code_bg`/`code_fg`.
+            code_keyword: Color::Rgb(0xc6, 0x78, 0xdd),
+            code_string: Color::Rgb(0x98, 0xc3, 0x79),
+            code_comment: Color::Rgb(0x7f, 0x84, 0x8e),
+            code_number: Color::Rgb(0xd1, 0x9a, 0x66),
         }
     }
 }
@@ -67,6 +84,10 @@ pub struct ColorProfile {
     pub label_fallback: Option<Color>,
     pub code_bg: Option<Color>,
     pub code_fg: Option<Color>,
+    pub code_keyword: Option<Color>,
+    pub code_string: Option<Color>,
+    pub code_comment: Option<Color>,
+    pub code_number: Option<Color>,
 }
 
 impl Theme {
@@ -85,6 +106,10 @@ impl Theme {
             label_fallback: profile.label_fallback.unwrap_or(d.label_fallback),
             code_bg: profile.code_bg.unwrap_or(d.code_bg),
             code_fg: profile.code_fg.unwrap_or(d.code_fg),
+            code_keyword: profile.code_keyword.unwrap_or(d.code_keyword),
+            code_string: profile.code_string.unwrap_or(d.code_string),
+            code_comment: profile.code_comment.unwrap_or(d.code_comment),
+            code_number: profile.code_number.unwrap_or(d.code_number),
         }
     }
 }
@@ -112,6 +137,59 @@ mod tests {
         // Untouched fields keep defaults.
         assert_eq!(theme.open, Color::Green);
         assert_eq!(theme.error, Color::Red);
+    }
+
+    #[test]
+    fn token_colors_default_and_override_independently() {
+        let d = Theme::default();
+        // Every token colour must differ from `code_fg`, or highlighting is
+        // invisible out of the box.
+        for c in [d.code_keyword, d.code_string, d.code_comment, d.code_number] {
+            assert_ne!(c, d.code_fg);
+        }
+
+        let profile: ColorProfile = toml::from_str(
+            "code_keyword = \"#fb4934\"\n\
+             code_string  = \"#b8bb26\"\n\
+             code_comment = \"#928374\"\n\
+             code_number  = \"#d3869b\"\n",
+        )
+        .unwrap();
+        let theme = Theme::with_profile(&profile);
+        assert_eq!(theme.code_keyword, Color::Rgb(0xfb, 0x49, 0x34));
+        assert_eq!(theme.code_string, Color::Rgb(0xb8, 0xbb, 0x26));
+        assert_eq!(theme.code_comment, Color::Rgb(0x92, 0x83, 0x74));
+        assert_eq!(theme.code_number, Color::Rgb(0xd3, 0x86, 0x9b));
+        // Untouched code keys keep their defaults.
+        assert_eq!(theme.code_fg, d.code_fg);
+        assert_eq!(theme.code_bg, d.code_bg);
+    }
+
+    #[test]
+    fn flattening_every_token_colour_to_code_fg_is_expressible() {
+        // The documented "no highlighting" recipe — there is no separate
+        // on/off switch.
+        let profile: ColorProfile = toml::from_str(
+            "code_fg      = \"#dcdcdc\"\n\
+             code_keyword = \"#dcdcdc\"\n\
+             code_string  = \"#dcdcdc\"\n\
+             code_comment = \"#dcdcdc\"\n\
+             code_number  = \"#dcdcdc\"\n",
+        )
+        .unwrap();
+        let t = Theme::with_profile(&profile);
+        let flat = Color::Rgb(0xdc, 0xdc, 0xdc);
+        assert!(
+            [
+                t.code_fg,
+                t.code_keyword,
+                t.code_string,
+                t.code_comment,
+                t.code_number
+            ]
+            .iter()
+            .all(|c| *c == flat)
+        );
     }
 
     #[test]

@@ -183,7 +183,11 @@ warning     = "#fe8019"   # rate-limit warnings, y/n prompts
 error       = "#fb4934"   # errors
 label_fallback = "blue"   # labels with unparsable GitHub colours
 code_bg     = "#1d2021"   # fenced/inline code background
-code_fg     = "#ebdbb2"   # fenced/inline code text
+code_fg     = "#ebdbb2"   # fenced/inline code text, and unclassified tokens
+code_keyword = "#fb4934"  # keywords, and json/yaml/toml keys
+code_string  = "#b8bb26"  # string literals
+code_comment = "#928374"  # comments
+code_number  = "#d3869b"  # numeric literals
 
 [color_profiles.mono]
 accent = "white"
@@ -191,6 +195,21 @@ selected_bg = "8"
 ```
 
 Every entry is optional — unset entries keep the built-in colour. Values accept ratatui colour names (`"cyan"`, `"lightgreen"`, `"dark gray"`), hex (`"#2d5aa0"`), or ANSI indexes (`"8"`). Naming a profile that isn't defined is a startup error listing the profiles that are.
+
+#### Syntax highlighting
+
+Fenced code blocks are token-highlighted for `sh`, `yaml`, `json`, `toml`, `rust`, `python`, `go` and `js`/`ts` (with the usual aliases — `bash`, `yml`, `rs`, `py`, `golang`, `typescript`, …). Any other info string, or none, renders the block flat in `code_fg` exactly as before.
+
+There's no on/off switch: point the four `code_*` token colours at `code_fg` to turn highlighting off.
+
+```toml
+[color_profiles.flat]
+code_fg      = "#dcdcdc"
+code_keyword = "#dcdcdc"
+code_string  = "#dcdcdc"
+code_comment = "#dcdcdc"
+code_number  = "#dcdcdc"
+```
 
 ## Keys
 
