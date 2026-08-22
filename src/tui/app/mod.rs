@@ -280,7 +280,7 @@ pub(crate) mod prelude {
     pub use chrono::{DateTime, NaiveDate, Utc};
 
     pub use crate::provider::types::{
-        Comment, FormOptions, IdName, Issue, IssueState, NewIssueParams, PrRef, PrSummary,
+        Comment, FormOptions, IdName, Issue, IssueRef, IssueState, NewIssueParams, PrLookup, PrRef,
         RateLimitData, RepoIssues, RepoLabel, parse_pr_links, priority_value, priority_value_rank,
     };
 

@@ -9,9 +9,9 @@ use crate::provider::http::{
     parse_at,
 };
 use crate::provider::types::{
-    CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueState, Label,
-    NewIssueParams, PrRef, PrState, PrSummary, RateLimitData, RepoIssues, RepoLabel,
-    ReviewDecision, ReviewSummary, WorkflowRunInfo,
+    CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueRef, IssueState,
+    Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary, RateLimitData, RepoIssues,
+    RepoLabel, ReviewDecision, ReviewSummary, WorkflowRunInfo,
 };
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
@@ -599,7 +599,7 @@ impl Client {
     /// Fetch a summary of a linked pull request: title/description, state,
     /// review status, checks, the PR's own Actions runs, and recent runs on
     /// the repo's default branch (the "merge to main" runs).
-    pub async fn pull_request(&self, pr: &PrRef) -> Result<PrSummary> {
+    pub async fn pull_request(&self, pr: &PrRef) -> Result<PrLookup> {
         let data = self
             .graphql(
                 PR_SUMMARY_QUERY,
@@ -613,7 +613,7 @@ impl Client {
             )));
         }
         let repo: PrRepoResponse = parse_at(&data, &["repository"])?;
-        map_pr_summary(pr.clone(), repo)
+        map_pr_lookup(pr.clone(), repo)
     }
 }
 
@@ -909,6 +909,11 @@ query($owner: String!, $name: String!, $number: Int!) {
         }
       }
     }
+    issue(number: $number) {
+      number
+      title
+      url
+    }
     defaultBranchRef {
       name
       target {
@@ -933,7 +938,19 @@ fragment CheckSuiteFields on CheckSuite {
 #[serde(rename_all = "camelCase")]
 struct PrRepoResponse {
     pull_request: Option<PullRequestNode>,
+    /// Same number, looked up as an issue. Exactly one of this and
+    /// `pull_request` is non-null for a number that exists — GitHub allocates
+    /// both from one per-repo sequence. `issue` is a single node rather than a
+    /// connection, so it adds no points (`docs/graphql-api-cost.md`).
+    issue: Option<PrIssueNode>,
     default_branch_ref: Option<DefaultBranchRefNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrIssueNode {
+    number: u64,
+    title: String,
+    url: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1148,10 +1165,24 @@ fn summarize_reviews(nodes: Vec<ReviewNode>, decision: Option<ReviewDecision>) -
     summary
 }
 
-fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
-    let node = data
-        .pull_request
-        .ok_or_else(|| ProviderError::Shape(format!("no such PR {}", pr.label())))?;
+/// Resolve one reference. A [`PrRef`] parsed from an issue thread is only a
+/// candidate — the shorthand forms (`o/r#N`, `#N`) cannot distinguish a pull
+/// request from an issue, because GitHub numbers both from one per-repo
+/// sequence. So a null `pullRequest` with a non-null `issue` is a normal
+/// outcome, not a failure; only both being null is an error.
+fn map_pr_lookup(pr: PrRef, data: PrRepoResponse) -> Result<PrLookup> {
+    let Some(node) = data.pull_request else {
+        return match data.issue {
+            Some(i) => Ok(PrLookup::Issue(IssueRef {
+                owner: pr.owner,
+                repo: pr.repo,
+                number: i.number,
+                title: i.title,
+                url: i.url,
+            })),
+            None => Err(ProviderError::Shape(format!("no such PR {}", pr.label()))),
+        };
+    };
 
     let (checks, pr_runs) = match node.commits.nodes.into_iter().next() {
         Some(PrCommitWrapper { commit }) => {
@@ -1200,7 +1231,7 @@ fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
         None => (String::new(), Vec::new()),
     };
 
-    Ok(PrSummary {
+    Ok(PrLookup::Pr(Box::new(PrSummary {
         title: node.title,
         body: node.body,
         state: node.state.into(),
@@ -1218,7 +1249,7 @@ fn map_pr_summary(pr: PrRef, data: PrRepoResponse) -> Result<PrSummary> {
         default_branch_name,
         default_branch_runs,
         pr,
-    })
+    })))
 }
 
 /// Thin delegation to the inherent methods above, which keep their own
@@ -1288,7 +1319,7 @@ impl crate::provider::IssueProvider for Client {
         true
     }
 
-    async fn pull_request(&self, pr: &PrRef) -> Result<PrSummary> {
+    async fn pull_request(&self, pr: &PrRef) -> Result<PrLookup> {
         self.pull_request(pr).await
     }
 
@@ -1534,6 +1565,15 @@ mod tests {
         }
     }
 
+    /// Unwrap the PR case; panics on the issue case, which these tests never
+    /// exercise (see `pr_lookup_*` below for that side).
+    fn expect_pr(lookup: PrLookup) -> PrSummary {
+        match lookup {
+            PrLookup::Pr(s) => *s,
+            PrLookup::Issue(i) => panic!("expected a PR, got issue {}", i.label()),
+        }
+    }
+
     #[test]
     fn pr_summary_parses_mixed_check_union_and_reviews() {
         let raw = serde_json::json!({
@@ -1598,7 +1638,7 @@ mod tests {
             }
         });
         let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
-        let summary = map_pr_summary(sample_pr_ref(), repo).unwrap();
+        let summary = expect_pr(map_pr_lookup(sample_pr_ref(), repo).unwrap());
 
         assert_eq!(summary.state, PrState::Open);
         assert!(!summary.is_draft);
@@ -1654,7 +1694,7 @@ mod tests {
             "defaultBranchRef": null
         });
         let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
-        let summary = map_pr_summary(sample_pr_ref(), repo).unwrap();
+        let summary = expect_pr(map_pr_lookup(sample_pr_ref(), repo).unwrap());
 
         assert!(summary.is_draft);
         assert!(summary.checks.contexts.is_empty());
@@ -1679,6 +1719,60 @@ mod tests {
         ] {
             assert!(PR_SUMMARY_QUERY.contains(field), "missing {field}");
         }
+    }
+
+    /// #129 depends on one query answering both questions. Losing this field
+    /// would not fail any other test — a shorthand naming an issue would just
+    /// start reporting "no such PR" again — so it is pinned here.
+    #[test]
+    fn pr_summary_query_also_looks_the_number_up_as_an_issue() {
+        assert!(
+            PR_SUMMARY_QUERY.contains("issue(number: $number)"),
+            "the issue lookup is what tells an issue reference from a missing one"
+        );
+    }
+
+    /// #129: a shorthand like `o/r#72` cannot say whether 72 is a PR or an
+    /// issue, so resolving it to an issue is a normal outcome.
+    #[test]
+    fn pr_lookup_reports_an_issue_when_the_number_is_not_a_pr() {
+        let raw = serde_json::json!({
+            "pullRequest": null,
+            "issue": {
+                "number": 72,
+                "title": "Not a PR at all",
+                "url": "https://github.com/pgmac-net/gh-issues-tui/issues/72"
+            },
+            "defaultBranchRef": null
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        let lookup = map_pr_lookup(sample_pr_ref(), repo).unwrap();
+
+        let PrLookup::Issue(i) = lookup else {
+            panic!("expected the issue case");
+        };
+        assert_eq!(i.label(), "pgmac-net/gh-issues-tui#72");
+        assert_eq!(i.title, "Not a PR at all");
+        assert_eq!(
+            i.url,
+            "https://github.com/pgmac-net/gh-issues-tui/issues/72"
+        );
+    }
+
+    #[test]
+    fn pr_lookup_errors_when_the_number_is_neither() {
+        let raw = serde_json::json!({
+            "pullRequest": null,
+            "issue": null,
+            "defaultBranchRef": null
+        });
+        let repo: PrRepoResponse = serde_json::from_value(raw).unwrap();
+        let err = map_pr_lookup(sample_pr_ref(), repo).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no such PR pgmac-net/gh-issues-tui#72"),
+            "unexpected error: {err}"
+        );
     }
 
     // ---- Characterisation goldens (issue #87) ---------------------------

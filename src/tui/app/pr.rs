@@ -15,8 +15,10 @@ pub struct PrState {
     /// The PR currently being fetched or shown; guards against a stale
     /// response landing after the target moved on.
     pub target: Option<PrRef>,
-    /// `None` while the summary fetch for `target` is in flight.
-    pub summary: Option<Result<PrSummary, String>>,
+    /// `None` while the fetch for `target` is in flight. Once landed it may be
+    /// a PR summary or — since the shorthand forms are ambiguous — the issue
+    /// the number turned out to name.
+    pub summary: Option<Result<PrLookup, String>>,
     pub scroll: u16,
     /// Index into `ui::pr_targets` — the open-able row `o`/Enter will open
     /// and the popup highlights. `Tab`/`Shift+Tab` move it.
@@ -49,7 +51,7 @@ impl PrState {
 
     /// Deliver a fetch. Dropped if `pr` is no longer the target (the popup
     /// was closed or retargeted before the response landed).
-    pub fn set_summary(&mut self, pr: &PrRef, result: Result<PrSummary, String>) {
+    pub fn set_summary(&mut self, pr: &PrRef, result: Result<PrLookup, String>) {
         if self.target.as_ref() == Some(pr) {
             self.summary = Some(result);
         }
@@ -121,8 +123,29 @@ impl PrState {
 }
 
 impl App {
-    /// PR links referenced by the selected issue's body and its loaded
-    /// comment thread, body first then comments in display order.
+    /// The `(owner, repo)` that a bare `#N` in the selected thread refers to.
+    ///
+    /// The owner is read from the repo's own URL rather than assumed equal to
+    /// [`App::org`], so it stays correct if a list ever mixes owners; `org` is
+    /// only the fallback when the URL is not the usual
+    /// `https://github.com/{owner}/{repo}` shape.
+    pub fn current_repo(&self) -> Option<(String, String)> {
+        let repo = self.selected_repo()?;
+        let owner = repo
+            .repo_url
+            .trim_end_matches('/')
+            .rsplit('/')
+            .nth(1)
+            .map(str::to_string)
+            .unwrap_or_else(|| self.org.clone());
+        Some((owner, repo.repo.clone()))
+    }
+
+    /// References found in the selected issue's body and its loaded comment
+    /// thread, body first then comments in display order.
+    ///
+    /// These are *candidates*: the `o/r#N` and `#N` shorthands cannot be told
+    /// apart from issue references, so some may resolve to issues (#129).
     pub fn collect_pr_links(&self) -> Vec<PrRef> {
         let mut text = String::new();
         if let Some(issue) = self.selected_issue() {
@@ -135,7 +158,20 @@ impl App {
                 text.push('\n');
             }
         }
-        parse_pr_links(&text)
+        let current = self.current_repo();
+        parse_pr_links(
+            &text,
+            current.as_ref().map(|(o, r)| (o.as_str(), r.as_str())),
+        )
+    }
+
+    /// The issue a reference resolved to, when it turned out not to be a pull
+    /// request (#129). Cloned so callers can act on it while mutating `self`.
+    pub fn pr_issue_ref(&self) -> Option<IssueRef> {
+        match self.pr.summary.as_ref()? {
+            Ok(PrLookup::Issue(i)) => Some(i.clone()),
+            _ => None,
+        }
     }
 
     /// Open the summary popup for a single PR; the caller spawns the fetch.

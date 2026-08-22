@@ -278,7 +278,9 @@ The selection does not follow the moved issue after the refetch — GitHub does 
 
 ### Linked PR summaries
 
-With the detail pane open, `P` scans the issue's body and its loaded comment thread for `github.com/<owner>/<repo>/pull/<N>` links (bare `#N` shorthand is deliberately not matched — it's ambiguous between an issue and a PR). One link opens its summary directly; several open a picker to choose. The summary popup shows the PR's title/description, state (open/closed/merged/draft), base←head branches and diffstat, review status (GitHub's overall decision plus per-reviewer approve/changes-requested/comment counts), issue-comment and review-thread counts, the head commit's checks, the PR's own Actions runs, and recent Actions runs on the repo's default branch (the "merge to main" runs). `j`/`k` scroll it; `Esc`/`q` closes back to the detail pane.
+With the detail pane open, `P` scans the issue's body and its loaded comment thread for references in three forms: `github.com/<owner>/<repo>/pull/<N>` links, `<owner>/<repo>#<N>` shorthand, and bare `#<N>` (resolved against the repo the issue belongs to). One reference opens its summary directly; several open a picker to choose. The summary popup shows the PR's title/description, state (open/closed/merged/draft), base←head branches and diffstat, review status (GitHub's overall decision plus per-reviewer approve/changes-requested/comment counts), issue-comment and review-thread counts, the head commit's checks, the PR's own Actions runs, and recent Actions runs on the repo's default branch (the "merge to main" runs). `j`/`k` scroll it; `Esc`/`q` closes back to the detail pane.
+
+The shorthands cannot say whether a number is a PR or an issue — GitHub draws both from one per-repo sequence — so a candidate is only resolved when you open it. If it turns out to be an issue, the popup says so and `o`/Enter jumps the selector to it, falling back to opening it in a browser when it isn't in the loaded data. References inside code fences and inline code spans are ignored. See `docs/pr-url-matching.md`.
 
 ### Harness sessions
 
