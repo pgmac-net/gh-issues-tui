@@ -14,6 +14,7 @@
 //! against the output line, never the source line.
 
 mod fence;
+mod highlight;
 mod inline;
 mod table;
 
@@ -212,6 +213,21 @@ fn ordered_rest(trimmed: &str) -> Option<(&str, &str)> {
 
 fn code_style(t: &Theme) -> Style {
     Style::default().fg(t.code_fg).bg(t.code_bg)
+}
+
+/// Code style for one scanned token (#122). Every kind keeps `code_bg`, so a
+/// highlighted row fills exactly as a flat one does; only the foreground
+/// moves. [`highlight::TokenKind::Text`] is `code_fg`, i.e. pre-#122
+/// rendering.
+fn token_style(t: &Theme, kind: highlight::TokenKind) -> Style {
+    let fg = match kind {
+        highlight::TokenKind::Keyword => t.code_keyword,
+        highlight::TokenKind::Str => t.code_string,
+        highlight::TokenKind::Comment => t.code_comment,
+        highlight::TokenKind::Number => t.code_number,
+        highlight::TokenKind::Text => t.code_fg,
+    };
+    Style::default().fg(fg).bg(t.code_bg)
 }
 
 fn link_style(t: &Theme) -> Style {
