@@ -79,12 +79,26 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnessConfig {
     /// Program and arguments. Supports the `{owner}`, `{repo}`, `{number}`,
-    /// `{ref}` and `{url}` placeholders.
+    /// `{ref}`, `{url}` and (when `bg_dispatch` is set) `{bg_id}`
+    /// placeholders.
     pub command: Vec<String>,
 
     /// Overrides the top-level `workspace_roots` for this harness only.
     #[serde(default)]
     pub workspace_roots: Option<Vec<String>>,
+
+    /// When set, launching this harness runs `bg_dispatch` first (not on a
+    /// PTY) to start a *background* session, looks it up by name via
+    /// `claude agents --json`, then runs `command` — with `{bg_id}` expanded
+    /// to the id found — as the PTY child instead of dispatching directly.
+    ///
+    /// This is what lets a session outlive `gh-issues-tui` quitting: the
+    /// background session runs under Claude Code's own supervisor, and
+    /// `command`'s PTY is only ever a viewer onto it (`claude attach`), never
+    /// the session itself. Absent for harnesses with no such split (e.g.
+    /// `opencode`, which just runs and exits).
+    #[serde(default)]
+    pub bg_dispatch: Option<Vec<String>>,
 }
 
 /// Harnesses that ship working out of the box.
@@ -100,11 +114,15 @@ pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
         (
             "claude".to_string(),
             HarnessConfig {
-                command: vec![
-                    "claude".into(),
-                    "/pgmac-workflows:pickup-ticket {ref}".into(),
-                ],
+                command: vec!["claude".into(), "attach".into(), "{bg_id}".into()],
                 workspace_roots: None,
+                bg_dispatch: Some(vec![
+                    "claude".into(),
+                    "--bg".into(),
+                    "--name".into(),
+                    "{ref}".into(),
+                    "/pgmac-workflows:pickup-ticket {ref}".into(),
+                ]),
             },
         ),
         (
@@ -112,6 +130,7 @@ pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
             HarnessConfig {
                 command: vec!["opencode".into(), "run".into(), "work on {url}".into()],
                 workspace_roots: None,
+                bg_dispatch: None,
             },
         ),
     ])
@@ -379,6 +398,27 @@ mod tests {
         let cfg = cfg_from("default_org = \"pgmac-net\"\n");
         assert_eq!(harness_names(&cfg), vec!["claude", "opencode"]);
         assert_eq!(cfg.harnesses["claude"].command[0], "claude");
+    }
+
+    #[test]
+    fn the_builtin_claude_harness_dispatches_to_the_background_and_attaches() {
+        // The PTY only ever runs `claude attach`, never the agent directly —
+        // that split is what lets the session outlive gh-issues-tui quitting.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        let claude = &cfg.harnesses["claude"];
+        assert_eq!(claude.command, vec!["claude", "attach", "{bg_id}"]);
+        let dispatch = claude.bg_dispatch.as_ref().expect("claude dispatches");
+        assert!(dispatch.contains(&"--bg".to_string()));
+        assert!(dispatch.contains(&"--name".to_string()));
+        assert!(dispatch.contains(&"{ref}".to_string()));
+    }
+
+    #[test]
+    fn opencode_has_no_bg_dispatch() {
+        // It runs non-interactively and exits on its own — nothing to adopt
+        // a viewer onto later.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        assert_eq!(cfg.harnesses["opencode"].bg_dispatch, None);
     }
 
     #[test]

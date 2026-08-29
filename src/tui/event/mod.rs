@@ -16,7 +16,7 @@ use crate::provider::error::RATE_LIMIT_MSG_PREFIX;
 use crate::provider::types::{Comment, FormOptions, PrLookup, PrRef, RepoIssues, RepoLabel};
 
 use super::app::{App, Mode, SessionId, priority_set_options};
-use super::harness::{HarnessRegistry, HarnessSettings};
+use super::harness::{HarnessRegistry, HarnessSettings, list_bg_sessions};
 use super::theme::Theme;
 use super::ui;
 
@@ -123,6 +123,11 @@ async fn event_loop(
         copy_format,
     );
     app.set_hide_empty_default(hide_empty_repos);
+    // Adopt any background sessions still running from a previous run — the
+    // fix for a session otherwise being lost the moment gh-issues-tui quits.
+    // Best-effort: no `claude` on PATH, or the call failing, just means
+    // nothing is adopted, not a startup error.
+    reconcile_bg_sessions(&mut app, &harness_settings);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut keys = EventStream::new();
     // The PTYs live here, not on `App` — see `tui::harness`.
@@ -200,6 +205,33 @@ async fn event_loop(
             registry.kill_all();
             return Ok(());
         }
+    }
+}
+
+/// Ask `claude agents` for sessions still running from a previous launch and
+/// register any that match `owner/repo#number` for a configured `bg_dispatch`
+/// harness — see `HarnessState::reconcile` for the matching rule. Registered
+/// with metadata only; `HarnessCtx::launch`'s `Attach` path opens the actual
+/// PTY viewer the first time the session is attached.
+fn reconcile_bg_sessions(app: &mut App, settings: &HarnessSettings) {
+    let bg_harnesses: Vec<&str> = settings
+        .harnesses
+        .iter()
+        .filter(|(_, cfg)| cfg.bg_dispatch.is_some())
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if bg_harnesses.is_empty() {
+        return;
+    }
+    let Ok(sessions) = list_bg_sessions() else {
+        return;
+    };
+    let named: Vec<(String, String)> = sessions
+        .into_iter()
+        .filter_map(|s| Some((s.id, s.name?)))
+        .collect();
+    for harness in bg_harnesses {
+        app.harness.reconcile(harness, &named);
     }
 }
 

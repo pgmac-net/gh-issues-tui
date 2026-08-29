@@ -28,6 +28,18 @@ impl HarnessCtx<'_> {
         match app.harness.find_by_issue(issue_ref) {
             Some(existing) if existing.status.is_running() => {
                 let id = existing.id;
+                let bg_id = existing.bg_id.clone();
+                // A session adopted from a previous run (`reconcile`) has
+                // metadata but no PTY in *this* process's registry yet —
+                // open the `claude attach` viewer onto it now, lazily.
+                if !self.registry.has_pty(id)
+                    && let Some(bg_id) = bg_id
+                    && let Err(e) = self.attach_reconciled(app, id, &bg_id)
+                {
+                    app.harness.remove(id);
+                    app.status = Some(e);
+                    return;
+                }
                 app.harness.attach(id);
                 app.mode = Mode::Harness;
                 app.status = Some(format!("{issue_ref} already has a session"));
@@ -75,10 +87,20 @@ impl HarnessCtx<'_> {
             .registry
             .spawn(id, harness, cfg, &ctx, &cwd, areas.pane, self.tx)
         {
-            Ok(()) => {
+            Ok(finished_fast) => {
+                if let Some(bg_id) = self.registry.bg_id(id) {
+                    app.harness.set_bg_id(id, bg_id.to_string());
+                }
                 app.harness.attach(id);
                 app.mode = Mode::Harness;
-                app.status = Some(format!("{harness} started in {}", cwd.display()));
+                app.status = Some(if finished_fast {
+                    format!(
+                        "{harness} started in {} — already finished; check the pane",
+                        cwd.display()
+                    )
+                } else {
+                    format!("{harness} started in {}", cwd.display())
+                });
             }
             Err(e) => {
                 // Never leave a registered session with no process behind it.
@@ -88,8 +110,39 @@ impl HarnessCtx<'_> {
         }
     }
 
+    /// Open a PTY viewer onto a session `reconcile` adopted from a previous
+    /// run, resolving its workspace from `issue_ref` alone — a reconciled
+    /// session has no cached `LaunchContext`, only its metadata.
+    fn attach_reconciled(&mut self, app: &App, id: SessionId, bg_id: &str) -> Result<(), String> {
+        let meta = app
+            .harness
+            .get(id)
+            .ok_or_else(|| "session vanished".to_string())?;
+        let harness = meta.harness.clone();
+        let (owner, repo) = parse_owner_repo(&meta.issue_ref)
+            .ok_or_else(|| format!("malformed issue ref {}", meta.issue_ref))?;
+        let cfg = self
+            .settings
+            .get(&harness)
+            .ok_or_else(|| format!("unknown harness \"{harness}\""))?;
+        let cwd = self.settings.workspace(&harness, owner, repo)?;
+        let areas = layout::harness_areas(layout::from_terminal_size());
+        self.registry
+            .attach_bg(id, bg_id, &cfg.command, &cwd, areas.pane, self.tx)
+    }
+
     /// Kill a live session's child and drop its PTY.
+    ///
+    /// A reconciled session that was never attached this run has no
+    /// `LiveSession` for `registry.kill` to find — `claude stop` is sent
+    /// directly by id in that case, or the underlying background session
+    /// would outlive being dismissed from the picker.
     pub(crate) fn kill(&mut self, app: &mut App, id: SessionId) {
+        if !self.registry.has_pty(id)
+            && let Some(bg_id) = app.harness.get(id).and_then(|m| m.bg_id.clone())
+        {
+            crate::tui::harness::stop_bg(&bg_id);
+        }
         self.registry.kill(id);
         self.registry.remove(id);
         app.harness.remove(id);
@@ -97,6 +150,14 @@ impl HarnessCtx<'_> {
             app.mode = Mode::Normal;
         }
     }
+}
+
+/// Split `owner/repo#number` back into `(owner, repo)` — the inverse of
+/// `App::selected_issue_ref`'s format, used by `attach_reconciled` to
+/// resolve a workspace without a `LaunchContext`.
+fn parse_owner_repo(issue_ref: &str) -> Option<(&str, &str)> {
+    let (owner_repo, _number) = issue_ref.split_once('#')?;
+    owner_repo.split_once('/')
 }
 
 /// Build the placeholder context from the selected issue.
@@ -669,6 +730,115 @@ mod tests {
             "got {:?}",
             app.status
         );
+    }
+
+    // --- reconciled sessions (adopted from `claude agents` at startup) ---
+
+    #[test]
+    fn a_reconciled_session_opens_a_pty_lazily_on_first_attach() {
+        // Mirrors what `reconcile` produces: metadata with a bg_id,
+        // registered directly rather than through `spawn`, so the registry
+        // starts with no `LiveSession` for it — the first `A`/attach must
+        // open one, against `claude attach {bg_id}` (a real `sh` stand-in
+        // here), not assume one already exists.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut app, _) = app_with_issue(&[]);
+        let id = app
+            .harness
+            .register("org/r#1".into(), "probe".into(), String::new());
+        app.harness.set_bg_id(id, "42".into());
+
+        let mut harnesses = std::collections::HashMap::new();
+        harnesses.insert(
+            "probe".to_string(),
+            crate::config::HarnessConfig {
+                command: vec!["sh".into(), "-c".into(), "echo bg-{bg_id}".into()],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        );
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let mut h = Harness {
+            registry: HarnessRegistry::default(),
+            settings: HarnessSettings {
+                default_harness: None,
+                harnesses,
+                workspace_roots: Vec::new(),
+                cwd_repo: Some(("org".into(), "r".into())),
+                cwd: tmp.path().to_path_buf(),
+            },
+            tx,
+            _rx,
+        };
+
+        h.ctx().launch(&mut app, "org/r#1", "probe");
+
+        assert!(
+            h.registry.has_pty(id),
+            "the first attach must open a real pty for a reconciled session"
+        );
+        assert_eq!(app.harness.active, Some(id));
+        assert_eq!(app.mode, Mode::Harness);
+    }
+
+    #[test]
+    fn a_second_attach_does_not_reopen_the_pty() {
+        // Once attached in this process, a reconciled session behaves like
+        // any other running one — `has_pty` short-circuits `attach_reconciled`.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut app, _) = app_with_issue(&[]);
+        let id = app
+            .harness
+            .register("org/r#1".into(), "probe".into(), String::new());
+        app.harness.set_bg_id(id, "42".into());
+
+        let mut harnesses = std::collections::HashMap::new();
+        harnesses.insert(
+            "probe".to_string(),
+            crate::config::HarnessConfig {
+                command: vec!["sh".into(), "-c".into(), "sleep 5".into()],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        );
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let mut h = Harness {
+            registry: HarnessRegistry::default(),
+            settings: HarnessSettings {
+                default_harness: None,
+                harnesses,
+                workspace_roots: Vec::new(),
+                cwd_repo: Some(("org".into(), "r".into())),
+                cwd: tmp.path().to_path_buf(),
+            },
+            tx,
+            _rx,
+        };
+
+        h.ctx().launch(&mut app, "org/r#1", "probe");
+        app.harness.detach();
+        h.ctx().launch(&mut app, "org/r#1", "probe");
+
+        assert_eq!(app.harness.active, Some(id));
+        assert_eq!(app.status.as_deref(), Some("org/r#1 already has a session"));
+    }
+
+    #[test]
+    fn killing_a_never_attached_reconciled_session_still_removes_it() {
+        // `registry.kill` alone is a no-op with no `LiveSession` for `id` —
+        // this pins that `HarnessCtx::kill` falls back to stopping the
+        // background session directly rather than silently doing nothing.
+        let (mut app, _) = app_with_issue(&[]);
+        let id = app
+            .harness
+            .register("org/r#1".into(), "claude".into(), String::new());
+        app.harness.set_bg_id(id, "not-a-real-session".into());
+        let mut h = fixture(None);
+
+        h.ctx().kill(&mut app, id);
+
+        assert!(app.harness.sessions.is_empty());
+        assert!(!h.registry.has_pty(id));
     }
 
     // --- the normal-mode entry points ------------------------------------

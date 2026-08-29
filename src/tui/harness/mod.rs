@@ -37,6 +37,12 @@ struct LiveSession {
     writer: Box<dyn Write + Send>,
     parser: Arc<Mutex<vt100::Parser>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Set when this session was dispatched via `bg_dispatch`: the id of the
+    /// *actual* background session, as opposed to the local PTY child (a
+    /// `claude attach` viewer) tracked above. `kill` stops this instead of
+    /// the viewer, and `kill_all` (quit) leaves it running rather than
+    /// stopping it — the PTY is only ever a window onto it.
+    bg_id: Option<String>,
 }
 
 /// Every running or exited session's PTY, keyed by the id handed out by
@@ -130,7 +136,10 @@ pub fn expand_argv(command: &[String], ctx: &LaunchContext) -> Vec<String> {
         .collect()
 }
 
-/// Stamp the child's environment with where it came from (#132).
+/// Where the child came from (#132), as env var pairs rather than stamped
+/// straight onto a builder — `bg_dispatch` needs these on the *dispatch*
+/// process (`std::process::Command`) while a direct exec needs them on the
+/// PTY's `CommandBuilder`, and both should stay in lock-step with one list.
 ///
 /// The agent already learns its *ticket* from argv — the builtin `claude`
 /// entry passes `/pgmac-workflows:pickup-ticket {ref}` as the prompt. What it
@@ -142,18 +151,20 @@ pub fn expand_argv(command: &[String], ctx: &LaunchContext) -> Vec<String> {
 /// `GH_ISSUES_TUI` doubles as the marker and the version, so a hook can both
 /// detect the launcher and branch on it with one variable.
 ///
-/// These go through `CommandBuilder::env`, so values are never parsed by a
+/// Callers set these through an env-setting method that never invokes a
 /// shell — issue titles containing `$(…)` or backticks stay inert, the same
 /// property the argv array gives `expand_argv`.
-fn set_provenance_env(cmd: &mut CommandBuilder, harness_name: &str, ctx: &LaunchContext) {
-    cmd.env("GH_ISSUES_TUI", env!("CARGO_PKG_VERSION"));
-    cmd.env("GH_ISSUES_TUI_HARNESS", harness_name);
-    cmd.env("GH_ISSUES_TUI_OWNER", &ctx.owner);
-    cmd.env("GH_ISSUES_TUI_REPO", &ctx.repo);
-    cmd.env("GH_ISSUES_TUI_NUMBER", ctx.number.to_string());
-    cmd.env("GH_ISSUES_TUI_ISSUE", ctx.issue_ref());
-    cmd.env("GH_ISSUES_TUI_URL", &ctx.url);
-    cmd.env("GH_ISSUES_TUI_TITLE", &ctx.title);
+fn provenance_env(harness_name: &str, ctx: &LaunchContext) -> [(&'static str, String); 8] {
+    [
+        ("GH_ISSUES_TUI", env!("CARGO_PKG_VERSION").to_string()),
+        ("GH_ISSUES_TUI_HARNESS", harness_name.to_string()),
+        ("GH_ISSUES_TUI_OWNER", ctx.owner.clone()),
+        ("GH_ISSUES_TUI_REPO", ctx.repo.clone()),
+        ("GH_ISSUES_TUI_NUMBER", ctx.number.to_string()),
+        ("GH_ISSUES_TUI_ISSUE", ctx.issue_ref()),
+        ("GH_ISSUES_TUI_URL", ctx.url.clone()),
+        ("GH_ISSUES_TUI_TITLE", ctx.title.clone()),
+    ]
 }
 
 /// Locate the clone a harness should run in.
@@ -207,12 +218,129 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
+/// Run `argv` to completion in `cwd`, off the PTY — used for the `bg_dispatch`
+/// step, which only needs to hand off to the supervisor and exit. Its own
+/// stdout is not parsed: the freshly named session is looked up afterward via
+/// `claude agents --json`, a stable, JSON-structured format rather than a
+/// human-readable line guessed at.
+///
+/// Captured with `.output()`, not inherited: `claude --bg` prints its own
+/// "backgrounded · id · name / claude attach … / claude logs … / claude
+/// stop …" banner, and gh-issues-tui has the terminal in raw mode for the
+/// TUI — an inherited child writing straight to it corrupts the frame until
+/// the next full redraw. Only surfaced (in `stderr`) if the dispatch failed.
+fn run_to_completion(
+    argv: &[String],
+    cwd: &Path,
+    harness_name: &str,
+    ctx: &LaunchContext,
+) -> Result<(), String> {
+    let Some((program, args)) = argv.split_first() else {
+        return Err("bg_dispatch command is empty".to_string());
+    };
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("TERM", "xterm-256color");
+    // This process is the actual agent (the PTY below only ever attaches a
+    // viewer to it), so it — not the viewer — gets the provenance env.
+    for (k, v) in provenance_env(harness_name, ctx) {
+        cmd.env(k, v);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("starting {program} failed: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+            "{program} exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ))
+    }
+}
+
+/// One row of `claude agents --json` — just enough to match a session back
+/// to the issue ref it was dispatched with, and to notice one that already
+/// finished (`state`) before `spawn` even got to attach a viewer.
+#[derive(serde::Deserialize)]
+pub struct BgSession {
+    pub id: String,
+    pub name: Option<String>,
+    /// `"working"` while the agent has an active turn, `"done"` once it
+    /// hasn't — the shape observed live from `claude agents --json`, not
+    /// otherwise documented. `spawn` uses this only as a coarse "finished
+    /// unusually fast" signal, never to guess *why*.
+    pub state: Option<String>,
+}
+
+/// List currently-running background sessions. Deliberately not `--all`: a
+/// session that already stopped falls out of the default listing, so this
+/// (and `find_bg_agent_by_name`, built on it) never returns a stale hit from
+/// an earlier run that happened to reuse the same `--name`.
+///
+/// Used both right after dispatch (to resolve the id `spawn` just started)
+/// and at `gh-issues-tui` startup (to adopt sessions still running from a
+/// previous run — see `HarnessState::reconcile` in `tui::app::harness`).
+pub fn list_bg_sessions() -> Result<Vec<BgSession>, String> {
+    let output = std::process::Command::new("claude")
+        .args(["agents", "--json"])
+        .output()
+        .map_err(|e| format!("listing background agents failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "claude agents --json exited with {}",
+            output.status
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("parsing background agent list failed: {e}"))
+}
+
+fn find_bg_agent_by_name(name: &str) -> Result<BgSession, String> {
+    list_bg_sessions()?
+        .into_iter()
+        .find(|a| a.name.as_deref() == Some(name))
+        .ok_or_else(|| {
+            format!("no background session named {name} (it may have exited immediately)")
+        })
+}
+
+/// Stop a background session directly by its id, with no local PTY required
+/// — the path for a session adopted from `claude agents` at startup that was
+/// never attached in this process, so `HarnessRegistry::kill` has no
+/// `LiveSession` to find it through.
+///
+/// `.output()`, not inherited: `claude stop` prints its own "stopped <id>"
+/// line, and this runs while the TUI has the terminal in raw mode.
+pub fn stop_bg(bg_id: &str) {
+    let _ = std::process::Command::new("claude")
+        .args(["stop", bg_id])
+        .output();
+}
+
 impl HarnessRegistry {
     /// Start `harness` for `ctx` under `id`, on a PTY sized to `(rows, cols)`.
+    ///
+    /// When `harness.bg_dispatch` is set, this first runs it to completion
+    /// (not on the PTY) to start a real background session under Claude
+    /// Code's own supervisor, looks that session up by name, and only then
+    /// opens the PTY — against `claude attach <id>`, not the original
+    /// prompt. The PTY is a viewer onto that session, not the session
+    /// itself, which is what lets it outlive this process.
     ///
     /// Two threads are spawned per session: one draining the PTY into the
     /// parser, one waiting on the child. Both report through `tx` and exit on
     /// their own when the child goes away.
+    ///
+    /// Returns whether the dispatched session had already finished its first
+    /// turn (`state: "done"`, not `"working"`) by the time it was looked up —
+    /// always `false` for a direct-exec harness, which has no such state to
+    /// check. A real ticket workflow shouldn't finish before this process has
+    /// even attached to it; this is not a guess at *why* it finished, only
+    /// that it did, which the caller can use to nudge the user to look.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &mut self,
@@ -223,9 +351,76 @@ impl HarnessRegistry {
         cwd: &Path,
         pane: Rect,
         tx: &mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<bool, String> {
+        let (argv, bg_id, finished_fast) = match &harness.bg_dispatch {
+            Some(dispatch) => {
+                let dispatch_argv = expand_argv(dispatch, ctx);
+                run_to_completion(&dispatch_argv, cwd, harness_name, ctx)?;
+                let bg = find_bg_agent_by_name(&ctx.issue_ref())?;
+                let finished_fast = bg.state.as_deref() == Some("done");
+                let attach_argv = expand_argv(&harness.command, ctx)
+                    .into_iter()
+                    .map(|arg| arg.replace("{bg_id}", &bg.id))
+                    .collect();
+                (attach_argv, Some(bg.id), finished_fast)
+            }
+            None => (expand_argv(&harness.command, ctx), None, false),
+        };
+        // The dispatch process above is the actual agent for a bg_dispatch
+        // harness — this PTY is only ever a `claude attach` viewer onto it —
+        // but stamping provenance here too is harmless and keeps every
+        // direct-exec harness (opencode, or a user override with no
+        // bg_dispatch) getting it exactly as before.
+        self.open_pty(
+            id,
+            &argv,
+            cwd,
+            pane,
+            &provenance_env(harness_name, ctx),
+            tx,
+            bg_id,
+        )?;
+        Ok(finished_fast)
+    }
+
+    /// Open a PTY viewer onto `bg_id`, a background session this process did
+    /// not itself dispatch — found via `claude agents` and adopted into
+    /// `HarnessState` at startup with no PTY yet, only metadata. Only
+    /// `{bg_id}` is expanded in `attach_template` (the harness's `command`):
+    /// the local viewer needs none of `expand_argv`'s other placeholders.
+    pub fn attach_bg(
+        &mut self,
+        id: SessionId,
+        bg_id: &str,
+        attach_template: &[String],
+        cwd: &Path,
+        pane: Rect,
+        tx: &mpsc::UnboundedSender<AppEvent>,
+    ) -> Result<(), String> {
+        let argv: Vec<String> = attach_template
+            .iter()
+            .map(|arg| arg.replace("{bg_id}", bg_id))
+            .collect();
+        self.open_pty(id, &argv, cwd, pane, &[], tx, Some(bg_id.to_string()))
+    }
+
+    /// Open `argv` on a fresh PTY sized to `pane` and track it under `id`.
+    /// Shared by `spawn` (a fresh launch, dispatched or direct) and
+    /// `attach_bg` (adopting an already-running background session) — both
+    /// just need a PTY viewer onto some process; only how that process's argv
+    /// and env are decided differs.
+    #[allow(clippy::too_many_arguments)]
+    fn open_pty(
+        &mut self,
+        id: SessionId,
+        argv: &[String],
+        cwd: &Path,
+        pane: Rect,
+        env: &[(&'static str, String)],
+        tx: &mpsc::UnboundedSender<AppEvent>,
+        bg_id: Option<String>,
     ) -> Result<(), String> {
         let (rows, cols) = (pane.height, pane.width);
-        let argv = expand_argv(&harness.command, ctx);
         let Some((program, args)) = argv.split_first() else {
             return Err("harness command is empty".to_string());
         };
@@ -242,7 +437,9 @@ impl HarnessRegistry {
         // pinned because vt100 speaks xterm and the outer terminal's TERM
         // may name something it does not implement.
         cmd.env("TERM", "xterm-256color");
-        set_provenance_env(&mut cmd, harness_name, ctx);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
 
         let child = pair
             .slave
@@ -274,6 +471,7 @@ impl HarnessRegistry {
                 writer,
                 parser,
                 killer,
+                bg_id,
             },
         );
         Ok(())
@@ -282,6 +480,20 @@ impl HarnessRegistry {
     /// A session's parser, for the renderer.
     pub fn parser(&self, id: SessionId) -> Option<&Arc<Mutex<vt100::Parser>>> {
         self.map.get(&id).map(|s| &s.parser)
+    }
+
+    /// The background session id behind `id`, when it was started via
+    /// `bg_dispatch` rather than execed directly — `None` for a harness with
+    /// no such split (e.g. `opencode`), and for an id with no live PTY at all.
+    pub fn bg_id(&self, id: SessionId) -> Option<&str> {
+        self.map.get(&id).and_then(|s| s.bg_id.as_deref())
+    }
+
+    /// True once `spawn` (or `attach_bg`) has given `id` a live PTY in this
+    /// process. A session adopted from `claude agents` at startup has none
+    /// until it is actually attached.
+    pub fn has_pty(&self, id: SessionId) -> bool {
+        self.map.contains_key(&id)
     }
 
     /// Send raw bytes to a child. Errors are swallowed: a child that exited
@@ -319,8 +531,17 @@ impl HarnessRegistry {
     /// Ask a child to terminate. The `HarnessExited` event still arrives from
     /// the waiter thread, so the session is marked exited exactly once
     /// however it died.
+    ///
+    /// For a `bg_dispatch` session, killing the local `claude attach` viewer
+    /// alone would only close the window onto it — the background session
+    /// would keep running under the supervisor. `claude stop` is what
+    /// actually ends it; the viewer is killed too so the pane doesn't sit on
+    /// a session it can no longer reach.
     pub fn kill(&mut self, id: SessionId) {
         if let Some(session) = self.map.get_mut(&id) {
+            if let Some(bg_id) = &session.bg_id {
+                stop_bg(bg_id);
+            }
             let _ = session.killer.kill();
         }
     }
@@ -404,6 +625,44 @@ mod tests {
             url: "https://github.com/pgmac-net/gh-issues-tui/issues/23".into(),
             title: "Send to Claude/harness".into(),
         }
+    }
+
+    #[test]
+    fn bg_session_deserializes_the_real_claude_agents_json_shape() {
+        // Pinned against a live `claude agents --json` sample, not guessed —
+        // see the plan/session notes this test was added from.
+        let json = r#"[
+            {
+                "pid": 56552,
+                "id": "61db7f48",
+                "cwd": "/home/paul/pgmac",
+                "kind": "background",
+                "startedAt": 1787997678667,
+                "sessionId": "8c1d9143-1ea7-4480-b337-899f0de2768d",
+                "name": "reduce-arc-runner-churn-dqlite",
+                "status": "busy",
+                "state": "working"
+            }
+        ]"#;
+        let sessions: Vec<BgSession> = serde_json::from_str(json).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "61db7f48");
+        assert_eq!(
+            sessions[0].name.as_deref(),
+            Some("reduce-arc-runner-churn-dqlite")
+        );
+        assert_eq!(sessions[0].state.as_deref(), Some("working"));
+    }
+
+    #[test]
+    fn bg_session_tolerates_missing_optional_fields() {
+        // Extra unknown fields (pid, cwd, …) are ignored by default; a
+        // response missing `name`/`state` must not fail to parse.
+        let json = r#"[{"id": "abc123"}]"#;
+        let sessions: Vec<BgSession> = serde_json::from_str(json).unwrap();
+        assert_eq!(sessions[0].id, "abc123");
+        assert_eq!(sessions[0].name, None);
+        assert_eq!(sessions[0].state, None);
     }
 
     #[test]
@@ -537,6 +796,7 @@ mod tests {
         let harness = HarnessConfig {
             command: vec!["sh".into(), "-c".into(), "echo hello-{repo}; exit 3".into()],
             workspace_roots: None,
+            bg_dispatch: None,
         };
         registry
             .spawn(
