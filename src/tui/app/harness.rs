@@ -53,6 +53,16 @@ pub struct SessionMeta {
     /// session was started on, which is the useful thing. May be empty.
     pub title: String,
     pub status: SessionStatus,
+    /// The id of the underlying `claude --bg` session, for a harness with
+    /// `bg_dispatch` configured. `None` for a direct-exec harness (e.g.
+    /// `opencode`), where the PTY child *is* the session.
+    ///
+    /// Set right after a fresh launch's dispatch step resolves it, or at
+    /// startup by `reconcile` adopting a session from a previous run. Either
+    /// way, this can be `Some` while the event loop's own `HarnessRegistry`
+    /// has no live PTY for `id` yet — a reconciled session is metadata only
+    /// until it is actually attached.
+    pub bg_id: Option<String>,
 }
 
 /// What pressing `A` on the current row should do. Computed purely so the
@@ -93,6 +103,18 @@ pub struct HarnessState {
     next_id: SessionId,
 }
 
+/// Loose shape check for `owner/repo#number`, used to filter `reconcile`'s
+/// input down to sessions this tool plausibly dispatched — not a full
+/// validation, since a false positive here just means adopting a session
+/// that then fails to attach cleanly, and a false negative silently drops
+/// one that should have been adopted.
+fn is_issue_ref(name: &str) -> bool {
+    let Some((owner_repo, number)) = name.split_once('#') else {
+        return false;
+    };
+    owner_repo.contains('/') && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+}
+
 impl HarnessState {
     /// Record a new running session and return its id. The caller is
     /// responsible for actually spawning the child under that id.
@@ -105,12 +127,45 @@ impl HarnessState {
             harness,
             title,
             status: SessionStatus::Running,
+            bg_id: None,
         });
         id
     }
 
     pub fn get(&self, id: SessionId) -> Option<&SessionMeta> {
         self.sessions.iter().find(|s| s.id == id)
+    }
+
+    /// Record the background session id a fresh dispatch resolved to. A
+    /// no-op for an unknown id: the caller may have already removed the
+    /// session on a spawn failure elsewhere in the same call.
+    pub fn set_bg_id(&mut self, id: SessionId, bg_id: String) {
+        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+            s.bg_id = Some(bg_id);
+        }
+    }
+
+    /// Adopt background sessions dispatched by `harness` that are still
+    /// running from a previous launch and aren't already tracked here —
+    /// what lets a session outlive `gh-issues-tui` quitting.
+    ///
+    /// `bg_sessions` is `(bg_id, name)` pairs, already fetched by the caller
+    /// (`harness::list_bg_sessions`) so this stays pure over already-I/O'd
+    /// data. A name is adopted only when it parses as `owner/repo#number` —
+    /// an unrelated `--bg` session sharing the same `claude agents` listing
+    /// must not be mistaken for one of this tool's.
+    ///
+    /// Registered with metadata only, `status: Running` and no PTY — the
+    /// event loop's `HarnessRegistry` only gets one the first time the
+    /// session is actually attached (see `HarnessCtx::launch`).
+    pub fn reconcile(&mut self, harness: &str, bg_sessions: &[(String, String)]) {
+        for (bg_id, name) in bg_sessions {
+            if !is_issue_ref(name) || self.find_by_issue(name).is_some() {
+                continue;
+            }
+            let id = self.register(name.clone(), harness.to_string(), String::new());
+            self.set_bg_id(id, bg_id.clone());
+        }
     }
 
     /// The session launched for `issue_ref`, if any. At most one exists —
@@ -355,6 +410,79 @@ mod tests {
         let h = state_with(&[("pgmac-net/foo#12", "claude")]);
         assert!(h.find_by_issue("pgmac-net/foo#12").is_some());
         assert!(h.find_by_issue("pgmac-net/foo#1").is_none());
+    }
+
+    #[test]
+    fn a_fresh_session_has_no_bg_id() {
+        let h = state_with(&[("o/r#1", "claude")]);
+        assert_eq!(h.sessions[0].bg_id, None);
+    }
+
+    #[test]
+    fn set_bg_id_records_it() {
+        let mut h = state_with(&[("o/r#1", "claude")]);
+        h.set_bg_id(0, "42".into());
+        assert_eq!(h.sessions[0].bg_id.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn set_bg_id_on_an_unknown_id_is_ignored() {
+        let mut h = HarnessState::default();
+        h.set_bg_id(99, "42".into()); // must not panic
+        assert!(h.sessions.is_empty());
+    }
+
+    #[test]
+    fn reconcile_adopts_a_matching_untracked_session() {
+        let mut h = HarnessState::default();
+        h.reconcile("claude", &[("42".into(), "pgmac-net/foo#12".into())]);
+        assert_eq!(h.sessions.len(), 1);
+        assert_eq!(h.sessions[0].issue_ref, "pgmac-net/foo#12");
+        assert_eq!(h.sessions[0].harness, "claude");
+        assert_eq!(h.sessions[0].bg_id.as_deref(), Some("42"));
+        assert!(h.sessions[0].status.is_running());
+    }
+
+    #[test]
+    fn reconcile_skips_an_issue_already_tracked() {
+        let mut h = state_with(&[("pgmac-net/foo#12", "claude")]);
+        h.reconcile("claude", &[("42".into(), "pgmac-net/foo#12".into())]);
+        assert_eq!(h.sessions.len(), 1, "must not duplicate a session");
+        assert_eq!(
+            h.sessions[0].bg_id, None,
+            "the already-tracked session's own metadata must not be touched"
+        );
+    }
+
+    #[test]
+    fn reconcile_ignores_a_name_that_is_not_an_issue_ref() {
+        // An unrelated `--bg` session (some other tool, or a stray manual
+        // one) sharing the same `claude agents` listing must not be adopted.
+        let mut h = HarnessState::default();
+        h.reconcile(
+            "claude",
+            &[
+                ("1".into(), "my-other-task".into()),
+                ("2".into(), "no-hash-here/repo".into()),
+                ("3".into(), "owner/repo#not-a-number".into()),
+            ],
+        );
+        assert!(h.sessions.is_empty());
+    }
+
+    #[test]
+    fn reconcile_adopts_only_the_new_matches_among_a_mix() {
+        let mut h = state_with(&[("pgmac-net/foo#1", "claude")]);
+        h.reconcile(
+            "claude",
+            &[
+                ("1".into(), "pgmac-net/foo#1".into()), // already tracked
+                ("2".into(), "pgmac-net/foo#2".into()), // new
+                ("3".into(), "junk".into()),            // not an issue ref
+            ],
+        );
+        assert_eq!(h.sessions.len(), 2);
+        assert!(h.find_by_issue("pgmac-net/foo#2").is_some());
     }
 
     // --- `A`'s decision, driven through a real App -----------------------
