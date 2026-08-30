@@ -114,7 +114,8 @@ default_harness = "claude"                # harness `A` launches (unset: `A` ask
 workspace_roots = ["~/pgmac", "~/projects"]   # searched for a repo's clone
 
 [harnesses.claude]                        # built in; shown here to override it
-command = ["claude", "/pgmac-workflows:pickup-ticket {ref}"]
+command = ["claude", "attach", "{bg_id}"]
+bg_dispatch = ["claude", "--bg", "--name", "{ref}", "/pgmac-workflows:pickup-ticket {ref}"]
 ```
 
 With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
@@ -132,28 +133,29 @@ default_harness = "claude"
 workspace_roots = ["~/pgmac", "~/projects"]
 
 [harnesses.claude]
-command = ["claude", "/pgmac-workflows:pickup-ticket {ref}"]
+command = ["claude", "attach", "{bg_id}"]
+bg_dispatch = ["claude", "--bg", "--name", "{ref}", "/pgmac-workflows:pickup-ticket {ref}"]
 
 [harnesses.opencode]
 command = ["opencode", "run", "work on {url}"]
-```
-
-`command` is an **argv array, never a shell string** — placeholders expand into individual arguments, so issue text containing quotes or `$(…)` is inert. Available placeholders are `{owner}`, `{repo}`, `{number}`, `{ref}` (`owner/repo#number`, always canonical) and `{url}`.
-
-`claude` and `opencode` ship built in; defining a harness of the same name overrides it, and defining a new one leaves the others in place. A harness may set its own `workspace_roots`.
-
-Other agents are not shipped as defaults because their argument forms were not verified — a guessed argv fails at spawn time. Check their `--help`, then paste:
-
-```toml
-[harnesses.codex]
-command = ["codex", "work on {url}"]
-
-[harnesses.copilot]
-command = ["copilot", "-p", "work on {ref}"]
 
 [harnesses.pi]
-command = ["pi", "{ref}"]
+command = ["pi", "--name", "{ref}", "work on {ref}: {url}"]
+
+[harnesses.copilot]
+command = ["copilot", "--allow-all-tools", "--no-ask-user", "-p", "work on {ref}: {url}"]
+
+[harnesses.codex]
+command = ["codex", "work on {ref}: {url}"]
 ```
+
+`command` is an **argv array, never a shell string** — placeholders expand into individual arguments, so issue text containing quotes or `$(…)` is inert. Available placeholders are `{owner}`, `{repo}`, `{number}`, `{ref}` (`owner/repo#number`, always canonical), `{url}`, and `{bg_id}` (only set when `bg_dispatch` is — see below).
+
+`claude`, `opencode`, `pi`, `copilot` and `codex` ship built in; defining a harness of the same name overrides it, and defining a new one leaves the others in place. A harness may set its own `workspace_roots`.
+
+`bg_dispatch` is optional, and only meaningful for a harness with a background supervisor like Claude Code's to dispatch to: it runs first (off the PTY) to start a background session, then `command` attaches a PTY viewer onto the `{bg_id}` it resolved to — the split that lets a session survive gh-issues-tui quitting. None of the other four have that concept, so `command` runs directly on the PTY for them, same as `claude` did before background dispatch. `opencode` and `copilot` run one prompt non-interactively and exit (`-p`/`run`); `pi` and `codex`, like `claude`, start interactive and stay attached. `copilot -p` can't pause for a permission prompt or a clarifying question, hence `--allow-all-tools --no-ask-user` — the same trust boundary every harness already gets inside the one repo clone a ticket names; `codex` needs no such flag since it stays attachable. `codex`, `pi` and `copilot`'s argv were each verified against docs rather than run locally (`codex`/`copilot` aren't installed on the machine this was written on; `pi` was run live, just with no model configured).
+
+Every one of these agents (`claude`, `codex` and `copilot` confirmed; `pi` only via a separate opt-in extension, `pi-subagents`) can spawn its own subagents for a task — that's a property of the harness's own runtime, not something this tool configures.
 
 A harness runs in the current directory's repo when that is the issue's repo; otherwise in the first `<root>/<repo>` that exists across `workspace_roots`. If none does, nothing launches and the message names every path tried.
 

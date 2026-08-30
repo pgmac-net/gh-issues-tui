@@ -105,10 +105,16 @@ pub struct HarnessConfig {
 ///
 /// Only harnesses whose argument form has actually been verified are listed:
 /// `claude [prompt]` starts an interactive session on a prompt, and
-/// `opencode run [message..]` runs one non-interactively. `codex`, `copilot`
-/// and `pi` are documented in the README as ready-to-paste snippets instead —
-/// a shipped default built from a guessed argv fails at spawn time, which is
-/// worse than no default at all.
+/// `opencode run [message..]` runs one non-interactively; `pi [message..]`
+/// starts interactive like `claude`, verified live against `pi --help` and a
+/// real (if model-less) run; `copilot -p […]` runs one prompt non-interactively
+/// like `opencode`, verified against GitHub's own CLI docs rather than run
+/// locally (not installed on the machine this was verified from) — with
+/// `--allow-all-tools`/`--no-ask-user` because `-p` mode has no attach path to
+/// answer a permission prompt or a clarifying question; `codex [prompt]` starts
+/// interactive like `claude`/`pi`, also verified against docs rather than run
+/// locally — no bypass flag, since (unlike `copilot -p`) it stays attachable
+/// and a prompt can wait there the same way it would for `claude`/`pi`.
 pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
     HashMap::from([
         (
@@ -129,6 +135,41 @@ pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
             "opencode".to_string(),
             HarnessConfig {
                 command: vec!["opencode".into(), "run".into(), "work on {url}".into()],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        ),
+        (
+            "pi".to_string(),
+            HarnessConfig {
+                command: vec![
+                    "pi".into(),
+                    "--name".into(),
+                    "{ref}".into(),
+                    "work on {ref}: {url}".into(),
+                ],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        ),
+        (
+            "copilot".to_string(),
+            HarnessConfig {
+                command: vec![
+                    "copilot".into(),
+                    "--allow-all-tools".into(),
+                    "--no-ask-user".into(),
+                    "-p".into(),
+                    "work on {ref}: {url}".into(),
+                ],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        ),
+        (
+            "codex".to_string(),
+            HarnessConfig {
+                command: vec!["codex".into(), "work on {ref}: {url}".into()],
                 workspace_roots: None,
                 bg_dispatch: None,
             },
@@ -396,8 +437,55 @@ mod tests {
     #[test]
     fn builtin_harnesses_are_available_with_no_config() {
         let cfg = cfg_from("default_org = \"pgmac-net\"\n");
-        assert_eq!(harness_names(&cfg), vec!["claude", "opencode"]);
+        assert_eq!(
+            harness_names(&cfg),
+            vec!["claude", "codex", "copilot", "opencode", "pi"]
+        );
         assert_eq!(cfg.harnesses["claude"].command[0], "claude");
+    }
+
+    #[test]
+    fn the_builtin_codex_harness_starts_interactive_like_claude() {
+        // Also verified against docs rather than run locally, but — unlike
+        // `copilot -p` — this stays attachable, so no bypass flag: a prompt
+        // waits in the pane the same way it would for `claude`/`pi`.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        let codex = &cfg.harnesses["codex"];
+        assert_eq!(codex.command, vec!["codex", "work on {ref}: {url}"]);
+        assert_eq!(codex.bg_dispatch, None);
+    }
+
+    #[test]
+    fn the_builtin_pi_harness_starts_interactive_like_claude() {
+        // No `-p`: a bare message starts an attended session, same shape as
+        // `claude` — `pi` has no background/supervisor concept to dispatch to.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        let pi = &cfg.harnesses["pi"];
+        assert_eq!(
+            pi.command,
+            vec!["pi", "--name", "{ref}", "work on {ref}: {url}"]
+        );
+        assert_eq!(pi.bg_dispatch, None);
+    }
+
+    #[test]
+    fn the_builtin_copilot_harness_runs_non_interactively_with_tools_allowed() {
+        // `-p` runs one prompt and exits, like `opencode run` — there's no
+        // attach path to answer a permission prompt or a clarifying question,
+        // hence `--allow-all-tools`/`--no-ask-user`.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        let copilot = &cfg.harnesses["copilot"];
+        assert_eq!(
+            copilot.command,
+            vec![
+                "copilot",
+                "--allow-all-tools",
+                "--no-ask-user",
+                "-p",
+                "work on {ref}: {url}"
+            ]
+        );
+        assert_eq!(copilot.bg_dispatch, None);
     }
 
     #[test]
@@ -425,11 +513,16 @@ mod tests {
     fn a_user_harness_is_added_without_dropping_the_builtins() {
         // The bug this pins: `#[serde(default = "builtin_harnesses")]` would
         // replace the whole map, so defining one harness would delete claude.
+        // `gemini` here is deliberately not one of the builtins — a name that
+        // is would test override behaviour instead (see the test below).
         let cfg = cfg_from(
-            "[harnesses.codex]\n\
-             command = [\"codex\", \"work on {url}\"]\n",
+            "[harnesses.gemini]\n\
+             command = [\"gemini\", \"work on {url}\"]\n",
         );
-        assert_eq!(harness_names(&cfg), vec!["claude", "codex", "opencode"]);
+        assert_eq!(
+            harness_names(&cfg),
+            vec!["claude", "codex", "copilot", "gemini", "opencode", "pi"]
+        );
     }
 
     #[test]
@@ -442,7 +535,11 @@ mod tests {
             cfg.harnesses["claude"].command,
             vec!["claude", "--resume", "{ref}"]
         );
-        assert_eq!(harness_names(&cfg).len(), 2, "opencode still merged in");
+        assert_eq!(
+            harness_names(&cfg).len(),
+            5,
+            "codex/opencode/pi/copilot still merged in"
+        );
     }
 
     #[test]
