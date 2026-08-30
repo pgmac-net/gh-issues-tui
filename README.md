@@ -143,7 +143,7 @@ command = ["opencode", "run", "work on {url}"]
 command = ["pi", "--name", "{ref}", "work on {ref}: {url}"]
 
 [harnesses.copilot]
-command = ["copilot", "--allow-all-tools", "--no-ask-user", "-p", "work on {ref}: {url}"]
+command = ["copilot", "--allow-tool", "write", "--allow-tool", "edit", "--allow-tool", "shell(git:*)", "--no-ask-user", "-p", "work on {ref}: {url}"]
 
 [harnesses.codex]
 command = ["codex", "work on {ref}: {url}"]
@@ -153,7 +153,7 @@ command = ["codex", "work on {ref}: {url}"]
 
 `claude`, `opencode`, `pi`, `copilot` and `codex` ship built in; defining a harness of the same name overrides it, and defining a new one leaves the others in place. A harness may set its own `workspace_roots`.
 
-`bg_dispatch` is optional, and only meaningful for a harness with a background supervisor like Claude Code's to dispatch to: it runs first (off the PTY) to start a background session, then `command` attaches a PTY viewer onto the `{bg_id}` it resolved to — the split that lets a session survive gh-issues-tui quitting. None of the other four have that concept, so `command` runs directly on the PTY for them, same as `claude` did before background dispatch. `opencode` and `copilot` run one prompt non-interactively and exit (`-p`/`run`); `pi` and `codex`, like `claude`, start interactive and stay attached. `copilot -p` can't pause for a permission prompt or a clarifying question, hence `--allow-all-tools --no-ask-user` — the same trust boundary every harness already gets inside the one repo clone a ticket names; `codex` needs no such flag since it stays attachable. `codex`, `pi` and `copilot`'s argv were each verified against docs rather than run locally (`codex`/`copilot` aren't installed on the machine this was written on; `pi` was run live, just with no model configured).
+`bg_dispatch` is optional, and only meaningful for a harness with a background supervisor like Claude Code's to dispatch to: it runs first (off the PTY) to start a background session, then `command` attaches a PTY viewer onto the `{bg_id}` it resolved to — the split that lets a session survive gh-issues-tui quitting. None of the other four have that concept, so `command` runs directly on the PTY for them, same as `claude` did before background dispatch. `opencode` and `copilot` run one prompt non-interactively and exit (`-p`/`run`); `pi` and `codex`, like `claude`, start interactive and stay attached. `copilot -p` can't pause for a permission prompt or a clarifying question, and an issue's title/body is attacker-controlled in a public repo — `--allow-tool` scopes it to file edits and git (not `--allow-all-tools`, which would leave unscoped shell reachable to an injected instruction); `--no-ask-user` for the same reason it needs a tool grant at all. `codex` needs neither since it stays attachable, so a human can catch a bad action before it runs. `codex`, `pi` and `copilot`'s argv were each verified against docs rather than run locally (`codex`/`copilot` aren't installed on the machine this was written on; `pi` was run live, just with no model configured).
 
 Every one of these agents (`claude`, `codex` and `copilot` confirmed; `pi` only via a separate opt-in extension, `pi-subagents`) can spawn its own subagents for a task — that's a property of the harness's own runtime, not something this tool configures.
 

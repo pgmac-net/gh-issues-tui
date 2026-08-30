@@ -147,9 +147,11 @@ background-dispatch support. `opencode` and `copilot` are non-interactive (`run`
 run to completion and exit, and the pane stays readable afterward like any exited session.
 `pi` and `codex`, like `claude`, start interactive and stay attached.
 
-`copilot -p` has no attach path to answer a permission prompt or a clarifying question, so
-its builtin carries `--allow-all-tools --no-ask-user` — the same trust boundary every other
-harness already gets inside the one repo clone a ticket names. `codex`, `pi` and `copilot`'s
+`copilot -p` has no attach path to answer a permission prompt or a clarifying question, and
+an issue's title/body is attacker-controlled in a public repo — so its builtin carries scoped
+`--allow-tool` grants (file edits and git, not `--allow-all-tools`, which would leave unscoped
+shell reachable to an injected instruction) plus `--no-ask-user`, for the same reason it needs
+a tool grant at all. `codex`, `pi` and `copilot`'s
 argv were each verified against docs rather than run locally on the machine this was written
 on (`codex` and `copilot` aren't installed there at all; `pi` was run live, just without a
 model configured) — check each CLI's own `--help` before relying on one in an environment

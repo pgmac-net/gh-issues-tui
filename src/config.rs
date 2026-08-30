@@ -109,12 +109,21 @@ pub struct HarnessConfig {
 /// starts interactive like `claude`, verified live against `pi --help` and a
 /// real (if model-less) run; `copilot -p […]` runs one prompt non-interactively
 /// like `opencode`, verified against GitHub's own CLI docs rather than run
-/// locally (not installed on the machine this was verified from) — with
-/// `--allow-all-tools`/`--no-ask-user` because `-p` mode has no attach path to
-/// answer a permission prompt or a clarifying question; `codex [prompt]` starts
-/// interactive like `claude`/`pi`, also verified against docs rather than run
-/// locally — no bypass flag, since (unlike `copilot -p`) it stays attachable
-/// and a prompt can wait there the same way it would for `claude`/`pi`.
+/// locally (not installed on the machine this was verified from); `codex
+/// [prompt]` starts interactive like `claude`/`pi`, also verified against docs
+/// rather than run locally — no bypass flag, since (unlike `copilot -p`) it
+/// stays attachable and a prompt can wait there the same way it would for
+/// `claude`/`pi`.
+///
+/// `copilot -p` has no attach path to answer a permission prompt, so it needs
+/// *some* tool grant to do real work — but a ticket's title/body is
+/// attacker-controlled in a public repo, and `-p` mode has no human in the
+/// loop to catch an injected instruction before it runs. `--allow-all-tools`
+/// would let one reach unscoped shell/network; `--allow-tool` scopes it to
+/// file edits and git instead, so an injected instruction has nowhere further
+/// to go even if it succeeds. `--no-ask-user` still applies for the same
+/// reason `-p` needs a tool grant at all: nothing is attached to answer a
+/// clarifying question either.
 pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
     HashMap::from([
         (
@@ -157,7 +166,12 @@ pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
             HarnessConfig {
                 command: vec![
                     "copilot".into(),
-                    "--allow-all-tools".into(),
+                    "--allow-tool".into(),
+                    "write".into(),
+                    "--allow-tool".into(),
+                    "edit".into(),
+                    "--allow-tool".into(),
+                    "shell(git:*)".into(),
                     "--no-ask-user".into(),
                     "-p".into(),
                     "work on {ref}: {url}".into(),
@@ -469,21 +483,34 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_copilot_harness_runs_non_interactively_with_tools_allowed() {
+    fn the_builtin_copilot_harness_runs_non_interactively_with_scoped_tools() {
         // `-p` runs one prompt and exits, like `opencode run` — there's no
-        // attach path to answer a permission prompt or a clarifying question,
-        // hence `--allow-all-tools`/`--no-ask-user`.
+        // attach path to answer a permission prompt or a clarifying question.
+        // Scoped `--allow-tool` grants, not `--allow-all-tools`: an issue's
+        // title/body is attacker-controlled in a public repo, and `-p` has no
+        // human in the loop to catch an injected instruction before it runs —
+        // file edits and git are as far as one can reach here.
         let cfg = cfg_from("default_org = \"pgmac-net\"\n");
         let copilot = &cfg.harnesses["copilot"];
         assert_eq!(
             copilot.command,
             vec![
                 "copilot",
-                "--allow-all-tools",
+                "--allow-tool",
+                "write",
+                "--allow-tool",
+                "edit",
+                "--allow-tool",
+                "shell(git:*)",
                 "--no-ask-user",
                 "-p",
                 "work on {ref}: {url}"
             ]
+        );
+        assert!(
+            !copilot.command.contains(&"--allow-all-tools".to_string()),
+            "must not grant unscoped tool access to a prompt built from \
+             attacker-controlled issue content"
         );
         assert_eq!(copilot.bg_dispatch, None);
     }
