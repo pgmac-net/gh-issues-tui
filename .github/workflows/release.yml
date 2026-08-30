@@ -107,8 +107,20 @@ jobs:
         working-directory: artifacts
         run: sha256sum * > checksums.txt
 
+      - name: Get tag message
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo "message<<EOF"
+            git tag -l --format='%(contents:subject)' "$TAG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v3
         with:
+          name: ${{ steps.tag.outputs.message }}
           files: |
             artifacts/*
           generate_release_notes: true
