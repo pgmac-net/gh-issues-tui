@@ -105,10 +105,36 @@ pub struct HarnessConfig {
 ///
 /// Only harnesses whose argument form has actually been verified are listed:
 /// `claude [prompt]` starts an interactive session on a prompt, and
-/// `opencode run [message..]` runs one non-interactively. `codex`, `copilot`
-/// and `pi` are documented in the README as ready-to-paste snippets instead —
-/// a shipped default built from a guessed argv fails at spawn time, which is
-/// worse than no default at all.
+/// `opencode run [message..]` runs one non-interactively; `pi [message..]`
+/// starts interactive like `claude`, verified live against `pi --help` and a
+/// real (if model-less) run; `copilot -p […]` runs one prompt non-interactively
+/// like `opencode`, verified against GitHub's own CLI docs rather than run
+/// locally (not installed on the machine this was verified from); `codex
+/// [prompt]` starts interactive like `claude`/`pi`, also verified against docs
+/// rather than run locally — no bypass flag, since (unlike `copilot -p`) it
+/// stays attachable and a prompt can wait there the same way it would for
+/// `claude`/`pi`.
+///
+/// `copilot -p` has no attach path to answer a permission prompt, so it needs
+/// *some* tool grant to do real work — but a ticket's title/body is
+/// attacker-controlled in a public repo, and `-p` mode has no human in the
+/// loop to catch an injected instruction before it runs.
+///
+/// `--allow-tool`'s patterns match the full command line, not just the tool
+/// name (`shell(git commit:*)`, `shell(git push origin:*)` are real, not
+/// guessed), and `--deny-tool` takes precedence over any broader allow. Even
+/// `shell(git:*)` is not actually a safe boundary on its own: `git config
+/// alias.x '!…'`, `git clone --upload-pack=…`/`ext::` transports and repo
+/// hooks (`pre-commit` etc.) are all just "git" — a command-name allowlist
+/// does not reach any of them. The grant below names specific subcommands
+/// rather than wildcarding `git`, scopes `push` to the `origin` remote so an
+/// injected instruction cannot exfiltrate by pushing to an arbitrary URL, and
+/// explicitly denies `config`/`remote`/`clone` (redundant with them not being
+/// allowed, but `--deny-tool` beats a future accidental broadening) plus
+/// writing anywhere under `.git/` (closing the "plant a hook via `write`,
+/// then any git subcommand triggers it" path, which no git-subcommand
+/// allowlist alone closes). `--no-ask-user` applies for the same reason `-p`
+/// needs a tool grant at all: nothing is attached to answer a question.
 pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
     HashMap::from([
         (
@@ -129,6 +155,51 @@ pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
             "opencode".to_string(),
             HarnessConfig {
                 command: vec!["opencode".into(), "run".into(), "work on {url}".into()],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        ),
+        (
+            "pi".to_string(),
+            HarnessConfig {
+                command: vec![
+                    "pi".into(),
+                    "--name".into(),
+                    "{ref}".into(),
+                    "work on {ref}: {url}".into(),
+                ],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        ),
+        (
+            "copilot".to_string(),
+            HarnessConfig {
+                command: vec![
+                    "copilot".into(),
+                    "--allow-tool".into(),
+                    "write, edit, \
+                     shell(git status:*), shell(git diff:*), shell(git add:*), \
+                     shell(git commit:*), shell(git branch:*), shell(git checkout:*), \
+                     shell(git switch:*), shell(git rebase:*), shell(git push origin:*), \
+                     shell(git log:*), shell(git stash:*)"
+                        .into(),
+                    "--deny-tool".into(),
+                    "write(.git/**), edit(.git/**), \
+                     shell(git config:*), shell(git remote:*), shell(git clone:*)"
+                        .into(),
+                    "--no-ask-user".into(),
+                    "-p".into(),
+                    "work on {ref}: {url}".into(),
+                ],
+                workspace_roots: None,
+                bg_dispatch: None,
+            },
+        ),
+        (
+            "codex".to_string(),
+            HarnessConfig {
+                command: vec!["codex".into(), "work on {ref}: {url}".into()],
                 workspace_roots: None,
                 bg_dispatch: None,
             },
@@ -396,8 +467,88 @@ mod tests {
     #[test]
     fn builtin_harnesses_are_available_with_no_config() {
         let cfg = cfg_from("default_org = \"pgmac-net\"\n");
-        assert_eq!(harness_names(&cfg), vec!["claude", "opencode"]);
+        assert_eq!(
+            harness_names(&cfg),
+            vec!["claude", "codex", "copilot", "opencode", "pi"]
+        );
         assert_eq!(cfg.harnesses["claude"].command[0], "claude");
+    }
+
+    #[test]
+    fn the_builtin_codex_harness_starts_interactive_like_claude() {
+        // Also verified against docs rather than run locally, but — unlike
+        // `copilot -p` — this stays attachable, so no bypass flag: a prompt
+        // waits in the pane the same way it would for `claude`/`pi`.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        let codex = &cfg.harnesses["codex"];
+        assert_eq!(codex.command, vec!["codex", "work on {ref}: {url}"]);
+        assert_eq!(codex.bg_dispatch, None);
+    }
+
+    #[test]
+    fn the_builtin_pi_harness_starts_interactive_like_claude() {
+        // No `-p`: a bare message starts an attended session, same shape as
+        // `claude` — `pi` has no background/supervisor concept to dispatch to.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        let pi = &cfg.harnesses["pi"];
+        assert_eq!(
+            pi.command,
+            vec!["pi", "--name", "{ref}", "work on {ref}: {url}"]
+        );
+        assert_eq!(pi.bg_dispatch, None);
+    }
+
+    #[test]
+    fn the_builtin_copilot_harness_runs_non_interactively_with_scoped_tools() {
+        // `-p` runs one prompt and exits, like `opencode run` — there's no
+        // attach path to answer a permission prompt or a clarifying question,
+        // and an issue's title/body is attacker-controlled in a public repo.
+        let cfg = cfg_from("default_org = \"pgmac-net\"\n");
+        let copilot = &cfg.harnesses["copilot"];
+        assert_eq!(copilot.command[0], "copilot");
+        assert_eq!(copilot.command[1], "--allow-tool");
+        let allow = &copilot.command[2];
+        let deny = &copilot.command[4];
+        assert_eq!(copilot.command[3], "--deny-tool");
+        assert_eq!(
+            &copilot.command[5..],
+            ["--no-ask-user", "-p", "work on {ref}: {url}"]
+        );
+
+        // Specific subcommands, never a bare `git:*` wildcard — that is not
+        // actually a safe boundary (aliases, hooks and `ext::`/upload-pack
+        // transports are all just "git"). `push` is scoped to the `origin`
+        // remote specifically, so an injected instruction can't exfiltrate
+        // by pushing to an arbitrary URL.
+        for allowed in [
+            "write",
+            "edit",
+            "shell(git commit:*)",
+            "shell(git push origin:*)",
+            "shell(git rebase:*)",
+        ] {
+            assert!(allow.contains(allowed), "{allow} missing {allowed}");
+        }
+        assert!(
+            !allow.contains("git:*") && !allow.contains("git push:*"),
+            "a bare git or push wildcard defeats the scoping: {allow}"
+        );
+
+        // Belt-and-suspenders denies, even though none of these are in the
+        // allow list either: `--deny-tool` beats a future accidental
+        // broadening of `allow`. `.git/**` closes the "plant a hook via
+        // `write`, then any git subcommand triggers it" path, which no
+        // git-subcommand allowlist alone closes.
+        for denied in [
+            "write(.git/**)",
+            "edit(.git/**)",
+            "shell(git config:*)",
+            "shell(git remote:*)",
+            "shell(git clone:*)",
+        ] {
+            assert!(deny.contains(denied), "{deny} missing {denied}");
+        }
+        assert_eq!(copilot.bg_dispatch, None);
     }
 
     #[test]
@@ -425,11 +576,16 @@ mod tests {
     fn a_user_harness_is_added_without_dropping_the_builtins() {
         // The bug this pins: `#[serde(default = "builtin_harnesses")]` would
         // replace the whole map, so defining one harness would delete claude.
+        // `gemini` here is deliberately not one of the builtins — a name that
+        // is would test override behaviour instead (see the test below).
         let cfg = cfg_from(
-            "[harnesses.codex]\n\
-             command = [\"codex\", \"work on {url}\"]\n",
+            "[harnesses.gemini]\n\
+             command = [\"gemini\", \"work on {url}\"]\n",
         );
-        assert_eq!(harness_names(&cfg), vec!["claude", "codex", "opencode"]);
+        assert_eq!(
+            harness_names(&cfg),
+            vec!["claude", "codex", "copilot", "gemini", "opencode", "pi"]
+        );
     }
 
     #[test]
@@ -442,7 +598,11 @@ mod tests {
             cfg.harnesses["claude"].command,
             vec!["claude", "--resume", "{ref}"]
         );
-        assert_eq!(harness_names(&cfg).len(), 2, "opencode still merged in");
+        assert_eq!(
+            harness_names(&cfg).len(),
+            5,
+            "codex/opencode/pi/copilot still merged in"
+        );
     }
 
     #[test]

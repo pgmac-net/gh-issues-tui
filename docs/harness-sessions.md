@@ -117,7 +117,8 @@ default_harness = "claude"
 workspace_roots = ["~/pgmac", "~/projects"]
 
 [harnesses.claude]
-command = ["claude", "/pgmac-workflows:pickup-ticket {ref}"]
+command = ["claude", "attach", "{bg_id}"]
+bg_dispatch = ["claude", "--bg", "--name", "{ref}", "/pgmac-workflows:pickup-ticket {ref}"]
 ```
 
 `command` is an **argv array, never a shell string**. Placeholders expand into
@@ -130,31 +131,44 @@ individual argv slots:
 | `{number}` | `23` |
 | `{ref}` | `pgmac-net/gh-issues-tui#23` |
 | `{url}` | the issue's URL |
+| `{bg_id}` | the id `bg_dispatch` resolved to (only set when `bg_dispatch` is) |
 
 `{ref}` is always canonical, deliberately independent of `copy_format` — that template is
 a clipboard preference and need not identify an issue at all.
 
-`claude` and `opencode` are built in; defining `[harnesses.claude]` overrides the built-in
-rather than sitting alongside it, and defining a new harness does not remove the others.
-Each harness may override `workspace_roots` for itself.
+`claude`, `opencode`, `pi`, `copilot` and `codex` are built in; defining `[harnesses.claude]`
+overrides the built-in rather than sitting alongside it, and defining a new harness does
+not remove the others. Each harness may override `workspace_roots` for itself.
 
-### Harnesses that are not built in
+`bg_dispatch` is optional and only meaningful for a harness with something like Claude
+Code's background supervisor to dispatch to — none of the other four have that concept, so
+`command` runs directly on the PTY for them, exactly as `claude` did before #23's
+background-dispatch support. `opencode` and `copilot` are non-interactive (`run`/`-p`): they
+run to completion and exit, and the pane stays readable afterward like any exited session.
+`pi` and `codex`, like `claude`, start interactive and stay attached.
 
-Their argument forms were not verified, so they are documented rather than shipped —
-a default built from a guessed argv fails at spawn time and looks like a bug in this tool:
+`copilot -p` has no attach path to answer a permission prompt or a clarifying question, and
+an issue's title/body is attacker-controlled in a public repo. `--allow-tool` patterns match
+the full command line, not just the tool name, so a bare `shell(git:*)` is not actually a
+safe boundary — `git config alias.x '!…'`, `ext::`/`--upload-pack` transports and repo hooks
+(`pre-commit` etc.) are all just "git," reachable regardless. The builtin instead names
+specific subcommands, scopes `push` to the `origin` remote so an injected instruction cannot
+exfiltrate by pushing to an arbitrary URL, and pairs it with `--deny-tool` (which beats any
+broader `allow`) blocking `config`/`remote`/`clone` plus writing anywhere under `.git/` —
+closing the "plant a hook via `write`, then any git subcommand triggers it" path, which no
+git-subcommand allowlist alone reaches. `--no-ask-user` applies for the same reason `-p` needs
+a tool grant at all: nothing is attached to answer a question either.
 
-```toml
-[harnesses.codex]
-command = ["codex", "work on {url}"]
+`codex`, `pi` and `copilot`'s argv were each verified against docs rather than run locally on
+the machine this was written on (`codex` and `copilot` aren't installed there at all; `pi` was
+run live, just without a model configured) — check each CLI's own `--help` before relying on
+one in an environment that matters. `codex` needs no bypass flag: unlike `copilot -p`, it
+stays attachable, so a prompt can wait in the pane the same way it would for `claude`/`pi`.
 
-[harnesses.copilot]
-command = ["copilot", "-p", "work on {ref}"]
-
-[harnesses.pi]
-command = ["pi", "{ref}"]
-```
-
-Check each CLI's own `--help` before relying on these.
+Every one of these agents (`claude`, `codex` and `copilot` confirmed; `pi` only via a
+separate opt-in extension, `pi-subagents`) can spawn its own subagents for a task — but
+that's a property of the harness's own runtime, driven by its prompt, not something this
+tool configures. `command` only ever starts the top-level process.
 
 ### Where a harness runs
 

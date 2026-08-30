@@ -543,7 +543,10 @@ mod tests {
         handle_harness_key(&mut app, key(KeyCode::F(12)), &mut h.ctx());
         handle_harness_key(&mut app, key(KeyCode::Char('n')), &mut h.ctx());
         assert_eq!(app.mode, Mode::HarnessPicker);
-        assert_eq!(app.picker.options, vec!["claude", "opencode"]);
+        assert_eq!(
+            app.picker.options,
+            vec!["claude", "codex", "copilot", "opencode", "pi"]
+        );
     }
 
     #[test]
