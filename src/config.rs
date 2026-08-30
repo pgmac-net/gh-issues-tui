@@ -118,12 +118,23 @@ pub struct HarnessConfig {
 /// `copilot -p` has no attach path to answer a permission prompt, so it needs
 /// *some* tool grant to do real work — but a ticket's title/body is
 /// attacker-controlled in a public repo, and `-p` mode has no human in the
-/// loop to catch an injected instruction before it runs. `--allow-all-tools`
-/// would let one reach unscoped shell/network; `--allow-tool` scopes it to
-/// file edits and git instead, so an injected instruction has nowhere further
-/// to go even if it succeeds. `--no-ask-user` still applies for the same
-/// reason `-p` needs a tool grant at all: nothing is attached to answer a
-/// clarifying question either.
+/// loop to catch an injected instruction before it runs.
+///
+/// `--allow-tool`'s patterns match the full command line, not just the tool
+/// name (`shell(git commit:*)`, `shell(git push origin:*)` are real, not
+/// guessed), and `--deny-tool` takes precedence over any broader allow. Even
+/// `shell(git:*)` is not actually a safe boundary on its own: `git config
+/// alias.x '!…'`, `git clone --upload-pack=…`/`ext::` transports and repo
+/// hooks (`pre-commit` etc.) are all just "git" — a command-name allowlist
+/// does not reach any of them. The grant below names specific subcommands
+/// rather than wildcarding `git`, scopes `push` to the `origin` remote so an
+/// injected instruction cannot exfiltrate by pushing to an arbitrary URL, and
+/// explicitly denies `config`/`remote`/`clone` (redundant with them not being
+/// allowed, but `--deny-tool` beats a future accidental broadening) plus
+/// writing anywhere under `.git/` (closing the "plant a hook via `write`,
+/// then any git subcommand triggers it" path, which no git-subcommand
+/// allowlist alone closes). `--no-ask-user` applies for the same reason `-p`
+/// needs a tool grant at all: nothing is attached to answer a question.
 pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
     HashMap::from([
         (
@@ -167,11 +178,16 @@ pub fn builtin_harnesses() -> HashMap<String, HarnessConfig> {
                 command: vec![
                     "copilot".into(),
                     "--allow-tool".into(),
-                    "write".into(),
-                    "--allow-tool".into(),
-                    "edit".into(),
-                    "--allow-tool".into(),
-                    "shell(git:*)".into(),
+                    "write, edit, \
+                     shell(git status:*), shell(git diff:*), shell(git add:*), \
+                     shell(git commit:*), shell(git branch:*), shell(git checkout:*), \
+                     shell(git switch:*), shell(git rebase:*), shell(git push origin:*), \
+                     shell(git log:*), shell(git stash:*)"
+                        .into(),
+                    "--deny-tool".into(),
+                    "write(.git/**), edit(.git/**), \
+                     shell(git config:*), shell(git remote:*), shell(git clone:*)"
+                        .into(),
                     "--no-ask-user".into(),
                     "-p".into(),
                     "work on {ref}: {url}".into(),
@@ -485,33 +501,53 @@ mod tests {
     #[test]
     fn the_builtin_copilot_harness_runs_non_interactively_with_scoped_tools() {
         // `-p` runs one prompt and exits, like `opencode run` — there's no
-        // attach path to answer a permission prompt or a clarifying question.
-        // Scoped `--allow-tool` grants, not `--allow-all-tools`: an issue's
-        // title/body is attacker-controlled in a public repo, and `-p` has no
-        // human in the loop to catch an injected instruction before it runs —
-        // file edits and git are as far as one can reach here.
+        // attach path to answer a permission prompt or a clarifying question,
+        // and an issue's title/body is attacker-controlled in a public repo.
         let cfg = cfg_from("default_org = \"pgmac-net\"\n");
         let copilot = &cfg.harnesses["copilot"];
+        assert_eq!(copilot.command[0], "copilot");
+        assert_eq!(copilot.command[1], "--allow-tool");
+        let allow = &copilot.command[2];
+        let deny = &copilot.command[4];
+        assert_eq!(copilot.command[3], "--deny-tool");
         assert_eq!(
-            copilot.command,
-            vec![
-                "copilot",
-                "--allow-tool",
-                "write",
-                "--allow-tool",
-                "edit",
-                "--allow-tool",
-                "shell(git:*)",
-                "--no-ask-user",
-                "-p",
-                "work on {ref}: {url}"
-            ]
+            &copilot.command[5..],
+            ["--no-ask-user", "-p", "work on {ref}: {url}"]
         );
+
+        // Specific subcommands, never a bare `git:*` wildcard — that is not
+        // actually a safe boundary (aliases, hooks and `ext::`/upload-pack
+        // transports are all just "git"). `push` is scoped to the `origin`
+        // remote specifically, so an injected instruction can't exfiltrate
+        // by pushing to an arbitrary URL.
+        for allowed in [
+            "write",
+            "edit",
+            "shell(git commit:*)",
+            "shell(git push origin:*)",
+            "shell(git rebase:*)",
+        ] {
+            assert!(allow.contains(allowed), "{allow} missing {allowed}");
+        }
         assert!(
-            !copilot.command.contains(&"--allow-all-tools".to_string()),
-            "must not grant unscoped tool access to a prompt built from \
-             attacker-controlled issue content"
+            !allow.contains("git:*") && !allow.contains("git push:*"),
+            "a bare git or push wildcard defeats the scoping: {allow}"
         );
+
+        // Belt-and-suspenders denies, even though none of these are in the
+        // allow list either: `--deny-tool` beats a future accidental
+        // broadening of `allow`. `.git/**` closes the "plant a hook via
+        // `write`, then any git subcommand triggers it" path, which no
+        // git-subcommand allowlist alone closes.
+        for denied in [
+            "write(.git/**)",
+            "edit(.git/**)",
+            "shell(git config:*)",
+            "shell(git remote:*)",
+            "shell(git clone:*)",
+        ] {
+            assert!(deny.contains(denied), "{deny} missing {denied}");
+        }
         assert_eq!(copilot.bg_dispatch, None);
     }
 

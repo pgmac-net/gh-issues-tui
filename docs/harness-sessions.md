@@ -148,15 +148,22 @@ run to completion and exit, and the pane stays readable afterward like any exite
 `pi` and `codex`, like `claude`, start interactive and stay attached.
 
 `copilot -p` has no attach path to answer a permission prompt or a clarifying question, and
-an issue's title/body is attacker-controlled in a public repo — so its builtin carries scoped
-`--allow-tool` grants (file edits and git, not `--allow-all-tools`, which would leave unscoped
-shell reachable to an injected instruction) plus `--no-ask-user`, for the same reason it needs
-a tool grant at all. `codex`, `pi` and `copilot`'s
-argv were each verified against docs rather than run locally on the machine this was written
-on (`codex` and `copilot` aren't installed there at all; `pi` was run live, just without a
-model configured) — check each CLI's own `--help` before relying on one in an environment
-that matters. `codex` needs no bypass flag: unlike `copilot -p`, it stays attachable, so a
-prompt can wait in the pane the same way it would for `claude`/`pi`.
+an issue's title/body is attacker-controlled in a public repo. `--allow-tool` patterns match
+the full command line, not just the tool name, so a bare `shell(git:*)` is not actually a
+safe boundary — `git config alias.x '!…'`, `ext::`/`--upload-pack` transports and repo hooks
+(`pre-commit` etc.) are all just "git," reachable regardless. The builtin instead names
+specific subcommands, scopes `push` to the `origin` remote so an injected instruction cannot
+exfiltrate by pushing to an arbitrary URL, and pairs it with `--deny-tool` (which beats any
+broader `allow`) blocking `config`/`remote`/`clone` plus writing anywhere under `.git/` —
+closing the "plant a hook via `write`, then any git subcommand triggers it" path, which no
+git-subcommand allowlist alone reaches. `--no-ask-user` applies for the same reason `-p` needs
+a tool grant at all: nothing is attached to answer a question either.
+
+`codex`, `pi` and `copilot`'s argv were each verified against docs rather than run locally on
+the machine this was written on (`codex` and `copilot` aren't installed there at all; `pi` was
+run live, just without a model configured) — check each CLI's own `--help` before relying on
+one in an environment that matters. `codex` needs no bypass flag: unlike `copilot -p`, it
+stays attachable, so a prompt can wait in the pane the same way it would for `claude`/`pi`.
 
 Every one of these agents (`claude`, `codex` and `copilot` confirmed; `pi` only via a
 separate opt-in extension, `pi-subagents`) can spawn its own subagents for a task — but
