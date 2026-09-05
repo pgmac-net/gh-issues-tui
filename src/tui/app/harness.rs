@@ -63,6 +63,20 @@ pub struct SessionMeta {
     /// has no live PTY for `id` yet — a reconciled session is metadata only
     /// until it is actually attached.
     pub bg_id: Option<String>,
+    /// This session existed before the current run — `reconcile` adopted it
+    /// from `claude agents`, matching only on its name being issue-ref
+    /// shaped. It was not necessarily started by gh-issues-tui at all: any
+    /// `--bg` session named `owner/repo#number` qualifies. Sticky — attaching
+    /// to one does not make it ours (#148).
+    pub adopted: bool,
+}
+
+/// The running sessions quitting will end (`terminated`) versus leave running
+/// under `claude`'s supervisor (`survives`) — see `HarnessState::quit_summary`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QuitSummary {
+    pub terminated: Vec<SessionMeta>,
+    pub survives: Vec<SessionMeta>,
 }
 
 /// What pressing `A` on the current row should do. Computed purely so the
@@ -128,6 +142,7 @@ impl HarnessState {
             title,
             status: SessionStatus::Running,
             bg_id: None,
+            adopted: false,
         });
         id
     }
@@ -165,6 +180,9 @@ impl HarnessState {
             }
             let id = self.register(name.clone(), harness.to_string(), String::new());
             self.set_bg_id(id, bg_id.clone());
+            if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+                s.adopted = true;
+            }
         }
     }
 
@@ -228,11 +246,44 @@ impl HarnessState {
         self.sessions.iter().any(|s| s.status.is_running())
     }
 
-    /// Rows for the session picker, in launch order, newest last.
+    /// Split the running sessions by what quitting actually does to them:
+    /// a direct-exec harness's child dies with its PTY, while a
+    /// `bg_dispatch` session (`bg_id: Some`) keeps running under `claude`'s
+    /// own supervisor regardless — `HarnessRegistry::kill_all` only ever
+    /// kills the local viewer for those (#148). Used to make the quit
+    /// confirmation say what will really happen instead of claiming
+    /// everything dies.
+    pub fn quit_summary(&self) -> QuitSummary {
+        let mut terminated = Vec::new();
+        let mut survives = Vec::new();
+        for s in self.running() {
+            if s.bg_id.is_some() {
+                survives.push(s.clone());
+            } else {
+                terminated.push(s.clone());
+            }
+        }
+        QuitSummary {
+            terminated,
+            survives,
+        }
+    }
+
+    /// Rows for the session picker, in launch order, newest last. An adopted
+    /// session is marked with a leading `↗`; every row keeps the same prefix
+    /// width so the columns stay aligned whether or not any row is adopted.
     pub fn picker_rows(&self) -> Vec<String> {
         self.sessions
             .iter()
-            .map(|s| format!("{}  [{}]  {}", s.issue_ref, s.harness, s.status.label()))
+            .map(|s| {
+                let mark = if s.adopted { "\u{2197}" } else { " " };
+                format!(
+                    "{mark} {}  [{}]  {}",
+                    s.issue_ref,
+                    s.harness,
+                    s.status.label()
+                )
+            })
             .collect()
     }
 
@@ -394,15 +445,69 @@ mod tests {
     }
 
     #[test]
+    fn quit_summary_all_local_puts_everything_in_terminated() {
+        let h = state_with(&[("o/r#1", "opencode"), ("o/r#2", "opencode")]);
+        let s = h.quit_summary();
+        assert_eq!(s.terminated.len(), 2);
+        assert!(s.survives.is_empty());
+    }
+
+    #[test]
+    fn quit_summary_all_background_puts_everything_in_survives() {
+        let mut h = HarnessState::default();
+        h.reconcile(
+            "claude",
+            &[("1".into(), "o/r#1".into()), ("2".into(), "o/r#2".into())],
+        );
+        let s = h.quit_summary();
+        assert!(s.terminated.is_empty());
+        assert_eq!(s.survives.len(), 2);
+    }
+
+    #[test]
+    fn quit_summary_splits_a_mixed_set() {
+        let mut h = state_with(&[("o/r#1", "opencode")]);
+        h.reconcile("claude", &[("1".into(), "o/r#2".into())]);
+        let s = h.quit_summary();
+        assert_eq!(s.terminated.len(), 1);
+        assert_eq!(s.terminated[0].issue_ref, "o/r#1");
+        assert_eq!(s.survives.len(), 1);
+        assert_eq!(s.survives[0].issue_ref, "o/r#2");
+    }
+
+    #[test]
+    fn quit_summary_excludes_exited_sessions() {
+        let mut h = state_with(&[("o/r#1", "opencode")]);
+        h.mark_exited(0, 0);
+        let s = h.quit_summary();
+        assert!(s.terminated.is_empty());
+        assert!(s.survives.is_empty());
+    }
+
+    #[test]
     fn picker_rows_show_ref_harness_and_state() {
         let mut h = state_with(&[("o/r#1", "claude"), ("o/r#2", "codex")]);
         h.mark_exited(1, 130);
         assert_eq!(
             h.picker_rows(),
-            vec!["o/r#1  [claude]  running", "o/r#2  [codex]  exited 130"]
+            vec!["  o/r#1  [claude]  running", "  o/r#2  [codex]  exited 130"]
         );
         assert_eq!(h.session_at(1), Some(1));
         assert_eq!(h.session_at(9), None);
+    }
+
+    #[test]
+    fn picker_rows_mark_adopted_sessions_and_keep_columns_aligned() {
+        let mut h = HarnessState::default();
+        h.reconcile("claude", &[("42".into(), "o/r#1".into())]);
+        h.register("o/r#2".into(), "claude".into(), String::new());
+        assert_eq!(
+            h.picker_rows(),
+            vec![
+                "\u{2197} o/r#1  [claude]  running",
+                "  o/r#2  [claude]  running"
+            ]
+        );
     }
 
     #[test]
@@ -441,6 +546,13 @@ mod tests {
         assert_eq!(h.sessions[0].harness, "claude");
         assert_eq!(h.sessions[0].bg_id.as_deref(), Some("42"));
         assert!(h.sessions[0].status.is_running());
+        assert!(h.sessions[0].adopted, "reconcile must mark it adopted");
+    }
+
+    #[test]
+    fn a_freshly_registered_session_is_not_adopted() {
+        let h = state_with(&[("o/r#1", "claude")]);
+        assert!(!h.sessions[0].adopted);
     }
 
     #[test]
@@ -451,6 +563,10 @@ mod tests {
         assert_eq!(
             h.sessions[0].bg_id, None,
             "the already-tracked session's own metadata must not be touched"
+        );
+        assert!(
+            !h.sessions[0].adopted,
+            "the already-tracked session must not become adopted"
         );
     }
 

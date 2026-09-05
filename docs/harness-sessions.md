@@ -14,7 +14,7 @@ From the issue list:
 |---|---|
 | `A` | launch `default_harness` for the selected issue; attaches instead if that issue already has a live session; asks first if its previous session exited; opens the harness picker when no default is set |
 | `Z` | session picker — every session with its issue, harness and state |
-| `q` | with sessions still running, confirms and names them before terminating |
+| `q` | with sessions still running, confirms and names them — see [Ownership and adoption](#ownership-and-adoption) for which actually stop |
 
 Inside a session **every key goes to the child** — arrows, `Esc`, `Ctrl+C` and
 `Shift+Tab` included, because agent CLIs bind them. `F12` is the one key the TUI keeps:
@@ -107,6 +107,30 @@ default carries a URL with no `#N` in it.
 
 These go through `CommandBuilder::env`, so the values are never parsed by a shell — the
 same property the argv array gives placeholder expansion (see [Security](#security)).
+
+### Ownership and adoption (#148)
+
+`reconcile` (run at startup) adopts a still-running `claude --bg` session as its own
+whenever the name it was `--bg --name`'d with parses as `owner/repo#number` — that shape
+alone, nothing else. It has no way to tell whether *this* `gh-issues-tui` process was the
+one that dispatched it: `claude agents --json` reports pid, name and state, not the
+provenance environment `set_provenance_env` stamped at launch. An adopted session is
+therefore not necessarily one this tool started — any `--bg` session anyone named
+`owner/repo#N` qualifies, including one launched by a different terminal, a different
+tool, or an entirely different Claude Code harness. It reads `↗` in the session picker
+(`Z`) and `(adopted)` on its identity row, and stays marked that way for as long as it is
+tracked, whether or not this run ever attached to it.
+
+Quitting `gh-issues-tui` (`q`) never stops a `bg_dispatch` session, adopted or not — only
+the local `claude attach` viewer closes; the confirmation groups the running sessions by
+what will actually happen, `will be terminated` vs `keep running`, rather than claiming
+everything stops. Killing one (`F12 k` / `k`), by contrast, really does end it —
+`HarnessRegistry::kill` runs `claude stop <bg_id>` — and for an adopted session that may be
+ending an agent this run never started; its confirmation says so.
+
+No provenance check across process boundaries was added (see
+`docs/adr/0001-adoption-is-name-shaped-ownership-is-surfaced-not-enforced.md`): reading
+`/proc/<pid>/environ` would only work on Linux, one of the four release targets.
 
 ## Configuration
 

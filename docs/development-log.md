@@ -683,3 +683,37 @@ None.
 - `cargo test` — 93/93 harness-module tests passed, including a new regression test pinning a mixed interactive/background array (the real bug shape).
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — clean.
 - Live sanity check: `claude agents --json` on the development machine, confirming today's shape still has `kind` on every row.
+
+# Development log — quit/kill messaging for adopted sessions (2026-09-05)
+
+Work driven by [pgmac-net/gh-issues-tui#148](https://github.com/pgmac-net/gh-issues-tui/issues/148), on branch `148-quit-adoption-messaging`.
+
+## Process
+
+1. **Diagnosis by inspection, not guesswork.** The ticket asked whether quitting really terminates every session including externally-started ones. `HarnessRegistry::kill_all` (`tui/harness/mod.rs`) was read first: it only kills the local viewer PTY, never calls `stop_bg`, so `bg_dispatch` sessions already survive quit — the behaviour was correct. The quit confirmation's text (`ui/popups.rs`) was the actual bug: it appended "They will be terminated." unconditionally. Separately, `HarnessState::reconcile` was read to confirm it adopts by name shape (`owner/repo#N`) only, not by any provenance check — a live `claude agents --json` at grilling time showed a real session from a different Claude Code job that would have been adopted under that rule.
+2. **Grilling** resolved scope and every UI decision as a single question each, with a recommendation: whether to also mark ownership (not just fix the message), how ownership could be known given `claude agents --json` carries no environment, why `/proc/<pid>/environ` was rejected (four release targets, one usable), the quit dialog's layout for the mixed case, whether an all-background quit still confirms, the picker's glyph, where the glyph gets explained, and whether the kill confirmation needed its own warning.
+3. Plan posted to the ticket and approved before implementation, per `pickup-ticket`.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Scope | Fix the message and mark ownership, keep name-based adoption | Name-based adoption is what gives cross-run continuity; narrowing it was a separate, larger decision than what #148 asked |
+| How ownership is known | New `SessionMeta.adopted: bool`, set only by `reconcile` | `bg_id.is_some()` can't serve as a proxy — `set_bg_id` is also called right after a fresh dispatch resolves its id |
+| `/proc/<pid>/environ` provenance | Rejected | Release targets are Linux, macOS ×2 and Windows; a check that works on one of four degrades silently on the rest |
+| Quit dialog | Grouped by real fate — `will be terminated` / `keep running` | Says what actually happens instead of one blanket (and sometimes false) claim |
+| All-background quit | Still confirms, informationally | Nothing is lost, but the user should see what's left running before leaving |
+| Picker marker | `↗` glyph prefix, alignment-padded on non-adopted rows | Matches the existing glyph house style (`▸ ▾ ● ↑ ↓ →`) |
+| Glyph legend | Identity row's `(adopted)` segment plus docs | The session picker's title is fixed at 60 columns and already clipped — a legend there would never be seen |
+| Kill confirmation | Adds "Adopted — started outside this run." for an adopted session | Kill is the one action that can genuinely end another harness's agent (`claude stop <bg_id>`) |
+| Docs | New `docs/harness-sessions.md` section plus this repo's first ADR | No ADR convention existed; the rejected `/proc` approach and the surfaced-not-enforced trade-off were worth recording so they aren't re-litigated |
+
+## Diversions from plan
+
+None.
+
+## Verification
+
+- `cargo test` — 622 passed (30 new), including golden renders of the quit popup in all three shapes (all-local, all-background, mixed — the all-background case asserts the string "terminated" is absent) and of the kill popup for an adopted vs. a direct-exec session.
+- `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — clean.
+- Not run live against a real `claude --bg` session in this pass — the golden renders and `HarnessState` unit tests exercise the same code paths a live run would, and the two live-observed facts that grounded the plan (the false "terminated" claim, and a real cross-job session that would be adopted) were confirmed against `claude agents --json` output during grilling rather than re-checked afterward.

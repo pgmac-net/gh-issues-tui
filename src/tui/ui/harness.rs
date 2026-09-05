@@ -92,15 +92,22 @@ fn identity_line<'a>(
 
     let spent = issue_ref.chars().count() + 1;
     let for_title = budget.saturating_sub(spent);
+    let mut remaining = for_title;
     // A title needs its " · " lead-in plus something worth reading; below that
     // the ellipsis costs more than it conveys.
     if !session.title.is_empty() && for_title >= 6 {
         // Terminal default foreground: the title is the only prose on the row
         // and should read as plainly as the agent's own output.
-        spans.push(Span::raw(format!(
-            " \u{00b7} {}",
-            truncate(&session.title, for_title - 3)
-        )));
+        let title = truncate(&session.title, for_title - 3);
+        remaining = remaining.saturating_sub(3 + title.chars().count());
+        spans.push(Span::raw(format!(" \u{00b7} {title}")));
+    }
+
+    // The least load-bearing part of the row: dropped before the title if
+    // both would overrun the budget (#148).
+    const ADOPTED: &str = " (adopted)";
+    if session.adopted && remaining >= ADOPTED.chars().count() {
+        spans.push(Span::styled(ADOPTED, Style::default().fg(t.dim)));
     }
 
     spans.push(Span::styled(
@@ -289,6 +296,38 @@ mod tests {
         assert!(
             !top.contains("#1 \u{00b7} \u{00b7}"),
             "an issue with no title must not draw an empty slot: {top}"
+        );
+    }
+
+    #[test]
+    fn identity_row_marks_an_adopted_session() {
+        let mut app = session_app("o/r#1", "a title", SessionStatus::Running);
+        app.harness.sessions[0].adopted = true;
+        let top = row(&render_app(&app, 120, 20), 0);
+        assert!(top.contains("(adopted)"), "got: {top}");
+    }
+
+    #[test]
+    fn a_non_adopted_session_draws_no_adopted_marker() {
+        let app = session_app("o/r#1", "a title", SessionStatus::Running);
+        let top = row(&render_app(&app, 120, 20), 0);
+        assert!(!top.contains("adopted"), "got: {top}");
+    }
+
+    #[test]
+    fn adopted_gives_way_to_the_title_in_a_narrow_terminal() {
+        // The title is the more load-bearing of the two, so tight space
+        // drops "(adopted)" first rather than truncating the title further.
+        let mut app = session_app(
+            "pgmac-net/gh-issues-tui#132",
+            "a title far too long to fit in this width",
+            SessionStatus::Running,
+        );
+        app.harness.sessions[0].adopted = true;
+        let top = row(&render_app(&app, 56, 20), 0);
+        assert!(
+            !top.contains("adopted"),
+            "adopted must be sacrificed before the title: {top}"
         );
     }
 
