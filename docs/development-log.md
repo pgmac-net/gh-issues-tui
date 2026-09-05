@@ -655,3 +655,31 @@ Work driven by [pgmac-net/gh-issues-tui#132](https://github.com/pgmac-net/gh-iss
 ## Follow-up found
 
 Opening help from inside a session flips the background back to the issue list — `Mode::Help` is absent from the full-frame match arm in `tui/ui/mod.rs`. Pre-existing since #23, but the new "session keys" table drawn over an issue list makes it conspicuous. Left out of scope.
+
+# Development log — fix background agent list parse failure (2026-09-05)
+
+Work driven by [pgmac-net/gh-issues-tui#146](https://github.com/pgmac-net/gh-issues-tui/issues/146), on branch `146-fix-bg-agent-json-parse`.
+
+## Process
+
+1. **Root cause found by inspection, not guesswork** — `claude agents --help` documents that `--json` prints "active sessions (interactive **and** background)". `list_bg_sessions` deserialized the whole array straight into `Vec<BgSession>`, where `id` is mandatory; an interactive entry in the array has none, so serde failed the entire list with `missing field 'id'` — matching the reported error exactly.
+2. **Plan graded via `grilling`** before writing code: fix approach, regression-test coverage, and parse-resilience strategy were each put to the requester as a single decision with a recommendation, one at a time.
+3. Plan posted to the ticket and approved before implementation, per `pickup-ticket`.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| How to exclude interactive entries | Filter by `"kind": "background"` | Matches the CLI's own stated distinction rather than inferring it from which fields happen to be present |
+| Parse strategy | Generic `serde_json::Value` first, `filter_map` into `BgSession` | A single non-conforming entry (this bug, or any future shape drift) is dropped instead of failing the whole array again |
+| Testability | Extracted pure `parse_bg_sessions(bytes)` out of the subprocess-running `list_bg_sessions()` | Mirrors the file's existing pattern of unit-testing `BgSession` deserialization directly against raw JSON — the filter step needed the same treatment |
+
+## Diversions from plan
+
+None.
+
+## Verification
+
+- `cargo test` — 93/93 harness-module tests passed, including a new regression test pinning a mixed interactive/background array (the real bug shape).
+- `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — clean.
+- Live sanity check: `claude agents --json` on the development machine, confirming today's shape still has `kind` on every row.
