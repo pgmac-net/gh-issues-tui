@@ -295,8 +295,23 @@ pub fn list_bg_sessions() -> Result<Vec<BgSession>, String> {
             output.status
         ));
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("parsing background agent list failed: {e}"))
+    parse_bg_sessions(&output.stdout)
+}
+
+/// `--json` prints *every* active session, interactive as well as
+/// background (see `claude agents --help`) — an interactive one has no
+/// `id`, so it can't fill a `BgSession`. Parsed generically first and
+/// filtered to `"kind": "background"` before converting, so any entry that
+/// doesn't fit `BgSession` (this case, or an unforeseen future shape) is
+/// dropped rather than failing the whole list.
+fn parse_bg_sessions(bytes: &[u8]) -> Result<Vec<BgSession>, String> {
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(bytes)
+        .map_err(|e| format!("parsing background agent list failed: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| row.get("kind").and_then(serde_json::Value::as_str) == Some("background"))
+        .filter_map(|row| serde_json::from_value(row).ok())
+        .collect())
 }
 
 fn find_bg_agent_by_name(name: &str) -> Result<BgSession, String> {
@@ -663,6 +678,35 @@ mod tests {
         assert_eq!(sessions[0].id, "abc123");
         assert_eq!(sessions[0].name, None);
         assert_eq!(sessions[0].state, None);
+    }
+
+    #[test]
+    fn parse_bg_sessions_drops_interactive_entries() {
+        // Pinned against the real bug (pgmac-net/gh-issues-tui#146): `claude
+        // agents --json` mixes interactive sessions (no `id`) in with
+        // background ones, and used to fail the whole array on the missing
+        // field. Only the background entry should survive.
+        let json = br#"[
+            {
+                "pid": 1234,
+                "cwd": "/home/paul/pgmac",
+                "kind": "interactive",
+                "sessionId": "11111111-1111-1111-1111-111111111111"
+            },
+            {
+                "pid": 5678,
+                "id": "61db7f48",
+                "cwd": "/home/paul/pgmac",
+                "kind": "background",
+                "sessionId": "8c1d9143-1ea7-4480-b337-899f0de2768d",
+                "name": "reduce-arc-runner-churn-dqlite",
+                "status": "busy",
+                "state": "working"
+            }
+        ]"#;
+        let sessions = parse_bg_sessions(json).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "61db7f48");
     }
 
     #[test]
