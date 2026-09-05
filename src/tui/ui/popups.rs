@@ -103,15 +103,15 @@ pub(super) fn draw_harness_confirm_popup(
 ) {
     let (title, lines) = match what {
         HarnessConfirm::Kill(id) => {
-            let which = app
-                .harness
-                .get(id)
+            let session = app.harness.get(id);
+            let which = session
                 .map(|s| format!("{} ({})", s.issue_ref, s.harness))
                 .unwrap_or_else(|| "this session".into());
-            (
-                " kill session ".to_string(),
-                vec![format!("terminate {which}?")],
-            )
+            let mut lines = vec![format!("terminate {which}?")];
+            if session.is_some_and(|s| s.adopted) {
+                lines.push("Adopted \u{2014} started outside this run.".to_string());
+            }
+            (" kill session ".to_string(), lines)
         }
         HarnessConfirm::Relaunch(id) => {
             let which = app
@@ -128,16 +128,32 @@ pub(super) fn draw_harness_confirm_popup(
             )
         }
         HarnessConfirm::Quit => {
-            let mut lines = vec![format!(
-                "{} harness session(s) still running:",
-                app.harness.running_count()
-            )];
-            lines.extend(
-                app.harness
-                    .running()
-                    .map(|s| format!("  {} ({})", s.issue_ref, s.harness)),
-            );
-            lines.push("They will be terminated.".to_string());
+            let summary = app.harness.quit_summary();
+            let mut lines = Vec::new();
+            if !summary.terminated.is_empty() {
+                lines.push(format!(
+                    "{} session(s) will be terminated:",
+                    summary.terminated.len()
+                ));
+                lines.extend(
+                    summary
+                        .terminated
+                        .iter()
+                        .map(|s| format!("  {} ({})", s.issue_ref, s.harness)),
+                );
+            }
+            if !summary.survives.is_empty() {
+                lines.push(format!(
+                    "{} background session(s) keep running:",
+                    summary.survives.len()
+                ));
+                lines.extend(
+                    summary
+                        .survives
+                        .iter()
+                        .map(|s| format!("  {} ({})", s.issue_ref, s.harness)),
+                );
+            }
             (" quit ".to_string(), lines)
         }
     };
@@ -582,6 +598,7 @@ mod tests {
     use super::super::testutil::*;
     use super::*;
     use crate::provider::types::IssueState;
+    use crate::tui::app::HarnessConfirm;
     use crate::tui::app::IssueForm;
     use crate::tui::app::Mode;
 
@@ -615,6 +632,86 @@ mod tests {
         let buf = render_confirm_buffer(&app);
         assert!(!is_reversed_at(&buf, "Yes"));
         assert!(is_reversed_at(&buf, "No"));
+    }
+
+    #[test]
+    fn quit_popup_all_local_sessions_says_terminated_only() {
+        let mut app = test_app();
+        app.harness
+            .register("o/r#1".into(), "opencode".into(), String::new());
+        app.mode = Mode::ConfirmHarness(HarnessConfirm::Quit);
+        let text: String = render_app(&app, 120, 30)
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("will be terminated"), "got: {text}");
+        assert!(!text.contains("keep running"), "got: {text}");
+    }
+
+    #[test]
+    fn quit_popup_all_background_sessions_says_survives_only() {
+        let mut app = test_app();
+        app.harness
+            .reconcile("claude", &[("1".into(), "o/r#1".into())]);
+        app.mode = Mode::ConfirmHarness(HarnessConfirm::Quit);
+        let text: String = render_app(&app, 120, 30)
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !text.contains("terminated"),
+            "a bg_dispatch session survives quit — must never be called terminated: {text}"
+        );
+        assert!(text.contains("keep running"), "got: {text}");
+    }
+
+    #[test]
+    fn quit_popup_mixed_sessions_groups_both_fates() {
+        let mut app = test_app();
+        app.harness
+            .register("o/r#1".into(), "opencode".into(), String::new());
+        app.harness
+            .reconcile("claude", &[("1".into(), "o/r#2".into())]);
+        app.mode = Mode::ConfirmHarness(HarnessConfirm::Quit);
+        let text: String = render_app(&app, 120, 30)
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("will be terminated"), "got: {text}");
+        assert!(text.contains("keep running"), "got: {text}");
+    }
+
+    #[test]
+    fn kill_popup_warns_when_the_session_is_adopted() {
+        let mut app = test_app();
+        app.harness
+            .reconcile("claude", &[("1".into(), "o/r#1".into())]);
+        let id = app.harness.sessions[0].id;
+        app.mode = Mode::ConfirmHarness(HarnessConfirm::Kill(id));
+        let text: String = render_app(&app, 120, 30)
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Adopted"), "got: {text}");
+    }
+
+    #[test]
+    fn kill_popup_is_silent_for_a_directly_launched_session() {
+        let mut app = test_app();
+        let id = app
+            .harness
+            .register("o/r#1".into(), "opencode".into(), String::new());
+        app.mode = Mode::ConfirmHarness(HarnessConfirm::Kill(id));
+        let text: String = render_app(&app, 120, 30)
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!text.contains("Adopted"), "got: {text}");
     }
 
     /// The help popup's text, for whichever table `in_session` selects.
