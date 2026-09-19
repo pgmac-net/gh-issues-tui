@@ -16,6 +16,34 @@ pub(crate) fn spawn_fetch(client: &Provider, app: &App, tx: &mpsc::UnboundedSend
     });
 }
 
+/// Rank any loaded labels that have not been ranked yet (#156). A no-op
+/// without a `ranker` (feature off, or no key), when there is nothing new to
+/// ask, when a request is already out, and after a failure this session.
+pub(crate) fn spawn_label_ranks(
+    app: &mut App,
+    ranker: Option<&crate::typesafe::Client>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let Some(ranker) = ranker else { return };
+    let Some(labels) = app.begin_rank_inference() else {
+        return;
+    };
+    let ranker = ranker.clone();
+    let org = app.org.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = crate::typesafe::resolve(
+            &ranker,
+            &crate::typesafe::cache::default_path(),
+            &org,
+            labels,
+        )
+        .await
+        .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::LabelRanks { org, result });
+    });
+}
+
 pub(crate) fn spawn_form_options(
     client: &Provider,
     org: String,

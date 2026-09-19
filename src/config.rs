@@ -45,6 +45,15 @@ pub struct Config {
     #[serde(default = "copy_format_default")]
     pub copy_format: String,
 
+    /// Infer a priority rank for labels that do not follow the
+    /// `priority:<value>` convention (`P0`, `sev1`, `blocker`…), so priority
+    /// sort and colouring work on any labelling scheme. Off by default: it
+    /// sends label *names* (never titles, bodies or numbers) to TypeSafe, and
+    /// a `TYPESAFE_API_KEY` exported for other tools is not consent for this
+    /// app to do that. Needs the env key as well — see `typesafe`.
+    #[serde(default)]
+    pub infer_priority_ranks: bool,
+
     /// User-defined colour profiles: `[color_profiles.<name>]` tables whose
     /// entries override individual UI colours (see `theme::ColorProfile`).
     #[serde(default, skip_serializing)]
@@ -233,6 +242,7 @@ impl Default for Config {
             hide_empty_repos: true,
             color_profile: None,
             copy_format: copy_format_default(),
+            infer_priority_ranks: false,
             color_profiles: HashMap::new(),
             default_harness: None,
             workspace_roots: Vec::new(),
@@ -462,6 +472,13 @@ mod tests {
         let mut names: Vec<String> = cfg.harnesses.keys().cloned().collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn priority_rank_inference_is_off_unless_opted_in() {
+        assert!(!Config::default().infer_priority_ranks);
+        assert!(!cfg_from("default_org = \"pgmac-net\"\n").infer_priority_ranks);
+        assert!(cfg_from("infer_priority_ranks = true\n").infer_priority_ranks);
     }
 
     #[test]

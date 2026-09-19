@@ -653,6 +653,7 @@ impl IssueNode {
             .map(|l| Label {
                 name: l.name.clone(),
                 color: String::new(),
+                rank: None,
             })
             .collect();
         // Fold Linear's native priority into a synthetic priority:* label so
@@ -663,6 +664,7 @@ impl IssueNode {
                 Label {
                     name: format!("priority:{value}"),
                     color: String::new(),
+                    rank: None,
                 },
             );
         }

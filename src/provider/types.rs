@@ -17,11 +17,17 @@ impl std::fmt::Display for IssueState {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Label {
     pub name: String,
     #[serde(default)]
     pub color: String,
+    /// Inferred urgency rank, 1 (low) ..= 4 (urgent), for a label that does
+    /// not follow the `priority:<value>` convention. `None` means not
+    /// inferred, or inferred as not being a priority label. Never comes from
+    /// a backend — it is stamped on after the fact, hence `skip`.
+    #[serde(skip)]
+    pub rank: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,20 +67,35 @@ pub fn priority_value_rank(value: &str) -> Option<u8> {
 }
 
 impl Issue {
-    /// The first label following the `priority:<value>` convention, if any.
+    /// The issue's priority label: the first one following the
+    /// `priority:<value>` convention, else the highest-ranked label whose
+    /// rank was inferred (`Label::rank`), the first of those on a tie.
+    ///
+    /// The convention always wins, so a repo that uses it behaves exactly as
+    /// it did before inference existed.
     pub fn priority_label(&self) -> Option<&Label> {
         self.labels
             .iter()
             .find(|l| priority_value(&l.name).is_some())
+            .or_else(|| {
+                self.labels
+                    .iter()
+                    .filter(|l| l.rank.is_some())
+                    .min_by_key(|l| std::cmp::Reverse(l.rank))
+            })
     }
 
     /// Sort rank from the priority label: low = 1, medium = 2, high = 3,
-    /// urgent = 4; no priority or an unknown value = 0.
+    /// urgent = 4; no priority or an unknown value = 0. A label outside the
+    /// `priority:` convention contributes its inferred rank.
     pub fn priority_rank(&self) -> u8 {
-        self.priority_label()
-            .and_then(|l| priority_value(&l.name))
-            .and_then(priority_value_rank)
-            .unwrap_or(0)
+        let Some(label) = self.priority_label() else {
+            return 0;
+        };
+        match priority_value(&label.name) {
+            Some(value) => priority_value_rank(value).unwrap_or(0),
+            None => label.rank.unwrap_or(0),
+        }
     }
 }
 
@@ -568,6 +589,7 @@ mod tests {
         Label {
             name: name.into(),
             color: color.into(),
+            ..Default::default()
         }
     }
 
@@ -653,6 +675,51 @@ mod tests {
             issue_with_labels(vec![label("Priority:High", "")]).priority_rank(),
             3
         );
+    }
+
+    fn ranked(name: &str, rank: Option<u8>) -> Label {
+        Label {
+            name: name.into(),
+            rank,
+            ..Label::default()
+        }
+    }
+
+    #[test]
+    fn an_inferred_rank_orders_a_label_outside_the_convention() {
+        let issue = issue_with_labels(vec![ranked("bug", None), ranked("P0", Some(4))]);
+        assert_eq!(issue.priority_label().unwrap().name, "P0");
+        assert_eq!(issue.priority_rank(), 4);
+    }
+
+    #[test]
+    fn the_convention_beats_a_higher_inferred_rank_on_the_same_issue() {
+        // Inference must never override a repo that already follows the
+        // `priority:` convention.
+        let issue = issue_with_labels(vec![
+            ranked("blocker", Some(4)),
+            ranked("priority:low", None),
+        ]);
+        assert_eq!(issue.priority_label().unwrap().name, "priority:low");
+        assert_eq!(issue.priority_rank(), 1);
+    }
+
+    #[test]
+    fn the_highest_inferred_rank_wins_and_the_first_wins_a_tie() {
+        let issue = issue_with_labels(vec![
+            ranked("nice-to-have", Some(1)),
+            ranked("sev1", Some(4)),
+            ranked("P0", Some(4)),
+        ]);
+        assert_eq!(issue.priority_label().unwrap().name, "sev1");
+        assert_eq!(issue.priority_rank(), 4);
+    }
+
+    #[test]
+    fn unranked_labels_outside_the_convention_leave_the_rank_at_zero() {
+        let issue = issue_with_labels(vec![ranked("bug", None), ranked("docs", None)]);
+        assert!(issue.priority_label().is_none());
+        assert_eq!(issue.priority_rank(), 0);
     }
 
     fn pr(owner: &str, repo: &str, number: u64) -> PrRef {

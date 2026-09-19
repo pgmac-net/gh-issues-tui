@@ -109,6 +109,7 @@ default_collapsed = false   # start with repo groups expanded (default: true)
 refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
 copy_format = "{owner}/{repo}#{number}"   # `y` clipboard format (default shown)
+infer_priority_ranks = false              # rank non-`priority:` labels (P0, sev1…); needs TYPESAFE_API_KEY (default: false)
 
 default_harness = "claude"                # harness `A` launches (unset: `A` asks)
 workspace_roots = ["~/pgmac", "~/projects"]   # searched for a repo's clone
@@ -121,6 +122,8 @@ bg_dispatch = ["claude", "--bg", "--name", "{ref}", "/pgmac-workflows:pickup-tic
 With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
 
 `copy_format` controls what `y` puts on the clipboard, with `{owner}`, `{repo}`, and `{number}` placeholders substituted from the selected issue. The default (`{owner}/{repo}#{number}`) is the short form GitHub tools and Claude Code understand.
+
+`infer_priority_ranks` makes priority sort and title colouring work on repos that label priority `P0`/`P1`, `sev1`, `blocker` and the like rather than `priority:high`. It asks TypeSafe's System One model to rate each unfamiliar label name, and needs `TYPESAFE_API_KEY` in the environment as well — either one missing leaves it off. Only label *names* are sent, never titles, bodies or the org name. It only affects sorting and title colour; the `p` picker and anything written back to your tracker are untouched. Details: [`docs/priority-rank-inference.md`](docs/priority-rank-inference.md).
 
 `default_harness`, `workspace_roots` and `[harnesses.*]` configure sending an issue to a coding agent — see [Coding harnesses](#coding-harnesses) below.
 
