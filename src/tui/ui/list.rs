@@ -203,10 +203,12 @@ mod tests {
             Label {
                 name: "migrated-from-linear".into(),
                 color: "ededed".into(),
+                ..Default::default()
             },
             Label {
                 name: "priority:high".into(),
                 color: "d93f0b".into(),
+                ..Default::default()
             },
         ]);
         let style = title_style(&i, &Theme::default());
@@ -218,6 +220,7 @@ mod tests {
         let i = issue(vec![Label {
             name: "bug".into(),
             color: "d73a4a".into(),
+            ..Default::default()
         }]);
         assert_eq!(title_style(&i, &Theme::default()).fg, None);
     }

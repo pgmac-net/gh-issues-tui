@@ -672,6 +672,7 @@ fn priority_issue(number: u64, priority: Option<&str>) -> Issue {
         i.labels = vec![crate::provider::types::Label {
             name: format!("priority:{p}"),
             color: String::new(),
+            ..Default::default()
         }];
     }
     i
@@ -708,6 +709,33 @@ fn sort_by_priority_unknown_value_ranks_with_unsorted() {
     assert_eq!(
         issues.iter().map(|i| i.number).collect::<Vec<_>>(),
         vec![2, 1]
+    );
+}
+
+/// The bug that motivated rank inference: a repo labelling priority `P0`/`P1`/
+/// `P2` has no `priority:*` label at all, so every issue ranked 0 and the
+/// priority sort silently did nothing. With ranks stamped on, it orders.
+#[test]
+fn sort_by_priority_orders_an_inferred_label_convention() {
+    let ranked = |number, label: &str, rank| {
+        let mut i = issue(number, "t", IssueState::Open);
+        i.labels = vec![crate::provider::types::Label {
+            name: label.into(),
+            rank,
+            ..Default::default()
+        }];
+        i
+    };
+    let mut issues = vec![
+        ranked(1, "P2", Some(2)),
+        ranked(2, "chore", None),
+        ranked(3, "P0", Some(4)),
+        ranked(4, "P1", Some(3)),
+    ];
+    sort_issues(&mut issues, SortKey::Priority, true);
+    assert_eq!(
+        issues.iter().map(|i| i.number).collect::<Vec<_>>(),
+        vec![3, 4, 1, 2]
     );
 }
 
@@ -1089,10 +1117,12 @@ fn priority_label_set_replaces_existing_priority() {
         crate::provider::types::Label {
             name: "bug".into(),
             color: "".into(),
+            ..Default::default()
         },
         crate::provider::types::Label {
             name: "Priority:Low".into(),
             color: "".into(),
+            ..Default::default()
         },
     ];
     assert_eq!(
@@ -1109,6 +1139,7 @@ fn priority_label_set_adds_when_none_present() {
     i.labels = vec![crate::provider::types::Label {
         name: "bug".into(),
         color: "".into(),
+        ..Default::default()
     }];
     assert_eq!(
         priority_label_set(&i, Some("priority:urgent")),
@@ -1127,6 +1158,7 @@ fn label_filter_matches_bare_value() {
     issue.labels = vec![crate::provider::types::Label {
         name: "priority:high".into(),
         color: "".into(),
+        ..Default::default()
     }];
     assert!(super::label_filter_matches(
         &issue,
@@ -1152,6 +1184,7 @@ fn label_filter_matches_any_of_several_values() {
     issue.labels = vec![crate::provider::types::Label {
         name: "priority:urgent".into(),
         color: "".into(),
+        ..Default::default()
     }];
     assert!(super::label_filter_matches(
         &issue,
@@ -1171,6 +1204,7 @@ fn label_filter_matches_status() {
     issue.labels = vec![crate::provider::types::Label {
         name: "status:needs-review".into(),
         color: "".into(),
+        ..Default::default()
     }];
     assert!(super::label_filter_matches(
         &issue,
@@ -1195,6 +1229,7 @@ fn label_filter_matches_is_case_insensitive() {
     issue.labels = vec![crate::provider::types::Label {
         name: "Priority:High".into(),
         color: "".into(),
+        ..Default::default()
     }];
     assert!(super::label_filter_matches(
         &issue,
@@ -1260,11 +1295,13 @@ fn compute_priority_options() {
     a.labels = vec![crate::provider::types::Label {
         name: "priority:high".into(),
         color: "".into(),
+        ..Default::default()
     }];
     let mut b = issue(2, "b", IssueState::Open);
     b.labels = vec![crate::provider::types::Label {
         name: "priority:low".into(),
         color: "".into(),
+        ..Default::default()
     }];
     let app = app_with(vec![RepoIssues {
         repo: "r".into(),
@@ -1284,6 +1321,7 @@ fn compute_priority_options_rank_order_unknown_last() {
         .map(|n| crate::provider::types::Label {
             name: n.to_string(),
             color: "".into(),
+            ..Default::default()
         })
         .collect();
     let app = app_with(vec![RepoIssues {
@@ -1303,6 +1341,7 @@ fn compute_status_options() {
     a.labels = vec![crate::provider::types::Label {
         name: "status:needs-review".into(),
         color: "".into(),
+        ..Default::default()
     }];
     let app = app_with(vec![RepoIssues {
         repo: "r".into(),
@@ -1347,6 +1386,7 @@ fn label_values_handles_mixed_case_prefix() {
     a.labels = vec![crate::provider::types::Label {
         name: "Priority:High".into(),
         color: "".into(),
+        ..Default::default()
     }];
     let app = app_with(vec![RepoIssues {
         repo: "r".into(),

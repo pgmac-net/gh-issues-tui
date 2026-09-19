@@ -55,6 +55,7 @@ pub(crate) fn app_with_issue(labels: &[&str]) -> (App, String) {
             .map(|n| Label {
                 name: (*n).to_string(),
                 color: String::new(),
+                ..Default::default()
             })
             .collect(),
         comment_count: 0,

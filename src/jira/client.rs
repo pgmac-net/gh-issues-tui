@@ -512,6 +512,7 @@ fn map_issue(raw: &Value) -> Issue {
                 .map(|name| Label {
                     name: name.to_string(),
                     color: String::new(),
+                    rank: None,
                 })
                 .collect()
         })
@@ -528,6 +529,7 @@ fn map_issue(raw: &Value) -> Issue {
             Label {
                 name: format!("priority:{value}"),
                 color: String::new(),
+                rank: None,
             },
         );
     }
