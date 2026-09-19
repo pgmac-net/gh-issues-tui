@@ -717,3 +717,44 @@ None.
 - `cargo test` — 622 passed (30 new), including golden renders of the quit popup in all three shapes (all-local, all-background, mixed — the all-background case asserts the string "terminated" is absent) and of the kill popup for an adopted vs. a direct-exec session.
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — clean.
 - Not run live against a real `claude --bg` session in this pass — the golden renders and `HarnessState` unit tests exercise the same code paths a live run would, and the two live-observed facts that grounded the plan (the false "terminated" claim, and a real cross-job session that would be adopted) were confirmed against `claude agents --json` output during grilling rather than re-checked afterward.
+
+
+# Development log — infer priority rank from label conventions (2026-09-19)
+
+Work driven by [pgmac-net/gh-issues-tui#156](https://github.com/pgmac-net/gh-issues-tui/issues/156), on branch `156-infer-priority-rank` ([PR #161](https://github.com/pgmac-net/gh-issues-tui/pull/161)).
+
+## Process
+
+1. **Found by review, not by a bug report.** #156 came out of a pass over the project looking for places a model's judgement could stand in for fragile hard-coded logic (TypeSafe System One). It ranked first: the state is tiny (label names), the answer is cacheable indefinitely, and it fixes a real functional gap — a repo labelling priority `P0`/`sev1`/`blocker` ranked every issue 0, so `SortKey::Priority` silently did nothing.
+2. **Grilling** put eight decisions one at a time, each with a recommendation; all eight went with the recommended option. It also found the ticket understated the problem: `Issue::priority_rank` is a method on a bare struct with no app state (seven call sites involved), and the ticket's "status" half has nothing to infer because no status rank exists anywhere in the code.
+3. Plan posted to the ticket and approved before implementation, per `pickup-ticket`. Planning ran on Opus 5 (the requester chose to stay on it rather than switch), implementation on Sonnet 5 as the plan recorded.
+4. Three commits so review stays legible: the mechanical `Label.rank` churn, the inference logic, then docs.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Where the rank lives | `Label::rank`, read by `Issue::priority_label` | No signature churn at three stateless call sites, and the title colour follows for free. A field on `Issue` leaves the colour broken; threading a map churns seven sites; a global makes parallel tests interfere |
+| Write path | Read-only (ADR 0002) | `priority_label_set` strips priority labels, so a mistaken rank could remove a real label during a mutation |
+| `status:*` | Dropped from this ticket | No ordered scale to infer; semantic matching is a different mechanism and overlaps #158 |
+| Trigger | On fetch, cache-first | Warm cache = zero calls; a key press would leave the sort wrong until pressed, which is the bug |
+| Answer to rank | Most probable level plus a confidence gate | The weighted score averages a 45/45 split into a middle level nobody voted for |
+| Consent | Config flag **and** env key (ADR 0002) | A key exported for other tools is not consent for this app to send an org's label names |
+| Failure | One status message, off for the session, no retry | A 429 means the budget is gone; the guard stops every auto-refresh reprinting it |
+| Cache | Per `(org, label)`, stamped with model and prompt version, in the user cache dir | `blocked` can mean different things in different orgs |
+
+## Diversions from plan
+
+- **Inference does not reach the filter picker.** The plan listed `compute_multi_options(4)` as affected. It is not: `label_values` only lists `priority:<value>` labels, so an inferred label such as `P0` never appears there. Inference reaches sort and title colour only. The wrong claim had already been written into docs and a commit message before this was checked; all were corrected (the commit message by amending before the branch was pushed).
+- **Question wording.** The plan's example keyed each question by the label name, but question ids are never shown to the model. The label is named in each question's `instructions`.
+- **22 `Label { .. }` literals, not 24** — the compiler is authoritative.
+- **The `priority_label()` fallback ships with the churn commit**, since that commit otherwise fails `clippy -D warnings` on a never-read field.
+
+## Verification
+
+- `cargo test` — 655 passed (33 new). `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` and `cargo build --release` — clean.
+- **Mutation-checked** the two tests guarding subtle behaviour by removing the code they protect. Removing the re-stamp on refresh failed its test as intended. Removing the selection re-anchor did **not** fail its test: the first version was vacuous, because the selected issue sat in the same row before and after the reorder. Fixed by selecting an issue that actually moves, and re-checked.
+- The wire contract is exercised against a local mock HTTP server: bearer auth, question shape, that the org name is never sent, and that a warm cache makes no request.
+- **Not run against the live TypeSafe API** — no key was available. The request/response shapes are hand-rolled from the published reference, and `MIN_CONFIDENCE` (0.7) is a conservative guess that has never met a real label set. Tracked in #163.
+
+Follow-ups: #162 (priority picker offering inferred labels — the write path), #163 (live verification and confidence tuning), #164 (inferred labels in the priority filter picker).
