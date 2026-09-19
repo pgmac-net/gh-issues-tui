@@ -14,6 +14,7 @@ mod harness;
 mod mode;
 mod picker;
 mod pr;
+mod ranks;
 mod rows;
 
 #[cfg(test)]
@@ -27,6 +28,7 @@ pub use harness::{HarnessState, LaunchAction, SessionId, SessionMeta, SessionSta
 pub use mode::*;
 pub use picker::PickerState;
 pub use pr::PrState;
+pub use ranks::RankState;
 
 use prelude::*;
 
@@ -86,6 +88,10 @@ pub struct App {
     pub rate_limit_error: Option<String>,
     /// The PR summary popup and the links that feed it.
     pub pr: PrState,
+    /// Inferred priority ranks for labels outside the `priority:` convention
+    /// (#156). Read-only: it affects sort, colour and filter ordering, never
+    /// what is written back to a backend.
+    pub label_rank: RankState,
     /// Comment threads already fetched this refresh cycle, keyed by issue id.
     ///
     /// Navigating with the detail pane open used to spawn one request per row
@@ -145,6 +151,7 @@ impl App {
             rate_limit_error: None,
             comment_cache: HashMap::new(),
             pr: PrState::default(),
+            label_rank: RankState::default(),
             harness: HarnessState::default(),
             should_quit: false,
         }
@@ -165,6 +172,8 @@ impl App {
         // cached threads are no longer trustworthy.
         self.comment_cache.clear();
         self.repos = repos;
+        // A refresh brings fresh issues whose labels carry no rank.
+        self.stamp_label_ranks();
         // First-seen repos take the configured default; repos the user has
         // already interacted with keep their manual collapse state. When the
         // current filters leave exactly one repo group visible, that group
@@ -188,21 +197,7 @@ impl App {
         // can insert/remove rows, and the index-based selection would
         // otherwise silently land elsewhere. A vanished issue keeps the
         // index clamped by `rebuild_rows`.
-        if let Some(id) = prev_selected
-            && let Some(idx) = self.rows.iter().position(|row| match row {
-                Row::Issue {
-                    repo_idx,
-                    issue_idx,
-                } => self
-                    .repos
-                    .get(*repo_idx)
-                    .and_then(|r| r.issues.get(*issue_idx))
-                    .is_some_and(|i| i.id == id),
-                Row::RepoHeader { .. } => false,
-            })
-        {
-            self.selected = idx;
-        }
+        self.reselect(prev_selected);
     }
 
     /// True when the repo filter text exactly names a fetched repo — then
@@ -258,6 +253,7 @@ impl App {
         self.detail.comments = None;
         self.detail.reset_scroll();
         self.pr = PrState::default();
+        self.label_rank = RankState::default();
         self.loading = true;
     }
 

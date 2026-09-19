@@ -5,6 +5,7 @@ mod jira;
 mod linear;
 mod provider;
 mod tui;
+mod typesafe;
 
 use anyhow::Result;
 use clap::Parser;
@@ -97,6 +98,9 @@ async fn main() -> Result<()> {
         cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
 
+    // Dormant unless config opted in AND `TYPESAFE_API_KEY` is set (#156).
+    let ranker = typesafe::Client::from_settings(cfg.infer_priority_ranks);
+
     install_panic_hook();
     tui::run(
         client,
@@ -109,6 +113,7 @@ async fn main() -> Result<()> {
         cfg.copy_format,
         theme,
         harness,
+        ranker,
     )
     .await
 }

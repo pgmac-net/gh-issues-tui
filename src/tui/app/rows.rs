@@ -40,6 +40,27 @@ impl App {
         }
     }
 
+    /// Move the selection back onto the issue with `id`, when it is still in
+    /// the rows. A vanished (or absent) id leaves the index where
+    /// `rebuild_rows` clamped it.
+    pub(super) fn reselect(&mut self, id: Option<String>) {
+        if let Some(id) = id
+            && let Some(idx) = self.rows.iter().position(|row| match row {
+                Row::Issue {
+                    repo_idx,
+                    issue_idx,
+                } => self
+                    .repos
+                    .get(*repo_idx)
+                    .and_then(|r| r.issues.get(*issue_idx))
+                    .is_some_and(|i| i.id == id),
+                Row::RepoHeader { .. } => false,
+            })
+        {
+            self.selected = idx;
+        }
+    }
+
     pub fn selected_issue(&self) -> Option<&Issue> {
         match self.rows.get(self.selected)? {
             Row::Issue {

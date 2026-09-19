@@ -24,7 +24,7 @@ mod keys;
 mod spawn;
 
 use keys::{HarnessCtx, handle_key};
-use spawn::{CommentRefresh, spawn_comments, spawn_fetch};
+use spawn::{CommentRefresh, spawn_comments, spawn_fetch, spawn_label_ranks};
 
 pub enum AppEvent {
     Data(Result<Vec<RepoIssues>, String>),
@@ -51,6 +51,12 @@ pub enum AppEvent {
     LabelOptions {
         issue_id: String,
         result: Result<Vec<RepoLabel>, String>,
+    },
+    /// Inferred priority ranks for the loaded labels (#156). Carries the org
+    /// it was asked for so a late answer cannot land on a different org.
+    LabelRanks {
+        org: String,
+        result: Result<std::collections::HashMap<String, Option<u8>>, String>,
     },
     /// A resolved reference, fetched for the PR-summary popup. May be an issue
     /// rather than a PR — the shorthand forms cannot tell them apart.
@@ -81,6 +87,7 @@ pub async fn run(
     copy_format: String,
     theme: Theme,
     harness: HarnessSettings,
+    ranker: Option<crate::typesafe::Client>,
 ) -> Result<()> {
     let terminal = ratatui::init();
     let result = event_loop(
@@ -95,6 +102,7 @@ pub async fn run(
         copy_format,
         theme,
         harness,
+        ranker,
     )
     .await;
     ratatui::restore();
@@ -114,6 +122,7 @@ async fn event_loop(
     copy_format: String,
     theme: Theme,
     harness_settings: HarnessSettings,
+    ranker: Option<crate::typesafe::Client>,
 ) -> Result<()> {
     let mut app = App::new(
         org,
@@ -187,7 +196,12 @@ async fn event_loop(
                 if let AppEvent::HarnessDirty(id) = &msg {
                     redraw = app.harness.active == Some(*id);
                 }
+                // Fresh data can bring labels nobody has ranked yet.
+                let fresh_data = matches!(msg, AppEvent::Data(Ok(_)));
                 handle_app_event(&mut app, msg, &client, &tx);
+                if fresh_data {
+                    spawn_label_ranks(&mut app, ranker.as_ref(), &tx);
+                }
             }
             _ = refresh.tick(), if refresh_enabled => {
                 if app.should_auto_refresh() {
@@ -326,6 +340,7 @@ pub(crate) fn handle_app_event(
                 app.repos.len()
             ));
         }
+        AppEvent::LabelRanks { org, result } => app.apply_label_ranks(&org, result),
         AppEvent::Data(Err(e)) => {
             app.loading = false;
             app.auto_refreshing = false;
@@ -704,6 +719,39 @@ mod tests {
         );
 
         assert!(!app.comment_cache.contains_key(&issue_id));
+    }
+
+    /// The consent contract: with no ranker (flag off, or no key) the feature
+    /// is inert — no request, and nothing marked in flight, so behaviour is
+    /// exactly what it was before inference existed.
+    #[test]
+    fn label_ranking_is_inert_without_a_ranker() {
+        let (mut app, _id) = app_with_issue(&["P0"]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_label_ranks(&mut app, None, &tx);
+        assert!(rx.try_recv().is_err(), "no event may be produced");
+        assert!(
+            app.begin_rank_inference().is_some(),
+            "must not have been marked in flight"
+        );
+    }
+
+    #[test]
+    fn a_label_ranks_event_stamps_the_issue_through_the_handler() {
+        let (mut app, _id) = app_with_issue(&["P0"]);
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.begin_rank_inference();
+        handle_app_event(
+            &mut app,
+            AppEvent::LabelRanks {
+                org: "org".into(),
+                result: Ok([("P0".to_string(), Some(4))].into()),
+            },
+            &client,
+            &tx,
+        );
+        assert_eq!(app.repos[0].issues[0].priority_rank(), 4);
     }
 
     #[test]

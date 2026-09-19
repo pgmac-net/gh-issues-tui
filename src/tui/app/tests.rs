@@ -2455,3 +2455,168 @@ fn switch_org_clears_the_comment_cache() {
     app.switch_org("other-org".into());
     assert!(app.comment_cache.is_empty());
 }
+
+// ---- label-rank inference (#156) ----
+
+fn labelled(number: u64, labels: &[&str]) -> Issue {
+    let mut i = issue(number, "t", IssueState::Open);
+    i.labels = labels
+        .iter()
+        .map(|n| crate::provider::types::Label {
+            name: (*n).into(),
+            ..Default::default()
+        })
+        .collect();
+    i
+}
+
+fn one_repo(issues: Vec<Issue>) -> Vec<RepoIssues> {
+    vec![RepoIssues {
+        repo: "r".into(),
+        repo_url: "u".into(),
+        issues,
+    }]
+}
+
+fn answers(pairs: &[(&str, Option<u8>)]) -> Result<HashMap<String, Option<u8>>, String> {
+    Ok(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect())
+}
+
+#[test]
+fn inference_asks_only_about_unresolved_labels_outside_the_convention() {
+    let mut app = app_with(one_repo(vec![
+        labelled(1, &["priority:high", "P0", "bug"]),
+        labelled(2, &["bug", "P1"]),
+    ]));
+    // `priority:high` is ranked by the convention; each name is asked once.
+    assert_eq!(
+        app.begin_rank_inference(),
+        Some(vec!["P0".into(), "P1".into(), "bug".into()])
+    );
+}
+
+#[test]
+fn inference_is_single_flight_until_the_answer_lands() {
+    let mut app = app_with(one_repo(vec![labelled(1, &["P0"])]));
+    assert!(app.begin_rank_inference().is_some());
+    // A refresh landing mid-request must not ask for the same labels again.
+    assert_eq!(app.begin_rank_inference(), None);
+    app.apply_label_ranks("org", answers(&[("P0", Some(4))]));
+    // Everything is resolved now, so there is nothing left to ask.
+    assert_eq!(app.begin_rank_inference(), None);
+}
+
+#[test]
+fn a_none_answer_is_remembered_so_the_label_is_not_asked_again() {
+    let mut app = app_with(one_repo(vec![labelled(1, &["bug"])]));
+    app.begin_rank_inference();
+    app.apply_label_ranks("org", answers(&[("bug", None)]));
+    app.set_data(one_repo(vec![labelled(1, &["bug"])]));
+    assert_eq!(app.begin_rank_inference(), None);
+}
+
+#[test]
+fn ranks_are_restamped_when_a_refresh_replaces_the_issues() {
+    let mut app = app_with(one_repo(vec![labelled(1, &["P0"])]));
+    app.begin_rank_inference();
+    app.apply_label_ranks("org", answers(&[("P0", Some(4))]));
+    assert_eq!(app.repos[0].issues[0].priority_rank(), 4);
+
+    // The fetch hands back brand-new issues whose labels carry no rank.
+    app.set_data(one_repo(vec![labelled(1, &["P0"])]));
+    assert_eq!(
+        app.repos[0].issues[0].priority_rank(),
+        4,
+        "an auto-refresh must not throw the inferred ranks away"
+    );
+}
+
+#[test]
+fn the_priority_sort_orders_a_p_number_repo_once_ranks_land() {
+    let mut app = app_with(one_repo(vec![
+        labelled(1, &["P2"]),
+        labelled(2, &["P0"]),
+        labelled(3, &["P1"]),
+    ]));
+    app.sort_key = SortKey::Priority;
+    app.sort_desc = true;
+    app.rebuild_rows();
+    app.begin_rank_inference();
+    app.apply_label_ranks(
+        "org",
+        answers(&[("P0", Some(4)), ("P1", Some(3)), ("P2", Some(2))]),
+    );
+    let order: Vec<u64> = app.repos[0].issues.iter().map(|i| i.number).collect();
+    assert_eq!(order, vec![2, 3, 1]);
+}
+
+#[test]
+fn a_rank_that_reorders_the_list_keeps_the_selection_on_the_same_issue() {
+    let mut app = app_with(one_repo(vec![
+        labelled(1, &["P2"]),
+        labelled(2, &["P0"]),
+        labelled(3, &["P1"]),
+    ]));
+    app.sort_key = SortKey::Priority;
+    app.sort_desc = true;
+    app.rebuild_rows();
+    // Before ranks exist the order is by recency: #3, #2, #1. Once ranked it
+    // is #2, #3, #1, so #3 moves from row 1 to row 2 — a stale index would
+    // land on #2. (Selecting #1 proves nothing: it is last either way.)
+    app.selected = app
+        .rows
+        .iter()
+        .position(|r| {
+            matches!(r, Row::Issue { repo_idx, issue_idx }
+                if app.repos[*repo_idx].issues[*issue_idx].number == 3)
+        })
+        .unwrap();
+    app.begin_rank_inference();
+    app.apply_label_ranks(
+        "org",
+        answers(&[("P0", Some(4)), ("P1", Some(3)), ("P2", Some(2))]),
+    );
+    assert_eq!(
+        app.selected_issue().map(|i| i.number),
+        Some(3),
+        "the selection follows the issue, not the row index"
+    );
+}
+
+#[test]
+fn a_failure_sets_the_status_and_switches_inference_off_for_the_session() {
+    let mut app = app_with(one_repo(vec![labelled(1, &["P0"])]));
+    app.begin_rank_inference();
+    app.apply_label_ranks("org", Err("TypeSafe returned 429 Too Many Requests".into()));
+    let status = app.status.clone().unwrap();
+    assert!(status.contains("priority ranks unavailable"), "{status}");
+    assert!(status.contains("429"), "{status}");
+
+    // No retry, even when a refresh brings a brand-new label.
+    app.set_data(one_repo(vec![labelled(1, &["P0", "sev1"])]));
+    assert_eq!(app.begin_rank_inference(), None);
+}
+
+#[test]
+fn an_answer_for_another_org_is_dropped_and_leaves_the_newer_request_alone() {
+    let mut app = app_with(one_repo(vec![labelled(1, &["P0"])]));
+    app.begin_rank_inference();
+    app.apply_label_ranks("some-other-org", answers(&[("P0", Some(4))]));
+    assert_eq!(app.repos[0].issues[0].priority_rank(), 0, "not applied");
+    // Still marked in flight: the request for *this* org has not landed.
+    assert_eq!(app.begin_rank_inference(), None);
+}
+
+#[test]
+fn switching_org_forgets_the_ranks_and_the_failure() {
+    let mut app = app_with(one_repo(vec![labelled(1, &["P0"])]));
+    app.begin_rank_inference();
+    app.apply_label_ranks("org", Err("boom".into()));
+    app.switch_org("other".into());
+    app.set_data(one_repo(vec![labelled(1, &["P0"])]));
+    assert_eq!(
+        app.begin_rank_inference(),
+        Some(vec!["P0".into()]),
+        "a new org gets a fresh attempt"
+    );
+}
