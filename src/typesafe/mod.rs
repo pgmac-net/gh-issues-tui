@@ -7,10 +7,12 @@
 //! System One model to rate each such label name on the same 1..=4 scale, and
 //! the answers are stamped onto `Label::rank`.
 //!
-//! **Read-only by design.** A rank only affects sorting and title colour. It
-//! never reaches the write path (`priority_set_options`,
-//! `priority_label_set`), so a wrong judgement can mis-sort a row but can
-//! never change a label on a backend. See `docs/adr/0002-…`.
+//! **The convention always wins, and gates the write path.** On a repo with
+//! any `priority:*` label, a rank only affects sorting and title colour and
+//! never reaches `priority_set_options` or `priority_label_set`. On a repo
+//! with none, #162 lets the `p` picker offer and write the repo's own ranked
+//! labels — but a write that would remove a ranked label names every one of
+//! them in a confirmation first. See `docs/adr/0002-…` and `0003-…`.
 //!
 //! **Two-key consent.** Inference needs `infer_priority_ranks = true` in
 //! config *and* `TYPESAFE_API_KEY` in the environment. A key exported for

@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (#156)
+Accepted (#156). Clause 1 (**inferred ranks are read-only**) superseded by
+[ADR 0003](0003-inferred-priority-ranks-may-be-written-behind-a-named-confirmation.md)
+(#162), which widened the write path behind a confirmation that names every label a write
+would remove. Clauses 2-4 stand. The reasoning below is why that confirmation exists, so it
+is left as written rather than revised.
 
 ## Context
 
