@@ -66,6 +66,19 @@ pub fn priority_value_rank(value: &str) -> Option<u8> {
     }
 }
 
+/// The word for a rank, inverse of [`priority_value_rank`]. Names what an
+/// inferred rank means so a picker row can say `P0  urgent` rather than
+/// leaving the user to deduce the order (#162).
+pub fn priority_rank_word(rank: u8) -> Option<&'static str> {
+    match rank {
+        1 => Some("low"),
+        2 => Some("medium"),
+        3 => Some("high"),
+        4 => Some("urgent"),
+        _ => None,
+    }
+}
+
 impl Issue {
     /// The issue's priority label: the first one following the
     /// `priority:<value>` convention, else the highest-ranked label whose
@@ -83,6 +96,13 @@ impl Issue {
                     .filter(|l| l.rank.is_some())
                     .min_by_key(|l| std::cmp::Reverse(l.rank))
             })
+    }
+
+    /// The issue's labels carrying an inferred rank (#156) — the ones a
+    /// write from the inferred priority picker would strip (#162). One
+    /// definition, shared by the strip set and the confirmation that names it.
+    pub fn ranked_labels(&self) -> impl Iterator<Item = &Label> {
+        self.labels.iter().filter(|l| l.rank.is_some())
     }
 
     /// Sort rank from the priority label: low = 1, medium = 2, high = 3,

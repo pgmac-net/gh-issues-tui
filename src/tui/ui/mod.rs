@@ -108,6 +108,7 @@ fn draw_popup(f: &mut Frame, app: &App, t: &Theme) {
         Mode::ConfirmHarness(what) => popups::draw_harness_confirm_popup(f, app, t, what),
         Mode::MovePicker => popups::draw_picker(f, app, t, popups::PickerSpec::move_target()),
         Mode::ConfirmMove => popups::draw_confirm_move_popup(f, app, t),
+        Mode::ConfirmPriority => popups::draw_confirm_priority_popup(f, app, t),
         // `active` is the same flag the dismiss path uses to decide where help
         // returns to (`keys/mod.rs`), and `detach()` clears it — so it is a
         // sound stand-in for "help was opened from inside a session".

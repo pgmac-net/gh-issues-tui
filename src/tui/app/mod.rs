@@ -67,6 +67,10 @@ pub struct App {
     /// A move committed from `Mode::MovePicker`, awaiting confirmation.
     /// `None` whenever `Mode` isn't `MovePicker`/`ConfirmMove`.
     pub pending_move: Option<PendingMove>,
+    /// A priority committed from `Mode::PrioritySet` whose write would strip
+    /// inferred labels, awaiting confirmation (#162). `None` whenever `Mode`
+    /// isn't `ConfirmPriority`.
+    pub pending_priority: Option<PendingPriority>,
     /// The new-issue form, present while it is open.
     pub issue_form: Option<IssueForm>,
     /// The inline comment/description editor's session state.
@@ -139,6 +143,7 @@ impl App {
             filter_menu_idx: 0,
             picker: PickerState::default(),
             pending_move: None,
+            pending_priority: None,
             issue_form: None,
             editor: EditorState::default(),
             confirm_choice: ConfirmChoice::No,
@@ -288,4 +293,5 @@ pub(crate) mod prelude {
     pub use super::App;
 
     pub use super::pr::PrState;
+    pub use super::ranks::RankState;
 }

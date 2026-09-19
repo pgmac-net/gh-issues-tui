@@ -15,7 +15,10 @@ use crate::provider::Provider;
 use crate::provider::error::RATE_LIMIT_MSG_PREFIX;
 use crate::provider::types::{Comment, FormOptions, PrLookup, PrRef, RepoIssues, RepoLabel};
 
-use super::app::{App, Mode, SessionId, priority_set_options};
+use super::app::{
+    App, Mode, SessionId, inferred_priority_set_options, priority_set_options,
+    repo_uses_priority_convention,
+};
 use super::harness::{HarnessRegistry, HarnessSettings, list_bg_sessions};
 use super::theme::Theme;
 use super::ui;
@@ -24,7 +27,7 @@ mod keys;
 mod spawn;
 
 use keys::{HarnessCtx, handle_key};
-use spawn::{CommentRefresh, spawn_comments, spawn_fetch, spawn_label_ranks};
+use spawn::{CommentRefresh, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks};
 
 pub enum AppEvent {
     Data(Result<Vec<RepoIssues>, String>),
@@ -51,6 +54,15 @@ pub enum AppEvent {
     LabelOptions {
         issue_id: String,
         result: Result<Vec<RepoLabel>, String>,
+    },
+    /// Inferred ranks for the repo labels the set-priority picker fetched
+    /// (#162). Carries `labels` so the picker can be built without a second
+    /// fetch, and `issue_id` for the same staleness guard as
+    /// `PriorityOptions`.
+    PriorityRanks {
+        issue_id: String,
+        labels: Vec<RepoLabel>,
+        result: Result<std::collections::HashMap<String, Option<u8>>, String>,
     },
     /// Inferred priority ranks for the loaded labels (#156). Carries the org
     /// it was asked for so a late answer cannot land on a different org.
@@ -198,7 +210,7 @@ async fn event_loop(
                 }
                 // Fresh data can bring labels nobody has ranked yet.
                 let fresh_data = matches!(msg, AppEvent::Data(Ok(_)));
-                handle_app_event(&mut app, msg, &client, &tx);
+                handle_app_event(&mut app, msg, &client, ranker.as_ref(), &tx);
                 if fresh_data {
                     spawn_label_ranks(&mut app, ranker.as_ref(), &tx);
                 }
@@ -297,10 +309,43 @@ pub(crate) fn comments_refresh_target(app: &App) -> Option<String> {
     app.selected_issue().map(|i| i.id.clone())
 }
 
+/// Open the set-priority picker on `options`, highlighting the issue's
+/// current priority label. `options` always holds `\u{2014}` plus at least one
+/// label — a list with nothing to pick is handled by [`no_priority_options`].
+fn open_priority_picker(app: &mut App, options: Vec<String>) {
+    let idx = app
+        .selected_issue()
+        .and_then(|i| i.priority_label())
+        .and_then(|l| options.iter().position(|o| o.eq_ignore_ascii_case(&l.name)))
+        .unwrap_or(0);
+    app.status = None;
+    app.picker.start(options, idx);
+    app.mode = Mode::PrioritySet;
+}
+
+/// The repo offers nothing to set. Same message whether or not inference ran:
+/// a repo with no rankable label has no `priority:*` label either, and the
+/// wording should not turn into a report on the model.
+fn no_priority_options(app: &mut App) {
+    app.status = Some("no priority:* labels on this repo".into());
+    app.picker.priority_issue = None;
+}
+
+/// Open the picker over the repo's ranked labels (#162), or say there are none.
+fn open_inferred_priority_picker(app: &mut App, labels: &[RepoLabel]) {
+    let options = inferred_priority_set_options(labels, &app.label_rank);
+    if options.len() == 1 {
+        no_priority_options(app);
+    } else {
+        open_priority_picker(app, options);
+    }
+}
+
 pub(crate) fn handle_app_event(
     app: &mut App,
     msg: AppEvent,
     client: &Provider,
+    ranker: Option<&crate::typesafe::Client>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     // Harness events never touch the API, so they must not disturb the
@@ -418,25 +463,70 @@ pub(crate) fn handle_app_event(
             }
             match result {
                 Ok(labels) => {
-                    let options = priority_set_options(&labels);
-                    if options.len() == 1 {
-                        app.status = Some("no priority:* labels on this repo".into());
-                        app.picker.priority_issue = None;
-                    } else {
-                        // Highlight the issue's current priority when set.
-                        let idx = app
-                            .selected_issue()
-                            .and_then(|i| i.priority_label())
-                            .and_then(|l| {
-                                options.iter().position(|o| o.eq_ignore_ascii_case(&l.name))
-                            })
-                            .unwrap_or(0);
-                        app.status = None;
-                        app.picker.start(options, idx);
-                        app.mode = Mode::PrioritySet;
+                    // One `priority:*` label anywhere in the repo's list and
+                    // this is the pre-inference code path, exactly (#162,
+                    // ADR 0003): the convention says what it means, so no
+                    // judgement is invited and no confirmation can appear.
+                    if repo_uses_priority_convention(&labels) {
+                        let options = priority_set_options(&labels);
+                        if options.len() == 1 {
+                            no_priority_options(app);
+                        } else {
+                            open_priority_picker(app, options);
+                        }
+                        return;
+                    }
+                    // No convention: offer the repo's own ranked labels. The
+                    // background pass only sees labels on loaded issues, so
+                    // the repo's list can hold names nobody has asked about.
+                    let ask = app.label_rank.unranked(&labels);
+                    match ranker {
+                        Some(r) if !ask.is_empty() && !app.label_rank.has_failed() => {
+                            spawn_priority_ranks(r, app.org.clone(), issue_id, labels, ask, tx);
+                        }
+                        // No ranker, nothing left to ask, or inference failed
+                        // this session — open on what is already known, which
+                        // may be nothing at all.
+                        _ => open_inferred_priority_picker(app, &labels),
                     }
                 }
                 Err(e) => {
+                    app.status = Some(format!("priorities failed: {e}"));
+                    app.picker.priority_issue = None;
+                }
+            }
+        }
+        AppEvent::PriorityRanks {
+            issue_id,
+            labels,
+            result,
+        } => {
+            // Same staleness rule as `PriorityOptions`: only useful while
+            // that issue's picker is still the one being waited on.
+            if app.mode != Mode::Normal
+                || app.picker.priority_issue.as_deref() != Some(issue_id.as_str())
+                || app.selected_issue().is_none_or(|i| i.id != issue_id)
+            {
+                if app.picker.priority_issue.as_deref() == Some(issue_id.as_str()) {
+                    app.picker.priority_issue = None;
+                }
+                // The answers are kept even so. They cost a request, and
+                // sorting can use them although this picker no longer can.
+                if let Ok(ranks) = result {
+                    app.merge_label_ranks(ranks);
+                }
+                return;
+            }
+            match result {
+                Ok(ranks) => {
+                    app.merge_label_ranks(ranks);
+                    open_inferred_priority_picker(app, &labels);
+                }
+                Err(e) => {
+                    // One failure turns inference off for the session, as in
+                    // #156 — a keypress-driven retry storm is worse than
+                    // falling back to the pre-inference behaviour.
+                    app.label_rank.mark_failed();
                     app.status = Some(format!("priorities failed: {e}"));
                     app.picker.priority_issue = None;
                 }
@@ -526,12 +616,13 @@ pub(crate) mod prelude {
     pub use tokio::sync::mpsc;
 
     pub use crate::provider::Provider;
-    pub use crate::provider::types::{IssueState, PrRef};
+    pub use crate::provider::types::{IssueState, PrRef, RepoLabel};
     pub use crate::tui::app::{
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorState, EditorTarget, Focus,
         HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH,
-        InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove, SessionId, StateFilter,
-        issue_form_width, priority_label_set,
+        InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove, PendingPriority,
+        SessionId, StateFilter, issue_form_width, options_are_convention, priority_label_set,
+        ranked_label_set,
     };
     pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};
     pub use crate::tui::{layout, ui};
@@ -608,6 +699,7 @@ mod tests {
                 issues: vec![stub_issue("I_2", 2)],
             }])),
             &client,
+            None,
             &tx,
         );
 
@@ -630,7 +722,7 @@ mod tests {
         let client = test_client();
         let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
 
-        handle_app_event(&mut app, AppEvent::Data(Ok(vec![])), &client, &tx);
+        handle_app_event(&mut app, AppEvent::Data(Ok(vec![])), &client, None, &tx);
 
         assert!(app.selected_issue().is_none());
         assert!(app.detail.comments.is_none());
@@ -657,6 +749,7 @@ mod tests {
                 issues: vec![refreshed],
             }])),
             &client,
+            None,
             &tx,
         );
 
@@ -692,6 +785,7 @@ mod tests {
                 comments: CommentRefresh::Skip,
             },
             &client,
+            None,
             &tx,
         );
 
@@ -715,6 +809,7 @@ mod tests {
                 comments: CommentRefresh::Refetch,
             },
             &client,
+            None,
             &tx,
         );
 
@@ -749,6 +844,7 @@ mod tests {
                 result: Ok([("P0".to_string(), Some(4))].into()),
             },
             &client,
+            None,
             &tx,
         );
         assert_eq!(app.repos[0].issues[0].priority_rank(), 4);

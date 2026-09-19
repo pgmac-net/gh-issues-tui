@@ -20,6 +20,44 @@ pub struct RankState {
     failed: bool,
 }
 
+impl RankState {
+    /// The rank resolved for `label`, if one was. `None` covers both "never
+    /// asked" and "asked, and it is not a priority label" — neither ranks.
+    pub fn rank_of(&self, label: &str) -> Option<u8> {
+        self.ranks.get(label).copied().flatten()
+    }
+
+    /// Which of `labels` have no answer yet. The set-priority picker asks
+    /// about the repo's own label list (#162), which the background pass
+    /// never sees: it only ever looks at labels present on loaded issues, so
+    /// a convention nothing is labelled with yet would never be ranked.
+    ///
+    /// `priority:*` labels are excluded for the same reason as in
+    /// `begin_rank_inference` — the convention already ranks them.
+    pub fn unranked(&self, labels: &[RepoLabel]) -> Vec<String> {
+        let mut names: Vec<String> = labels
+            .iter()
+            .map(|l| l.name.as_str())
+            .filter(|n| priority_value(n).is_none() && !self.ranks.contains_key(*n))
+            .map(str::to_string)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    /// Inference failed this session, so nothing should ask again — including
+    /// the keypress-driven path, which would otherwise retry on every press.
+    pub fn has_failed(&self) -> bool {
+        self.failed
+    }
+
+    /// Record a failure: inference is off for the rest of the session.
+    pub fn mark_failed(&mut self) {
+        self.failed = true;
+    }
+}
+
 impl App {
     /// The label names on loaded issues that still need a rank, marking a
     /// request as in flight — or `None` when there is nothing to ask, a
@@ -63,15 +101,7 @@ impl App {
         }
         self.label_rank.in_flight = false;
         match result {
-            Ok(ranks) => {
-                let prev = self.selected_issue().map(|i| i.id.clone());
-                self.label_rank.ranks.extend(ranks);
-                self.stamp_label_ranks();
-                // A new rank can reorder the list when sorted by priority, so
-                // follow the issue rather than the index.
-                self.rebuild_rows();
-                self.reselect(prev);
-            }
+            Ok(ranks) => self.merge_label_ranks(ranks),
             Err(e) => {
                 self.label_rank.failed = true;
                 self.status = Some(format!(
@@ -79,6 +109,19 @@ impl App {
                 ));
             }
         }
+    }
+
+    /// Take new answers into the session's ranks and re-derive everything
+    /// downstream of them. Shared by the background pass and the
+    /// set-priority picker's own request (#162).
+    pub fn merge_label_ranks(&mut self, ranks: HashMap<String, Option<u8>>) {
+        let prev = self.selected_issue().map(|i| i.id.clone());
+        self.label_rank.ranks.extend(ranks);
+        self.stamp_label_ranks();
+        // A new rank can reorder the list when sorted by priority, so
+        // follow the issue rather than the index.
+        self.rebuild_rows();
+        self.reselect(prev);
     }
 
     /// Copy the resolved ranks onto every loaded label. Called on every data

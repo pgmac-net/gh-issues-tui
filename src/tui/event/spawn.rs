@@ -44,6 +44,38 @@ pub(crate) fn spawn_label_ranks(
     });
 }
 
+/// Rank the repo's own labels for the set-priority picker (#162).
+///
+/// Separate from `spawn_label_ranks` because it is keypress-driven and asks
+/// about a different set: the repo's whole label list, including labels no
+/// loaded issue carries. A repo that has just adopted `P0`/`P1`/`P2` has
+/// nothing labelled yet, so the background pass has never seen those names
+/// and the picker would have nothing to offer.
+///
+/// `labels` rides along so the answer can build the picker without refetching.
+pub(crate) fn spawn_priority_ranks(
+    ranker: &crate::typesafe::Client,
+    org: String,
+    issue_id: String,
+    labels: Vec<RepoLabel>,
+    ask: Vec<String>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let ranker = ranker.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result =
+            crate::typesafe::resolve(&ranker, &crate::typesafe::cache::default_path(), &org, ask)
+                .await
+                .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::PriorityRanks {
+            issue_id,
+            labels,
+            result,
+        });
+    });
+}
+
 pub(crate) fn spawn_form_options(
     client: &Provider,
     org: String,
