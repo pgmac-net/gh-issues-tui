@@ -10,6 +10,7 @@ Built for [pgmac-net/homelabia#128](https://github.com/pgmac-net/homelabia/issue
 src/
 ├── main.rs          CLI (clap), panic hook, wiring
 ├── config.rs        ~/.config/gh-issues/config.toml (default_org, provider, copy_format, ...)
+├── typesafe/        optional priority-rank inference for non-`priority:` labels (#156)
 ├── provider/
 │   ├── mod.rs       IssueProvider trait, Provider alias (Arc<dyn>), name → provider factory
 │   ├── types.rs     backend-neutral domain types: Issue / RepoIssues / Comment / IssueState / ...

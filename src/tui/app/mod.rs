@@ -89,8 +89,8 @@ pub struct App {
     /// The PR summary popup and the links that feed it.
     pub pr: PrState,
     /// Inferred priority ranks for labels outside the `priority:` convention
-    /// (#156). Read-only: it affects sort, colour and filter ordering, never
-    /// what is written back to a backend.
+    /// (#156). Read-only: it affects sort and title colour, never what is
+    /// written back to a backend.
     pub label_rank: RankState,
     /// Comment threads already fetched this refresh cycle, keyed by issue id.
     ///
