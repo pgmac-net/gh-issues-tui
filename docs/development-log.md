@@ -923,3 +923,55 @@ Work driven by [pgmac-net/gh-issues-tui#160](https://github.com/pgmac-net/gh-iss
 - **The hard constraint is checked mechanically, not by inspection**: `git diff --name-only main` touches none of `src/tui/harness/`, `app/harness.rs`, `keys/harness.rs` or `keys/normal.rs`, and "readiness" appears nowhere in them. The `$(touch /tmp/pwned)` argv test is untouched and passes.
 - **The five prompts and two thresholds are unmeasured.** The suite pins the composition; it cannot say whether Jev answers these questions well on real tickets. A calibration pass in the shape of #163 is the honest follow-up, and `ticket-readiness.md` says so under "Not verified".
 - **Not driven against a live org or a real key.** The wire shape is covered by serde tests against the documented response, not by a live call.
+
+
+# Development log — calibrate the ticket-readiness prompts and thresholds (2026-09-20)
+
+Work driven by [pgmac-net/gh-issues-tui#168](https://github.com/pgmac-net/gh-issues-tui/issues/168), on branch `168-calibrate-readiness`. Measurement written up in [`ticket-readiness.md`](ticket-readiness.md#what-calibration-showed-168).
+
+**The outcome is negative, and that is the deliverable.** Three of the five questions shipped in #167 do not work. `YES`/`NO` were not changed, because no pair fits.
+
+## Process
+
+1. I wrote #168 myself, and grilling it found two things wrong with it — one methodological.
+2. Five decisions put one at a time; all five took the recommended option.
+3. Plan approved before implementation. Planning and implementation both on Opus 5, the recorded COMPLEX fallback.
+4. Three live rounds, one more than the plan's cap, with the extra round authorised by the requester mid-flight (below).
+
+## Corrections to my own ticket
+
+- **"The harness fetches each ticket live" — nothing in the codebase can.** `org_issues` is bulk, `comments()` takes a node id, `Client::graphql` is private. The harness builds its own GraphQL call from the already-public `resolve_token` and `build_http_client`; no production code changed for fetching. A provider method would have meant a trait method on GitHub, Linear and Jira with one ignored-test caller.
+- **"A hand-written expected verdict" per case, plus "pick thresholds from the probabilities returned", is circular** — and a verdict is the wrong unit: it is five signals through two thresholds, so a mismatch cannot say which part failed, and the composition already has its own tests. Replaced with per-signal expectations (`yes` / `no` / unasserted), which is #163's method applied five times.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Fetching | Self-contained query in the harness | No production surface for a measuring instrument |
+| What is asserted | Per-signal expectations, verdicts recorded only | Localises a disagreement to one signal; asserting verdicts would make every re-tune a corpus edit |
+| Thresholds | One global pair, from the intersection of the five gaps | #156's reasoning: a constant should not multiply until the data forces it |
+| Corpus | Public repos only | Any reviewer can open any case and disagree. `homelabia` has the variety but is private |
+| Rewording | Only with a reason from re-reading, every change disclosed, capped | The cap is what separates measuring from fitting |
+
+## Findings
+
+- **`actionable` separates but wholly below `YES`** (0.12 vs 0.37 against a 0.7 threshold). Well-written bug reports read as *not a work item* or undecided. Worst of the four, because it vetoes. Filed as #169.
+- **`duplicate` conflates "covered elsewhere" with "this ticket is finished".** A closed thread ends in its own "Work complete", so any wording asking whether the work is done reads as true. Filed as #170.
+- **`repro` asks two questions at once** and penalises feature requests for lacking a reproduction they cannot have. Filed as #171.
+- **`blocked` was broken as shipped and is now fixed.** It fired on seven tickets with no blocker (up to 0.70) because "waiting on … a decision" is true of any vague ticket. Rewording it to name an *external* dependency, with an explicit exclusion for vague/undesigned/under-investigation, brought all 22 cases to 0.03–0.44.
+- **`criteria` works** as intended.
+- `unsure` on 14 of 22 cases, almost entirely from `actionable`.
+
+## Diversions from plan
+
+- **A third recording round, past the cap I set.** Round 2's `duplicate` rewording was worse than what shipped — six false positives against one — so I stopped, reported, and asked. The requester chose to spend a round reverting `duplicate` to its round-1 wording so committed code matches the committed recording. Disclosed as a revert to an already-measured wording, not a search for a new one.
+- **Five expectations revised**, each with a written reason from re-reading the ticket, and each disclosed as prompted by the measurement: `metasearch#19` and `gh-issues-tui#129` repro no→yes (both give observable specifics; my "no" came from reading `repro` as bug-reproduction), `incidents#72` criteria no→unasserted, and `gh-issues-tui#160`/`#168` repro no→unasserted (feature proposals citing code locations, where the question's two readings diverge). None on `actionable` or `duplicate`, where the disagreement *is* the finding.
+- **The offline tests pin known-bad behaviour** rather than the intended behaviour. Asserting that every expectation holds would mean a permanently red suite, so they are characterisation tests in the style of the `#87` screen goldens: they fail when a signal *starts* working, which is the prompt to update the claims.
+- **No `blocked = yes` case exists** in the public pool, so that half is unmeasured, and `duplicate = yes` rests on one case. Confirmed by checking the last comment of every open public issue, not assumed. The corpus is also weighted to closed tickets, which is out of domain for a badge read before starting work. Filed as #172.
+
+## Verification
+
+- `cargo test` — 743 passed, 0 failed (8 new plus the recording). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- **Three live rounds against the real API**, 22 GitHub fetches and 22 TypeSafe calls each, about a third of a cent per round.
+- **Mutation-checked the three guards**: rewording a question fails the digest test, moving a threshold without re-recording fails the thresholds test, and dropping a corpus case fails the coverage test.
+- The `duplicate` revert was confirmed by re-measuring, not assumed: false positives 6 → 1, true positive 0.83.
