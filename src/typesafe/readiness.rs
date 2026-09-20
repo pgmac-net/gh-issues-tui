@@ -78,12 +78,14 @@ pub const SIGNALS: [Signal; 5] = [
 fn question(signal: Signal) -> Value {
     let (instructions, yes, no) = match signal {
         Signal::Repro => (
-            "Does this ticket describe concrete steps, inputs, or conditions that \
-             would let someone reproduce or directly observe the problem?",
-            "It gives specific steps, inputs, commands, logs, or conditions under \
-             which the problem appears",
-            "It describes the problem only in general terms, or is not about a \
-             problem that can be observed",
+            "Does this ticket give enough specifics \u{2014} steps, inputs, commands, code \
+             locations, or observed output \u{2014} that someone could see the problem or \
+             the current behaviour for themselves?",
+            "It gives concrete specifics: steps to follow, inputs, commands, named \
+             files or code locations, observed output, or the conditions under \
+             which it happens",
+            "It describes the situation only in general terms, so someone would \
+             have to work out for themselves what to look at",
         ),
         Signal::Criteria => (
             "Does this ticket state what finishing it would look like — an acceptance \
@@ -93,22 +95,38 @@ fn question(signal: Signal) -> Value {
              done unstated",
         ),
         Signal::Actionable => (
-            "Is this ticket a piece of work for someone to carry out, as opposed to a \
-             question, a discussion, or a status update?",
-            "It asks for something to be built, changed, fixed, or investigated",
-            "It is a question, a discussion, an announcement, or a status update",
+            "Does this ticket describe work for someone to carry out \u{2014} something to \
+             build, change, fix, or investigate \u{2014} rather than being a question, a \
+             discussion, or a record of work already finished?",
+            "It describes a defect, a gap, or a change to make. A bug report counts, \
+             whether or not it phrases itself as a request",
+            "It only asks a question, opens a discussion, or records work that is \
+             already complete",
         ),
         Signal::Blocked => (
-            "As the thread currently stands, is this work waiting on something \
-             unresolved — another ticket, a decision, or an external dependency?",
-            "The most recent state of the thread says it is still waiting on \
-             something that has not happened yet",
-            "Nothing is outstanding, or something that was outstanding has since \
-             been resolved",
+            "As the thread currently stands, is this work stopped until something \
+             outside it happens \u{2014} another ticket landing, an external dependency, or \
+             an answer only someone else can give?",
+            "The latest state of the thread says it cannot proceed yet, because \
+             something it depends on has not happened",
+            "Nothing outside it is outstanding, or something that was outstanding \
+             has since been resolved. A ticket that is merely vague, not yet \
+             designed, unscheduled, or still under investigation is NOT blocked",
         ),
+        // REVERTED to the #167 wording after calibration (#168, round 3).
+        //
+        // The round-2 attempt — "has the work already been done … nothing left
+        // to do here" — read as *true* for any finished ticket, because a closed
+        // thread ends in "Work complete". Six false positives against one true
+        // positive. This wording has one, measured in round 1.
+        //
+        // Neither separates. The question conflates "covered somewhere else"
+        // with "this ticket is finished", and no rewording of a single Noul over
+        // a thread that contains its own completion notice will fix that. It
+        // needs redesign; see the calibration report and its follow-up.
         Signal::Duplicate => (
             "Does this thread state that the work described is already covered \
-             somewhere else — another issue, a pull request, or work already done?",
+             somewhere else \u{2014} another issue, a pull request, or work already done?",
             "Someone says it duplicates, is covered by, or was already done \
              elsewhere",
             "No one says that, or it is only mentioned as related rather than as \
@@ -570,5 +588,669 @@ mod tests {
             },
         );
         assert!(Readiness::from_answers(&a).is_err());
+    }
+}
+
+/// Calibration of the five questions and the two thresholds against real
+/// tickets (#168).
+///
+/// #156's calibration could commit its corpus: 55 label *names*. This one
+/// cannot — a readiness corpus is issue bodies and comment threads, the text
+/// ADR 0004 singles out as the most sensitive in a repository, and this repo is
+/// public. So the corpus is a list of **references** with hand-written
+/// expectations, and the harness fetches each ticket live.
+///
+/// Public `pgmac-net` repos only, so any reviewer can open any case and
+/// disagree with the expectation recorded against it.
+///
+/// **The rule that makes this worth anything:** expectations are written from
+/// reading the ticket, *before* any request, and are never edited to match a
+/// returned number. Only question wordings may change, only where reading says
+/// the question is wrong, and every change is disclosed.
+#[cfg(test)]
+mod calibration {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
+
+    /// What a reader expects of one signal on one ticket.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Expect {
+        /// Must come back above `YES`.
+        Yes,
+        /// Must come back below `NO`.
+        No,
+        /// Genuinely arguable. Recorded, asserted on neither side — #163's
+        /// "ambiguous band", which is what stops a threshold being fitted to a
+        /// case a reader could not call either.
+        Unasserted,
+    }
+
+    use Expect::{No as N, Unasserted as U, Yes as Y};
+
+    /// One corpus case. `expect` is in [`SIGNALS`] order.
+    struct Case {
+        repo: &'static str,
+        number: u64,
+        expect: [Expect; 5],
+        /// Why this case is in the corpus — the thing it is meant to probe.
+        note: &'static str,
+    }
+
+    /// Expectations written from reading each ticket, before any request.
+    ///
+    /// `blocked` has **no `Yes` case**: no open issue in any public `pgmac-net`
+    /// repo is waiting on something unresolved as its thread currently stands.
+    /// That side is therefore unmeasured, and the harness says so rather than
+    /// resting a threshold on a manufactured example.
+    //                                    repro criteria actionable blocked duplicate
+    const CORPUS: &[Case] = &[
+        // ---- well-specified bug reports: both quality signals present ----
+        Case {
+            repo: "nagios-public-status-page",
+            number: 69,
+            expect: [Y, Y, Y, N, N],
+            note: "route pattern plus the exact URL that fails to match",
+        },
+        Case {
+            repo: "nagios-public-status-page",
+            number: 60,
+            expect: [Y, Y, Y, N, N],
+            note: "observed JSON from the live deployment",
+        },
+        Case {
+            repo: "nagios-public-status-page",
+            number: 67,
+            expect: [Y, Y, Y, N, N],
+            note: "has its own Measured section",
+        },
+        Case {
+            repo: "nagios-public-status-page",
+            number: 71,
+            expect: [Y, Y, Y, N, N],
+            note: "names the offending fixtures and files",
+        },
+        Case {
+            repo: "incidents",
+            number: 48,
+            expect: [Y, Y, Y, N, N],
+            note: "incident date, observed restart counts, explicit thresholds",
+        },
+        Case {
+            repo: "docker-registry-walk",
+            number: 59,
+            expect: [Y, Y, Y, N, N],
+            note: "cites another repo's code as the model to copy, which is \
+                      not a duplicate claim",
+        },
+        // ---- the Jev trap: a blocker raised mid-thread and later resolved ----
+        // "Blocked on Step 0 (the gate measurement)" appears verbatim in a
+        // comment, and a later comment closes it out. Jev "reads dates as text,
+        // not as ordered quantities", so this is the documented failure mode.
+        Case {
+            repo: "docker-registry-walk",
+            number: 96,
+            expect: [Y, Y, Y, N, N],
+            note: "THE BLOCKED TRAP: 'Blocked on Step 0' mid-thread, \
+                      resolved by the last comment",
+        },
+        // ---- the one real duplicate in the public pool ----
+        // Open, and its only comment is "Addressed in incidents#87 (merged)".
+        // Exactly the case the wording was written for: someone said it is
+        // already covered and nobody closed the ticket.
+        Case {
+            repo: "incidents",
+            number: 86,
+            expect: [Y, U, Y, N, Y],
+            note: "THE DUPLICATE: 'Addressed in #87 (merged)', still open",
+        },
+        // ---- observable problem, no stated outcome ----
+        Case {
+            repo: "incidents",
+            number: 49,
+            expect: [Y, N, Y, N, N],
+            note: "investigation with times and symptoms but no definition of done",
+        },
+        // ---- thin: vague or speculative ----
+        Case {
+            repo: "Docker-Nagios",
+            number: 1,
+            expect: [N, N, Y, N, N],
+            note: "speculative throughout, ends 'Maybe not that'",
+        },
+        // criteria REVISED No -> Unasserted after re-reading (round 1): it does
+        // name concrete wants (card-style left nav, "the ToC on the right is
+        // OK") while also saying the design needs brainstorming. A reader can
+        // defend either answer, so it should not pin a threshold.
+        Case {
+            repo: "incidents",
+            number: 72,
+            expect: [N, U, Y, N, N],
+            note: "says it needs brainstorming, yet names concrete wants",
+        },
+        Case {
+            repo: "gh-issues-tui",
+            number: 60,
+            expect: [N, N, U, N, N],
+            note: "'We need to brainstorm these' — actionable is arguable",
+        },
+        Case {
+            repo: "Docker-Nagios",
+            number: 3,
+            expect: [N, N, U, N, U],
+            note: "115 chars and a Slack link; comment says 'Nothing to see here'",
+        },
+        // ---- outcome stated, nothing to reproduce ----
+        Case {
+            repo: "Docker-Nagios",
+            number: 4,
+            expect: [N, Y, Y, N, N],
+            note: "small precise spec, but no problem to observe",
+        },
+        Case {
+            repo: "metasearch",
+            number: 22,
+            expect: [N, Y, Y, N, N],
+            note: "two-bullet outcome, plus Linear migration metadata as noise",
+        },
+        // repro REVISED No -> Yes after re-reading (round 1): it has explicit
+        // "Current State" and "Gaps to Fix" sections describing behaviour a
+        // reader can go and look at.
+        Case {
+            repo: "metasearch",
+            number: 19,
+            expect: [Y, U, Y, N, N],
+            note: "has Current State and Gaps to Fix sections; criteria arguable",
+        },
+        // repro REVISED No -> Yes after re-reading (round 1): it gives the
+        // concrete input format (`owner/repo#N`) and the keypress that triggers
+        // it. My `No` came from reading `repro` as "bug reproduction"; the
+        // question asks about observable current behaviour.
+        Case {
+            repo: "gh-issues-tui",
+            number: 129,
+            expect: [Y, Y, Y, N, N],
+            note: "gives the input format and the triggering keypress",
+        },
+        // ---- not a work item ----
+        Case {
+            repo: "gh-issues-tui",
+            number: 130,
+            expect: [N, N, N, N, N],
+            note: "THE QUESTION: 51 chars, 'Is it possible to...'",
+        },
+        Case {
+            repo: "tremendous-cve",
+            number: 10,
+            expect: [N, U, N, N, U],
+            note: "open, but the body is a record of work already DONE & MERGED",
+        },
+        // ---- references to other issues that are not duplicate claims ----
+        Case {
+            repo: "incidents",
+            number: 75,
+            expect: [N, Y, Y, N, N],
+            note: "'Follow-up to #63 / #12' — a lineage, not a duplicate",
+        },
+        // repro REVISED No -> Unasserted for both (round 1): these are feature
+        // proposals that quote exact code locations. "Is there a problem to
+        // reproduce" says no; "could a reader go and look at the current
+        // behaviour" says yes. The question cannot mean both, and that tension
+        // is reported as a finding rather than resolved by picking a side here.
+        Case {
+            repo: "gh-issues-tui",
+            number: 160,
+            expect: [U, Y, Y, N, N],
+            note: "feature proposal citing code locations; last comment says \
+                      a follow-up was filed as #168",
+        },
+        Case {
+            repo: "gh-issues-tui",
+            number: 168,
+            expect: [U, Y, Y, N, N],
+            note: "LITERAL-MINDEDNESS: discusses duplicate detection at \
+                      length without being a duplicate",
+        },
+    ];
+
+    /// FNV-1a over the five serialised questions.
+    ///
+    /// Readiness has no `PROMPT_VERSION` — nothing is cached, so there was never
+    /// anything to invalidate — so this digest is what stops a reworded question
+    /// silently inheriting thresholds tuned against the old wording.
+    ///
+    /// Hand-rolled rather than `DefaultHasher`, whose output is explicitly not
+    /// stable across Rust releases and so cannot be committed, and rather than a
+    /// new dependency for one guard. `serde_json` orders object keys, so the
+    /// serialisation is deterministic.
+    fn questions_digest() -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for signal in SIGNALS {
+            for b in question(signal).to_string().as_bytes() {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        format!("{h:016x}")
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct RecordedCase {
+        r#ref: String,
+        note: String,
+        expect: BTreeMap<String, Expect>,
+        probabilities: BTreeMap<String, f64>,
+        /// Recorded for a reader, never asserted: a verdict is five signals
+        /// through two thresholds, so asserting it would make every legitimate
+        /// re-tune a corpus edit, and the composition has its own tests.
+        verdict: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Recording {
+        model: String,
+        questions_digest: String,
+        yes: f64,
+        no: f64,
+        cases: Vec<RecordedCase>,
+    }
+
+    impl Case {
+        fn reference(&self) -> String {
+            format!("pgmac-net/{}#{}", self.repo, self.number)
+        }
+        fn expect_of(&self, signal: Signal) -> Expect {
+            let i = SIGNALS
+                .iter()
+                .position(|s| *s == signal)
+                .expect("in SIGNALS");
+            self.expect[i]
+        }
+    }
+
+    const RECORDING_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/typesafe/readiness-calibration.json"
+    );
+
+    /// One issue with the comment thread **as production fetches it**.
+    ///
+    /// `comments(first: 100)` deliberately, not `last: 10`: the app fetches the
+    /// first hundred and `state` then takes the tail of those. Querying the last
+    /// ten directly would send something the app never sends, and a harness has
+    /// to measure the real path.
+    const ONE_ISSUE: &str = "
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      title
+      body
+      comments(first: 100) { totalCount nodes { body } }
+    }
+  }
+}";
+
+    /// Fetch one case and build exactly the state the app would send.
+    ///
+    /// Its own GraphQL call rather than a provider method: nothing in the app
+    /// fetches an issue by `owner/repo#N`, and adding that would mean a trait
+    /// method on GitHub, Linear and Jira whose only caller is an ignored test.
+    async fn fetch_state(http: &reqwest::Client, case: &Case) -> Value {
+        let resp = http
+            .post("https://api.github.com/graphql")
+            .json(&json!({
+                "query": ONE_ISSUE,
+                "variables": {
+                    "owner": "pgmac-net",
+                    "name": case.repo,
+                    "number": case.number,
+                },
+            }))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("{}: {e}", case.reference()));
+        assert!(
+            resp.status().is_success(),
+            "{}: HTTP {}",
+            case.reference(),
+            resp.status()
+        );
+        let body: Value = resp.json().await.expect("GitHub response shape");
+        let issue = body
+            .pointer("/data/repository/issue")
+            .unwrap_or_else(|| panic!("{}: not found ({body})", case.reference()));
+        let comments: Vec<String> = issue["comments"]["nodes"]
+            .as_array()
+            .expect("comment nodes")
+            .iter()
+            .map(|n| n["body"].as_str().unwrap_or_default().to_string())
+            .collect();
+        state(
+            issue["title"].as_str().unwrap_or_default(),
+            issue["body"].as_str().unwrap_or_default(),
+            &comments,
+            issue["comments"]["totalCount"].as_u64().unwrap_or(0),
+        )
+    }
+
+    /// Ask the live API about every case, print the table, write the recording.
+    ///
+    /// `cargo test calibrate_readiness_against_live_api -- --ignored --nocapture`
+    ///
+    /// Needs `TYPESAFE_API_KEY` and a GitHub token. Reports only — asserts
+    /// nothing, so model drift can never fail CI. Each case is its own `state`
+    /// and so its own request; unlike #156's 55 labels these cannot be batched.
+    #[tokio::test]
+    #[ignore = "live APIs; needs TYPESAFE_API_KEY and a GitHub token"]
+    async fn calibrate_readiness_against_live_api() {
+        let client = Client::from_settings(true).expect("set TYPESAFE_API_KEY");
+        let token = crate::github::auth::resolve_token(None).expect("GitHub token");
+        let http = crate::provider::http::build_http_client(
+            &format!("Bearer {token}"),
+            &[("User-Agent", "gh-issues-calibration")],
+        )
+        .expect("http client");
+
+        let mut recorded = Vec::new();
+        for case in CORPUS {
+            let state = fetch_state(&http, case).await;
+            let readiness = assess(&client, state)
+                .await
+                .unwrap_or_else(|e| panic!("{}: {e}", case.reference()));
+            recorded.push(RecordedCase {
+                r#ref: case.reference(),
+                note: case.note.to_string(),
+                expect: SIGNALS
+                    .iter()
+                    .map(|s| (s.id().to_string(), case.expect_of(*s)))
+                    .collect(),
+                probabilities: SIGNALS
+                    .iter()
+                    .map(|s| (s.id().to_string(), readiness.get(*s)))
+                    .collect(),
+                verdict: readiness.verdict().line(),
+            });
+        }
+
+        print_table(&recorded);
+        report_gaps(&recorded);
+
+        let recording = Recording {
+            model: MODEL.to_string(),
+            questions_digest: questions_digest(),
+            yes: YES,
+            no: NO,
+            cases: recorded,
+        };
+        std::fs::write(
+            RECORDING_PATH,
+            format!("{}\n", serde_json::to_string_pretty(&recording).unwrap()),
+        )
+        .expect("write recording");
+        println!("\nwrote {RECORDING_PATH}");
+    }
+
+    /// Per case: expectation against measurement, and the verdict.
+    fn print_table(cases: &[RecordedCase]) {
+        println!("\nYES = {YES}   NO = {NO}   model = {MODEL}\n");
+        println!(
+            "{:<42} {:>10} {:>10} {:>11} {:>9} {:>10}   verdict",
+            "ref", "repro", "criteria", "actionable", "blocked", "duplicate"
+        );
+        for c in cases {
+            let cell = |s: Signal| {
+                let p = c.probabilities[s.id()];
+                let mark = match c.expect[s.id()] {
+                    Expect::Yes if p > YES => " ",
+                    Expect::No if p < NO => " ",
+                    Expect::Unasserted => "\u{00b7}",
+                    _ => "!",
+                };
+                format!("{p:.2}{mark}")
+            };
+            println!(
+                "{:<42} {:>10} {:>10} {:>11} {:>9} {:>10}   {}",
+                c.r#ref,
+                cell(Signal::Repro),
+                cell(Signal::Criteria),
+                cell(Signal::Actionable),
+                cell(Signal::Blocked),
+                cell(Signal::Duplicate),
+                c.verdict
+            );
+        }
+        println!("\n  ! = disagrees with the expectation   \u{00b7} = unasserted\n");
+    }
+
+    // ----------------------------------------------------------------------
+    // Offline guards over the committed recording. Run in CI with no key.
+    //
+    // These deliberately do **not** assert that every expectation holds. It
+    // does not: `repro` and `duplicate` do not separate at all, and
+    // `actionable` separates only well below `YES`. Asserting the intended
+    // behaviour would mean a permanently red suite, so instead these pin the
+    // measured state — characterisation tests, like the `#87` screen goldens —
+    // so the redesign cannot land without updating what is claimed here.
+
+    const RECORDED: &str = include_str!("readiness-calibration.json");
+
+    const RECALIBRATE: &str = "re-run `cargo test calibrate_readiness_against_live_api \
+         -- --ignored --nocapture`, read the table, and update the claims in \
+         `docs/ticket-readiness.md`";
+
+    fn recording() -> Recording {
+        serde_json::from_str(RECORDED).expect("readiness-calibration.json must parse")
+    }
+
+    /// Worst-case separation for one signal: `(worst no, worst yes)`, or `None`
+    /// when either side has no asserted case.
+    fn gap(rec: &Recording, signal: Signal) -> Option<(f64, f64)> {
+        let side = |e: Expect| -> Vec<f64> {
+            rec.cases
+                .iter()
+                .filter(|c| c.expect[signal.id()] == e)
+                .map(|c| c.probabilities[signal.id()])
+                .collect()
+        };
+        let (yes, no) = (side(Expect::Yes), side(Expect::No));
+        if yes.is_empty() || no.is_empty() {
+            return None;
+        }
+        Some((
+            no.iter().copied().fold(f64::MIN, f64::max),
+            yes.iter().copied().fold(f64::MAX, f64::min),
+        ))
+    }
+
+    /// The recording and the corpus must describe the same cases, or the
+    /// committed numbers are about tickets nobody listed.
+    #[test]
+    fn the_recording_covers_exactly_the_corpus() {
+        let rec = recording();
+        let recorded: Vec<&str> = rec.cases.iter().map(|c| c.r#ref.as_str()).collect();
+        assert_eq!(rec.cases.len(), CORPUS.len(), "{RECALIBRATE}");
+        for case in CORPUS {
+            assert!(
+                recorded.contains(&case.reference().as_str()),
+                "`{}` is in the corpus but not the recording \u{2014} {RECALIBRATE}",
+                case.reference()
+            );
+        }
+    }
+
+    /// The drift guard. Readiness has no `PROMPT_VERSION` and caches nothing, so
+    /// this digest is the only thing stopping a reworded question from silently
+    /// inheriting a measurement taken against the old wording.
+    #[test]
+    fn the_recording_was_made_with_the_current_questions_and_model() {
+        let rec = recording();
+        assert_eq!(
+            rec.questions_digest,
+            questions_digest(),
+            "a question wording changed since the recording \u{2014} {RECALIBRATE}"
+        );
+        assert_eq!(rec.model, MODEL, "the model changed \u{2014} {RECALIBRATE}");
+    }
+
+    /// The recorded thresholds are the ones the code uses, so the table in the
+    /// docs describes the running behaviour.
+    #[test]
+    fn the_recording_carries_the_thresholds_in_force() {
+        let rec = recording();
+        assert_eq!(rec.yes, YES);
+        assert_eq!(rec.no, NO);
+    }
+
+    /// **Known-bad, pinned deliberately.** `repro` and `duplicate` do not
+    /// separate: in each case the worst asserted `no` scores *above* the worst
+    /// asserted `yes`, so no threshold can split them.
+    ///
+    /// `repro` asks two questions at once — "is there a reproduction" and "is
+    /// this specific enough to act on" — and a feature request cannot have the
+    /// first. `duplicate` conflates "covered somewhere else" with "this ticket
+    /// is finished", and a closed thread ends in its own completion notice.
+    ///
+    /// Both need redesign, not rewording. When that lands, this test changes.
+    #[test]
+    fn repro_and_duplicate_do_not_separate_and_that_is_recorded() {
+        let rec = recording();
+        for signal in [Signal::Repro, Signal::Duplicate] {
+            let (worst_no, worst_yes) = gap(&rec, signal).expect("both sides asserted");
+            assert!(
+                worst_no > worst_yes,
+                "`{}` now separates ({worst_no:.2} .. {worst_yes:.2}) \u{2014} good news, \
+                 but the claims in the docs and this test must be updated",
+                signal.id()
+            );
+        }
+    }
+
+    /// **Known-bad, pinned deliberately.** `actionable` separates cleanly, but
+    /// its whole asserted-yes range sits *below* `YES`, so every real work item
+    /// reads as undecided or as not-work. It is the signal that vetoes, which
+    /// makes this the most damaging of the findings.
+    #[test]
+    fn actionable_separates_but_far_below_the_threshold() {
+        let rec = recording();
+        let (worst_no, worst_yes) = gap(&rec, Signal::Actionable).expect("both sides");
+        assert!(worst_no < worst_yes, "actionable should still separate");
+        assert!(
+            worst_yes < YES,
+            "actionable's worst yes ({worst_yes:.2}) now clears YES ({YES}) \u{2014} \
+             the wording or threshold was fixed, so update the docs and this test"
+        );
+    }
+
+    /// `criteria` is the one signal that both separates and straddles the
+    /// threshold correctly.
+    #[test]
+    fn criteria_separates_across_the_threshold() {
+        let rec = recording();
+        let (worst_no, worst_yes) = gap(&rec, Signal::Criteria).expect("both sides");
+        assert!(
+            worst_no < worst_yes,
+            "criteria stopped separating ({worst_no:.2} .. {worst_yes:.2}) \u{2014} {RECALIBRATE}"
+        );
+    }
+
+    /// `blocked` has no asserted `yes` case: no open issue in any public
+    /// `pgmac-net` repo is waiting on something unresolved. Its `no` side is
+    /// clean, so the half that could be measured was.
+    #[test]
+    fn blocked_has_no_yes_case_in_the_public_pool() {
+        let rec = recording();
+        assert!(
+            gap(&rec, Signal::Blocked).is_none(),
+            "a `blocked = yes` case now exists \u{2014} measure it and update the docs"
+        );
+        for case in &rec.cases {
+            let p = case.probabilities["blocked"];
+            assert!(
+                p < YES,
+                "{} scores {p:.2} on blocked, but nothing in the corpus is blocked",
+                case.r#ref
+            );
+        }
+    }
+
+    /// No single pair of thresholds fits every signal, which is why this work
+    /// did **not** move `YES` or `NO`. Moving them would hide it.
+    #[test]
+    fn no_single_pair_of_thresholds_fits_every_signal() {
+        let rec = recording();
+        let measured: Vec<(f64, f64)> = SIGNALS.iter().filter_map(|s| gap(&rec, *s)).collect();
+        let worst_no = measured.iter().map(|g| g.0).fold(f64::MIN, f64::max);
+        let worst_yes = measured.iter().map(|g| g.1).fold(f64::MAX, f64::min);
+        assert!(
+            worst_no >= worst_yes,
+            "the gaps now intersect ({worst_no:.2} .. {worst_yes:.2}) \u{2014} thresholds can \
+             finally be justified from the recording; do that and update the docs"
+        );
+    }
+
+    /// Per-signal separation, the intersection, and what is left unmeasured.
+    fn report_gaps(cases: &[RecordedCase]) {
+        let mut worst_no_all = f64::MIN;
+        let mut worst_yes_all = f64::MAX;
+        println!(
+            "{:<12} {:>7} {:>7} {:>22} {:>7}",
+            "signal", "n(yes)", "n(no)", "gap (worst no..worst yes)", "width"
+        );
+        for s in SIGNALS {
+            let p = |e: Expect| -> Vec<f64> {
+                cases
+                    .iter()
+                    .filter(|c| c.expect[s.id()] == e)
+                    .map(|c| c.probabilities[s.id()])
+                    .collect()
+            };
+            let yes = p(Expect::Yes);
+            let no = p(Expect::No);
+            let worst_yes = yes.iter().copied().fold(f64::MAX, f64::min);
+            let worst_no = no.iter().copied().fold(f64::MIN, f64::max);
+            let gap = if yes.is_empty() || no.is_empty() {
+                "  (one side unmeasured)".to_string()
+            } else {
+                worst_no_all = worst_no_all.max(worst_no);
+                worst_yes_all = worst_yes_all.min(worst_yes);
+                format!("{worst_no:.2} .. {worst_yes:.2}")
+            };
+            let width = if yes.is_empty() || no.is_empty() {
+                "-".to_string()
+            } else {
+                format!("{:.2}", worst_yes - worst_no)
+            };
+            println!(
+                "{:<12} {:>7} {:>7} {:>22} {:>7}",
+                s.id(),
+                yes.len(),
+                no.len(),
+                gap,
+                width
+            );
+        }
+        println!("\nintersection of measured gaps: {worst_no_all:.2} .. {worst_yes_all:.2}");
+        if worst_no_all >= worst_yes_all {
+            println!(
+                "  EMPTY \u{2014} no single pair of thresholds fits every signal. \
+                 Reword the outlier and re-record; do not fit the expectations."
+            );
+        } else {
+            println!("  NO must be > {worst_no_all:.2}; YES must be < {worst_yes_all:.2}");
+        }
+        let unsure = cases
+            .iter()
+            .filter(|c| c.verdict.starts_with("unsure"))
+            .count();
+        println!(
+            "\nverdict is `unsure` for {unsure}/{} cases{}",
+            cases.len(),
+            if unsure * 2 > cases.len() {
+                " \u{2014} dominant, so a band is wrong or a question is ambiguous"
+            } else {
+                ""
+            }
+        );
     }
 }
