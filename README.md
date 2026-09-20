@@ -123,7 +123,7 @@ With `default_org` set, plain `gh-issues` works without `--org`. By default the 
 
 `copy_format` controls what `y` puts on the clipboard, with `{owner}`, `{repo}`, and `{number}` placeholders substituted from the selected issue. The default (`{owner}/{repo}#{number}`) is the short form GitHub tools and Claude Code understand.
 
-`infer_priority_ranks` makes priority sort, title colouring and the `p` (set priority) picker work on repos that label priority `P0`/`P1`, `sev1`, `blocker` and the like rather than `priority:high`. It asks TypeSafe's System One model to rate each unfamiliar label name, and needs `TYPESAFE_API_KEY` in the environment as well — either one missing leaves it off. Only label *names* are sent, never titles, bodies or the org name.
+`infer_priority_ranks` makes priority sort, title colouring, the priority filter picker and the `p` (set priority) picker work on repos that label priority `P0`/`P1`, `sev1`, `blocker` and the like rather than `priority:high`. It asks TypeSafe's System One model to rate each unfamiliar label name, and needs `TYPESAFE_API_KEY` in the environment as well — either one missing leaves it off. Only label *names* are sent, never titles, bodies or the org name.
 
 On a repo that **does** use `priority:*`, nothing changes: the `p` picker offers those labels and writes exactly what it always did. On a repo that **does not**, `p` offers the repo's own ranked labels — and because setting one replaces the issue's existing priority label, any write that would remove a label the model ranked asks first, naming each one. Details: [`docs/priority-rank-inference.md`](docs/priority-rank-inference.md) and [`docs/inferred-priority-write-path.md`](docs/inferred-priority-write-path.md).
 

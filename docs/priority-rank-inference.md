@@ -48,6 +48,7 @@ boundary below bounds the worst case to mis-ranking *that one label*.
 |---|---|
 | `sort_issues` (`SortKey::Priority`) | `priority_set_options` (the `p` picker on a `priority:*` repo) |
 | `title_style` (title colour) | `priority_label_set` (the label array written on a `priority:*` repo) |
+| `priority_filter_options` (the filter editor's priority picker, #164) | |
 | `inferred_priority_set_options` (the `p` picker on a repo with no `priority:*` label) | |
 | `ranked_label_set` (the label array written there) — behind a confirmation naming every removal | |
 
@@ -113,6 +114,44 @@ One status-line message, once per session, then inference stays off — no retry
 means the budget is gone) and no repeating the message on every refresh. Failures are not
 cached, so the next launch tries again. Switching org resets this.
 
+## The priority filter picker
+
+The filter editor's priority field (`compute_multi_options(4)`) used to list only
+`priority:<value>` labels, so a ranked `P0` was reachable only by typing it (#164). It now
+lists inferred labels too, on one low → urgent scale.
+
+```
+low       (priority:low,    1)
+P3        (inferred,        1)     <- convention leads on an equal rank
+medium    (priority:medium, 2)
+P2        (inferred,        2)
+high      (priority:high,   3)
+P1        (inferred,        3)
+urgent    (priority:urgent, 4)
+blocker   (inferred,        4)
+aardvark  (priority:*, unrecognised — still last)
+```
+
+**No convention gate.** Unlike the set-priority picker (#162), this is not switched off by
+a repo using `priority:*`. That gate guarded a *write*; this list is read-only and spans
+every loaded repo, so applying it org-wide would let one convention repo hide `P0` from every
+other repo — the thing this exists to fix.
+
+**One entry per option text.** `priority:P1` and a bare `P1` label both yield the option
+`P1`, and `label_filter_matches` makes a filter of `P1` match both, so two entries would look
+identical and select identical issues. The rank an entry sorts by is the convention's when it
+recognises the value (`low`/`medium`/`high`/`urgent`); an inferred rank only fills a gap,
+because the fallback `5` means *unrecognised*, not a position. So a declared `priority:low`
+is never reordered by a model's opinion of a bare `low` elsewhere, while `priority:P1` still
+sorts with the inferred `P1` rather than dropping to the end. This is not `priority_label()`'s
+"the convention always wins" — that picks one issue's priority; this orders a menu.
+
+**No rank word** on the rows, unlike the `p` picker: the order already carries the rank, and
+convention values *are* the rank word.
+
+With inference off no rank resolves, every entry is a convention entry, and the sort key
+collapses to `(rank, text)` — the list exactly as it was before.
+
 ## Not covered
 
 - **`status:*` labels.** The ticket originally asked for these too. Status has no ordered
@@ -121,11 +160,8 @@ cached, so the next launch tries again. Switching org resets this.
   mechanism (a Noul per filter/label pair) and overlaps semantic search.
 - **The set-priority picker (`p`).** Not covered *by this ticket* — #162 added it. See
   [the write path](inferred-priority-write-path.md).
-- **The priority filter picker.** It lists only `priority:<value>` labels (`label_values`
-  splits on `:`), so an inferred label like `P0` is not offered there and inference has no
-  ordering to affect. Typing `P0` into the filter still matches it — `label_filter_matches`
-  compares label names directly. Offering inferred labels in the picker would be a new
-  behaviour, not part of this ticket.
+- **The priority filter picker** was left out of #156 and added by #164 — see
+  [The priority filter picker](#the-priority-filter-picker).
 - **Linear and Jira.** They synthesise `priority:urgent`-shaped labels, which match the
   convention exactly and never reach inference.
 
