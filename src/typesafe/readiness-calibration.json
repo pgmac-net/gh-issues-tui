@@ -1,6 +1,6 @@
 {
   "model": "jev-1.13.0",
-  "questions_digest": "627bebae74538e63",
+  "questions_digest": "4f0f0a71cadd3b28",
   "yes": 0.7,
   "no": 0.3,
   "cases": [
@@ -12,16 +12,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.64,
-        "blocked": 0.03,
-        "criteria": 0.84,
-        "duplicate": 0.23,
-        "repro": 0.92
+        "actionable": 0.65,
+        "blocked": 0.04,
+        "criteria": 0.83,
+        "duplicate": 0.27,
+        "specifics": 0.88
       },
-      "verdict": "ready — has a repro and a stated outcome"
+      "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/nagios-public-status-page#60",
@@ -31,16 +31,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.53,
+        "actionable": 0.5,
         "blocked": 0.13,
-        "criteria": 0.89,
-        "duplicate": 0.25,
-        "repro": 0.97
+        "criteria": 0.9,
+        "duplicate": 0.22,
+        "specifics": 0.95
       },
-      "verdict": "ready — has a repro and a stated outcome"
+      "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/nagios-public-status-page#67",
@@ -50,16 +50,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
         "actionable": 0.59,
-        "blocked": 0.08,
+        "blocked": 0.07,
         "criteria": 0.91,
-        "duplicate": 0.21,
-        "repro": 0.94
+        "duplicate": 0.2,
+        "specifics": 0.94
       },
-      "verdict": "ready — has a repro and a stated outcome"
+      "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/nagios-public-status-page#71",
@@ -69,14 +69,14 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.54,
+        "actionable": 0.53,
         "blocked": 0.03,
         "criteria": 0.94,
         "duplicate": 0.97,
-        "repro": 0.96
+        "specifics": 0.95
       },
       "verdict": "may be a duplicate — the thread says this is covered elsewhere"
     },
@@ -88,16 +88,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
         "actionable": 0.95,
         "blocked": 0.07,
         "criteria": 0.91,
         "duplicate": 0.03,
-        "repro": 0.59
+        "specifics": 0.82
       },
-      "verdict": "unsure — cannot judge repro"
+      "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/docker-registry-walk#59",
@@ -107,14 +107,14 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.51,
-        "blocked": 0.06,
+        "actionable": 0.56,
+        "blocked": 0.07,
         "criteria": 0.91,
-        "duplicate": 0.49,
-        "repro": 0.87
+        "duplicate": 0.55,
+        "specifics": 0.93
       },
       "verdict": "unsure — cannot judge duplicate"
     },
@@ -126,14 +126,14 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.45,
-        "blocked": 0.47,
-        "criteria": 0.87,
-        "duplicate": 0.12,
-        "repro": 0.87
+        "actionable": 0.48,
+        "blocked": 0.49,
+        "criteria": 0.88,
+        "duplicate": 0.13,
+        "specifics": 0.82
       },
       "verdict": "unsure — cannot judge blocked"
     },
@@ -145,14 +145,14 @@
         "blocked": "no",
         "criteria": "unasserted",
         "duplicate": "yes",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
         "actionable": 0.46,
-        "blocked": 0.05,
+        "blocked": 0.04,
         "criteria": 0.88,
-        "duplicate": 0.84,
-        "repro": 0.95
+        "duplicate": 0.87,
+        "specifics": 0.94
       },
       "verdict": "may be a duplicate — the thread says this is covered elsewhere"
     },
@@ -164,16 +164,16 @@
         "blocked": "no",
         "criteria": "no",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
         "actionable": 0.97,
-        "blocked": 0.13,
-        "criteria": 0.23,
+        "blocked": 0.12,
+        "criteria": 0.22,
         "duplicate": 0.06,
-        "repro": 0.4
+        "specifics": 0.77
       },
-      "verdict": "unsure — cannot judge repro"
+      "verdict": "thin — no criteria"
     },
     {
       "ref": "pgmac-net/Docker-Nagios#1",
@@ -183,14 +183,14 @@
         "blocked": "no",
         "criteria": "no",
         "duplicate": "no",
-        "repro": "no"
+        "specifics": "no"
       },
       "probabilities": {
-        "actionable": 0.87,
+        "actionable": 0.86,
         "blocked": 0.09,
-        "criteria": 0.43,
+        "criteria": 0.44,
         "duplicate": 0.03,
-        "repro": 0.08
+        "specifics": 0.29
       },
       "verdict": "unsure — cannot judge criteria"
     },
@@ -202,16 +202,16 @@
         "blocked": "no",
         "criteria": "unasserted",
         "duplicate": "no",
-        "repro": "no"
+        "specifics": "no"
       },
       "probabilities": {
         "actionable": 0.71,
         "blocked": 0.1,
-        "criteria": 0.61,
-        "duplicate": 0.06,
-        "repro": 0.41
+        "criteria": 0.65,
+        "duplicate": 0.05,
+        "specifics": 0.58
       },
-      "verdict": "unsure — cannot judge repro, criteria"
+      "verdict": "unsure — cannot judge specifics, criteria"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#60",
@@ -221,16 +221,16 @@
         "blocked": "no",
         "criteria": "no",
         "duplicate": "no",
-        "repro": "no"
+        "specifics": "no"
       },
       "probabilities": {
-        "actionable": 0.81,
-        "blocked": 0.12,
+        "actionable": 0.82,
+        "blocked": 0.11,
         "criteria": 0.12,
         "duplicate": 0.04,
-        "repro": 0.07
+        "specifics": 0.17
       },
-      "verdict": "thin — no repro, criteria"
+      "verdict": "thin — no specifics, criteria"
     },
     {
       "ref": "pgmac-net/Docker-Nagios#3",
@@ -240,14 +240,14 @@
         "blocked": "no",
         "criteria": "no",
         "duplicate": "unasserted",
-        "repro": "no"
+        "specifics": "no"
       },
       "probabilities": {
         "actionable": 0.14,
-        "blocked": 0.1,
+        "blocked": 0.09,
         "criteria": 0.06,
-        "duplicate": 0.39,
-        "repro": 0.04
+        "duplicate": 0.32,
+        "specifics": 0.12
       },
       "verdict": "not a work item — reads as a question or update"
     },
@@ -259,16 +259,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "no"
+        "specifics": "yes"
       },
       "probabilities": {
         "actionable": 0.95,
-        "blocked": 0.12,
+        "blocked": 0.11,
         "criteria": 0.81,
         "duplicate": 0.03,
-        "repro": 0.08
+        "specifics": 0.49
       },
-      "verdict": "thin — no repro"
+      "verdict": "unsure — cannot judge specifics"
     },
     {
       "ref": "pgmac-net/metasearch#22",
@@ -278,35 +278,35 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "no"
+        "specifics": "unasserted"
       },
       "probabilities": {
-        "actionable": 0.49,
+        "actionable": 0.47,
         "blocked": 0.06,
-        "criteria": 0.6,
+        "criteria": 0.59,
         "duplicate": 0.04,
-        "repro": 0.45
+        "specifics": 0.43
       },
-      "verdict": "unsure — cannot judge repro, criteria"
+      "verdict": "unsure — cannot judge specifics, criteria"
     },
     {
       "ref": "pgmac-net/metasearch#19",
-      "note": "has Current State and Gaps to Fix sections; criteria arguable",
+      "note": "body is one sentence; the Current State and Gaps to Fix detail is in a comment",
       "expect": {
         "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "unasserted",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "unasserted"
       },
       "probabilities": {
-        "actionable": 0.34,
+        "actionable": 0.39,
         "blocked": 0.04,
         "criteria": 0.76,
-        "duplicate": 0.15,
-        "repro": 0.82
+        "duplicate": 0.16,
+        "specifics": 0.68
       },
-      "verdict": "ready — has a repro and a stated outcome"
+      "verdict": "unsure — cannot judge specifics"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#129",
@@ -316,16 +316,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "yes"
+        "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.63,
+        "actionable": 0.68,
         "blocked": 0.06,
-        "criteria": 0.86,
+        "criteria": 0.85,
         "duplicate": 0.04,
-        "repro": 0.85
+        "specifics": 0.86
       },
-      "verdict": "ready — has a repro and a stated outcome"
+      "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#130",
@@ -335,14 +335,14 @@
         "blocked": "no",
         "criteria": "no",
         "duplicate": "no",
-        "repro": "no"
+        "specifics": "no"
       },
       "probabilities": {
         "actionable": 0.13,
         "blocked": 0.19,
         "criteria": 0.08,
         "duplicate": 0.04,
-        "repro": 0.04
+        "specifics": 0.11
       },
       "verdict": "not a work item — reads as a question or update"
     },
@@ -354,14 +354,14 @@
         "blocked": "no",
         "criteria": "unasserted",
         "duplicate": "unasserted",
-        "repro": "no"
+        "specifics": "unasserted"
       },
       "probabilities": {
         "actionable": 0.06,
         "blocked": 0.06,
-        "criteria": 0.7,
-        "duplicate": 0.27,
-        "repro": 0.73
+        "criteria": 0.68,
+        "duplicate": 0.25,
+        "specifics": 0.81
       },
       "verdict": "not a work item — reads as a question or update"
     },
@@ -373,16 +373,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "no"
+        "specifics": "yes"
       },
       "probabilities": {
         "actionable": 0.97,
-        "blocked": 0.07,
-        "criteria": 0.78,
+        "blocked": 0.08,
+        "criteria": 0.77,
         "duplicate": 0.28,
-        "repro": 0.36
+        "specifics": 0.78
       },
-      "verdict": "unsure — cannot judge repro"
+      "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#160",
@@ -392,16 +392,16 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "unasserted"
+        "specifics": "yes"
       },
       "probabilities": {
         "actionable": 0.86,
         "blocked": 0.09,
         "criteria": 0.91,
         "duplicate": 0.08,
-        "repro": 0.78
+        "specifics": 0.83
       },
-      "verdict": "ready — has a repro and a stated outcome"
+      "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#168",
@@ -411,14 +411,14 @@
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
-        "repro": "unasserted"
+        "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.67,
-        "blocked": 0.31,
-        "criteria": 0.86,
-        "duplicate": 0.1,
-        "repro": 0.76
+        "actionable": 0.65,
+        "blocked": 0.33,
+        "criteria": 0.87,
+        "duplicate": 0.11,
+        "specifics": 0.76
       },
       "verdict": "unsure — cannot judge blocked"
     }

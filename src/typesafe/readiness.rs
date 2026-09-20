@@ -352,6 +352,33 @@ mod tests {
         assert!(ready().verdict().line().starts_with("ready"));
     }
 
+    /// The badge must not claim a reproduction (#171). A precise spec for
+    /// something not yet built has none, and telling the reader it "has a repro"
+    /// — or that it lacks one — was the bug the `repro` -> `specifics` rename fixed.
+    #[test]
+    fn the_badge_never_talks_about_a_reproduction() {
+        for verdict in [
+            Verdict::Ready,
+            Verdict::Thin(vec![Signal::Specifics]),
+            Verdict::Thin(vec![Signal::Specifics, Signal::Criteria]),
+            Verdict::Unsure(vec![Signal::Specifics]),
+        ] {
+            let line = verdict.line();
+            assert!(
+                !line.to_lowercase().contains("repro"),
+                "`{line}` still talks about a reproduction"
+            );
+        }
+        assert_eq!(
+            Verdict::Ready.line(),
+            "ready \u{2014} is specific and states an outcome"
+        );
+        assert_eq!(
+            Verdict::Thin(vec![Signal::Specifics]).line(),
+            "thin \u{2014} no specifics"
+        );
+    }
+
     #[test]
     fn each_veto_fires_on_its_own_and_names_itself() {
         for (mutate, expected) in [
@@ -1225,28 +1252,84 @@ query($owner: String!, $name: String!, $number: Int!) {
         assert_eq!(rec.no, NO);
     }
 
-    /// **Known-bad, pinned deliberately.** `specifics` and `duplicate` do not
-    /// separate: in each case the worst asserted `no` scores *above* the worst
-    /// asserted `yes`, so no threshold can split them.
+    /// **Known-bad, pinned deliberately.** `duplicate` does not separate: the
+    /// worst asserted `no` scores *above* the worst asserted `yes`, so no
+    /// threshold can split it.
     ///
-    /// `specifics` asks two questions at once — "is there a reproduction" and "is
-    /// this specific enough to act on" — and a feature request cannot have the
-    /// first. `duplicate` conflates "covered somewhere else" with "this ticket
-    /// is finished", and a closed thread ends in its own completion notice.
-    ///
-    /// Both need redesign, not rewording. When that lands, this test changes.
+    /// It conflates "covered somewhere else" with "this ticket is finished", and
+    /// a closed thread ends in its own completion notice (#170). Needs redesign,
+    /// not rewording. When that lands, this test changes.
     #[test]
-    fn specifics_and_duplicate_do_not_separate_and_that_is_recorded() {
+    fn duplicate_does_not_separate_and_that_is_recorded() {
         let rec = recording();
-        for signal in [Signal::Specifics, Signal::Duplicate] {
-            let (worst_no, worst_yes) = gap(&rec, signal).expect("both sides asserted");
-            assert!(
-                worst_no > worst_yes,
-                "`{}` now separates ({worst_no:.2} .. {worst_yes:.2}) \u{2014} good news, \
-                 but the claims in the docs and this test must be updated",
-                signal.id()
-            );
-        }
+        let (worst_no, worst_yes) = gap(&rec, Signal::Duplicate).expect("both sides asserted");
+        assert!(
+            worst_no > worst_yes,
+            "`duplicate` now separates ({worst_no:.2} .. {worst_yes:.2}) \u{2014} good news, \
+             but the claims in the docs and this test must be updated"
+        );
+    }
+
+    /// **Pinned as measured (#171).** `specifics` replaced `repro`, whose gap was
+    /// inverted by 0.33. This one is inverted by 0.09 — better, but still not a
+    /// signal a threshold can split — and the inversion rests **entirely on two
+    /// named cases**, both flagged as hard before any measurement was taken:
+    ///
+    /// * `incidents#72` (asserted `no`): its body names concrete wants while also
+    ///   saying the design needs brainstorming. The one expectation I hesitated on.
+    /// * `Docker-Nagios#4` (asserted `yes`): the anchor case #171 was filed about.
+    ///
+    /// Neither was re-marked after the result was seen — doing so would be the
+    /// fitting the commit-before-measurement ordering exists to prevent. This
+    /// pins that they are the extremes, so the claim in the docs stays checkable.
+    #[test]
+    fn specifics_is_inverted_only_because_of_two_contested_cases() {
+        let rec = recording();
+        let of = |e: Expect| -> Vec<(&str, f64)> {
+            rec.cases
+                .iter()
+                .filter(|c| c.expect["specifics"] == e)
+                .map(|c| (c.r#ref.as_str(), c.probabilities["specifics"]))
+                .collect()
+        };
+        let extreme = |v: Vec<(&str, f64)>, worst_is_max: bool| -> (String, f64) {
+            let pick = if worst_is_max {
+                v.into_iter().max_by(|a, b| a.1.total_cmp(&b.1))
+            } else {
+                v.into_iter().min_by(|a, b| a.1.total_cmp(&b.1))
+            };
+            let (r, p) = pick.expect("both sides asserted");
+            (r.to_string(), p)
+        };
+        let (worst_no_ref, worst_no) = extreme(of(Expect::No), true);
+        let (worst_yes_ref, worst_yes) = extreme(of(Expect::Yes), false);
+
+        assert!(
+            worst_no > worst_yes,
+            "`specifics` now separates ({worst_no:.2} .. {worst_yes:.2}) \u{2014} good news, \
+             but the docs and this test must be updated"
+        );
+        assert_eq!(worst_no_ref, "pgmac-net/incidents#72");
+        assert_eq!(worst_yes_ref, "pgmac-net/Docker-Nagios#4");
+
+        // Set those two aside and the rest separate widely — which is what makes
+        // this an honest finding about two contested tickets, not a broken signal.
+        let rest = |e: Expect, keep_max: bool| {
+            let xs = of(e)
+                .into_iter()
+                .filter(|(r, _)| *r != worst_no_ref && *r != worst_yes_ref)
+                .map(|(_, p)| p);
+            if keep_max {
+                xs.fold(f64::MIN, f64::max)
+            } else {
+                xs.fold(f64::MAX, f64::min)
+            }
+        };
+        let (rest_no, rest_yes) = (rest(Expect::No, true), rest(Expect::Yes, false));
+        assert!(
+            rest_yes - rest_no > 0.3,
+            "the other cases no longer separate widely ({rest_no:.2} .. {rest_yes:.2})"
+        );
     }
 
     /// The `actionable` veto is right: it fires on the cases a reader expects and
