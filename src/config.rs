@@ -54,6 +54,18 @@ pub struct Config {
     #[serde(default)]
     pub infer_priority_ranks: bool,
 
+    /// Consent to send issue *text* — titles, bodies and comment text — to
+    /// TypeSafe, for the ticket-readiness badge (#160).
+    ///
+    /// Separate from `infer_priority_ranks` because it is a materially larger
+    /// disclosure: label names are a vocabulary, a private thread is its
+    /// contents. Opting into one is not opting into the other. Needs the env
+    /// key as well — see `typesafe`, and `docs/adr/0004-…` for why this is one
+    /// flag covering every feature that ships issue text rather than one flag
+    /// each.
+    #[serde(default)]
+    pub send_issue_text: bool,
+
     /// User-defined colour profiles: `[color_profiles.<name>]` tables whose
     /// entries override individual UI colours (see `theme::ColorProfile`).
     #[serde(default, skip_serializing)]
@@ -243,6 +255,7 @@ impl Default for Config {
             color_profile: None,
             copy_format: copy_format_default(),
             infer_priority_ranks: false,
+            send_issue_text: false,
             color_profiles: HashMap::new(),
             default_harness: None,
             workspace_roots: Vec::new(),
@@ -472,6 +485,16 @@ mod tests {
         let mut names: Vec<String> = cfg.harnesses.keys().cloned().collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn sending_issue_text_is_off_unless_opted_in() {
+        assert!(!Config::default().send_issue_text);
+        assert!(!cfg_from("default_org = \"pgmac-net\"\n").send_issue_text);
+        assert!(cfg_from("send_issue_text = true\n").send_issue_text);
+        // The two consents are independent in both directions.
+        assert!(!cfg_from("infer_priority_ranks = true\n").send_issue_text);
+        assert!(!cfg_from("send_issue_text = true\n").infer_priority_ranks);
     }
 
     #[test]

@@ -76,6 +76,31 @@ pub(crate) fn spawn_priority_ranks(
     });
 }
 
+/// Judge the selected ticket's readiness (#160), if there is anything to ask.
+///
+/// A no-op without the `send_issue_text` consent, before the comment thread has
+/// settled, while a request for that ticket is out, once one has landed, and
+/// after a failure this session. Never called from the launch path: the badge is
+/// advisory and must not be able to delay or divert a launch.
+pub(crate) fn spawn_readiness(
+    app: &mut App,
+    reader: Option<&crate::typesafe::Client>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let Some(reader) = reader else { return };
+    let Some((issue_id, state)) = app.begin_readiness() else {
+        return;
+    };
+    let reader = reader.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = crate::typesafe::readiness::assess(&reader, state)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::Readiness { issue_id, result });
+    });
+}
+
 pub(crate) fn spawn_form_options(
     client: &Provider,
     org: String,

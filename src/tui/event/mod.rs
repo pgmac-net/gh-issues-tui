@@ -27,7 +27,10 @@ mod keys;
 mod spawn;
 
 use keys::{HarnessCtx, handle_key};
-use spawn::{CommentRefresh, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks};
+use spawn::{
+    CommentRefresh, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks,
+    spawn_readiness,
+};
 
 pub enum AppEvent {
     Data(Result<Vec<RepoIssues>, String>),
@@ -54,6 +57,12 @@ pub enum AppEvent {
     LabelOptions {
         issue_id: String,
         result: Result<Vec<RepoLabel>, String>,
+    },
+    /// A ticket-readiness judgement (#160), keyed by the issue it was asked
+    /// about so a late answer cannot be shown against a different ticket.
+    Readiness {
+        issue_id: String,
+        result: Result<crate::typesafe::readiness::Readiness, String>,
     },
     /// Inferred ranks for the repo labels the set-priority picker fetched
     /// (#162). Carries `labels` so the picker can be built without a second
@@ -99,7 +108,7 @@ pub async fn run(
     copy_format: String,
     theme: Theme,
     harness: HarnessSettings,
-    ranker: Option<crate::typesafe::Client>,
+    typesafe: crate::typesafe::Consents,
 ) -> Result<()> {
     let terminal = ratatui::init();
     let result = event_loop(
@@ -114,7 +123,7 @@ pub async fn run(
         copy_format,
         theme,
         harness,
-        ranker,
+        typesafe,
     )
     .await;
     ratatui::restore();
@@ -134,7 +143,7 @@ async fn event_loop(
     copy_format: String,
     theme: Theme,
     harness_settings: HarnessSettings,
-    ranker: Option<crate::typesafe::Client>,
+    typesafe: crate::typesafe::Consents,
 ) -> Result<()> {
     let mut app = App::new(
         org,
@@ -195,6 +204,10 @@ async fn event_loop(
                 match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         handle_key(&mut app, key, &client, &tx, &mut hx);
+                        // Moving the selection onto an issue whose thread is
+                        // already cached settles it without any event landing,
+                        // so the badge is asked for from here too.
+                        spawn_readiness(&mut app, typesafe.issue_text.as_ref(), &tx);
                     }
                     // Children need the new size too, or their own TUI keeps
                     // drawing to the old one.
@@ -210,10 +223,13 @@ async fn event_loop(
                 }
                 // Fresh data can bring labels nobody has ranked yet.
                 let fresh_data = matches!(msg, AppEvent::Data(Ok(_)));
-                handle_app_event(&mut app, msg, &client, ranker.as_ref(), &tx);
+                handle_app_event(&mut app, msg, &client, typesafe.ranks.as_ref(), &tx);
                 if fresh_data {
-                    spawn_label_ranks(&mut app, ranker.as_ref(), &tx);
+                    spawn_label_ranks(&mut app, typesafe.ranks.as_ref(), &tx);
                 }
+                // A landed comment thread is what the readiness judgement waits
+                // for; `spawn_readiness` guards the cases where it is not ready.
+                spawn_readiness(&mut app, typesafe.issue_text.as_ref(), &tx);
             }
             _ = refresh.tick(), if refresh_enabled => {
                 if app.should_auto_refresh() {
@@ -386,6 +402,7 @@ pub(crate) fn handle_app_event(
             ));
         }
         AppEvent::LabelRanks { org, result } => app.apply_label_ranks(&org, result),
+        AppEvent::Readiness { issue_id, result } => app.apply_readiness(issue_id, result),
         AppEvent::Data(Err(e)) => {
             app.loading = false;
             app.auto_refreshing = false;
@@ -814,6 +831,34 @@ mod tests {
         );
 
         assert!(!app.comment_cache.contains_key(&issue_id));
+    }
+
+    /// The consent contract for issue text (#160): without `send_issue_text`
+    /// (flag off, or no key) nothing is sent and nothing is marked in flight,
+    /// so a settled thread does not become a request.
+    #[test]
+    fn readiness_is_inert_without_the_issue_text_consent() {
+        let (mut app, issue_id) = app_with_issue(&["bug"]);
+        app.cache_comments(issue_id, Vec::new());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        spawn_readiness(&mut app, None, &tx);
+
+        assert!(rx.try_recv().is_err(), "no event may be produced");
+        assert!(
+            app.begin_readiness().is_some(),
+            "nothing may be marked in flight, or the first consented ask would \
+             be skipped"
+        );
+    }
+
+    /// The two consents are independent: the label-rank client is not
+    /// permission to send issue text.
+    #[test]
+    fn the_two_typesafe_consents_are_separate_clients() {
+        let both = crate::typesafe::Consents::default();
+        assert!(both.ranks.is_none());
+        assert!(both.issue_text.is_none());
     }
 
     /// The consent contract: with no ranker (flag off, or no key) the feature

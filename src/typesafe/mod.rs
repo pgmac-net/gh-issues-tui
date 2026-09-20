@@ -25,6 +25,7 @@
 //! on any error, behaviour is exactly what it was before this module existed.
 
 pub mod cache;
+pub mod readiness;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -159,10 +160,62 @@ struct Response {
     answers: HashMap<String, Answer>,
 }
 
-#[derive(Deserialize)]
-struct Answer {
-    probabilities: HashMap<String, f64>,
-    confidence: f64,
+/// One answer, tagged by the `type` the API echoes back.
+///
+/// A Noul carries a single probability and *no* `confidence` or
+/// `probabilities` — unlike a Score, which has both. That is why this is an
+/// enum rather than one struct: deserialising a Noul into the Score shape
+/// fails, and a Score read as a Noul would lose the distribution the
+/// confidence gate needs.
+///
+/// An answer type this app never asks for (a Choice) fails to deserialise,
+/// which lands in the same once-per-session failure path as any other
+/// unexpected response rather than being silently ignored.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Answer {
+    /// Probability that the condition holds. `0.5` means *equally likely yes
+    /// or no* — not "medium", and not low confidence in a middling value.
+    Noul { noul: f64 },
+    Score {
+        probabilities: HashMap<String, f64>,
+        confidence: f64,
+    },
+}
+
+impl Answer {
+    /// The probability of a Noul answer, or `None` if the API returned some
+    /// other type for a question this asked as a Noul.
+    pub fn noul(&self) -> Option<f64> {
+        match self {
+            Answer::Noul { noul } => Some(*noul),
+            Answer::Score { .. } => None,
+        }
+    }
+}
+
+/// The clients this session is permitted to use, one per consent.
+///
+/// Same endpoint and same key; separate because the two config flags authorise
+/// different disclosures — a vocabulary of label names (#156) versus the text
+/// of private issues (#160). `None` is the whole of "not permitted", so a
+/// feature cannot run without its own consent having been checked.
+#[derive(Clone, Default)]
+pub struct Consents {
+    /// `infer_priority_ranks` + key: label names may be sent.
+    pub ranks: Option<Client>,
+    /// `send_issue_text` + key: issue titles, bodies and comments may be sent.
+    pub issue_text: Option<Client>,
+}
+
+impl Consents {
+    /// Read both flags against the one environment key.
+    pub fn from_config(infer_priority_ranks: bool, send_issue_text: bool) -> Self {
+        Self {
+            ranks: Client::from_settings(infer_priority_ranks),
+            issue_text: Client::from_settings(send_issue_text),
+        }
+    }
 }
 
 /// A TypeSafe API client. Only ever constructed when inference is enabled and
@@ -194,32 +247,43 @@ impl Client {
         })
     }
 
+    /// POST one request and return its answers by question id.
+    ///
+    /// The single request path: every feature builds its own body and collapses
+    /// its own answers, so there is one place that knows about the endpoint,
+    /// the timeout and what an HTTP failure means.
+    pub async fn ask(&self, body: &Value) -> Result<HashMap<String, Answer>> {
+        let resp = self
+            .http
+            .post(&self.endpoint)
+            .timeout(TIMEOUT)
+            .json(body)
+            .send()
+            .await
+            .context("TypeSafe request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("TypeSafe returned {status}");
+        }
+        let parsed: Response = resp.json().await.context("unexpected TypeSafe response")?;
+        Ok(parsed.answers)
+    }
+
     /// Rate each label. All-or-nothing: any failed batch fails the call, so
     /// nothing half-inferred is ever returned (or cached).
     pub async fn rank_labels(&self, labels: &[String]) -> Result<HashMap<String, Option<u8>>> {
         let mut out = HashMap::with_capacity(labels.len());
         for batch in labels.chunks(BATCH) {
-            let resp = self
-                .http
-                .post(&self.endpoint)
-                .timeout(TIMEOUT)
-                .json(&request_body(batch))
-                .send()
-                .await
-                .context("TypeSafe request failed")?;
-            let status = resp.status();
-            if !status.is_success() {
-                bail!("TypeSafe returned {status}");
-            }
-            let parsed: Response = resp.json().await.context("unexpected TypeSafe response")?;
+            let answers = self.ask(&request_body(batch)).await?;
             for (i, label) in batch.iter().enumerate() {
-                let Some(answer) = parsed.answers.get(&format!("q{i}")) else {
-                    bail!("TypeSafe response is missing an answer for `{label}`");
+                let Some(Answer::Score {
+                    probabilities,
+                    confidence,
+                }) = answers.get(&format!("q{i}"))
+                else {
+                    bail!("TypeSafe response is missing a score for `{label}`");
                 };
-                out.insert(
-                    label.clone(),
-                    rank_from_answer(&answer.probabilities, answer.confidence),
-                );
+                out.insert(label.clone(), rank_from_answer(probabilities, *confidence));
             }
         }
         Ok(out)
@@ -616,12 +680,18 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, (band, label))| {
-                let a = &parsed.answers[&format!("q{i}")];
+                let Answer::Score {
+                    probabilities,
+                    confidence,
+                } = &parsed.answers[&format!("q{i}")]
+                else {
+                    panic!("expected a score answer for `{label}`");
+                };
                 Recorded {
                     band: *band,
                     label: (*label).to_string(),
-                    confidence: a.confidence,
-                    probabilities: a.probabilities.clone().into_iter().collect(),
+                    confidence: *confidence,
+                    probabilities: probabilities.clone().into_iter().collect(),
                 }
             })
             .collect();
@@ -839,6 +909,49 @@ mod tests {
         assert!(
             worst_wrong < MIN_CONFIDENCE && MIN_CONFIDENCE <= worst_right,
             "MIN_CONFIDENCE = {MIN_CONFIDENCE} must lie in ({worst_wrong:.3}, {worst_right:.3}]"
+        );
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    /// A Noul answer carries one probability and no `confidence`, so the
+    /// Score-shaped struct this used to be cannot parse it (#160).
+    #[test]
+    fn a_noul_answer_parses_and_yields_its_probability() {
+        let a: Answer = serde_json::from_str(r#"{"type":"noul","noul":0.95}"#).unwrap();
+        assert_eq!(a.noul(), Some(0.95));
+    }
+
+    /// And the Score path still parses after the enum change (#156).
+    #[test]
+    fn a_score_answer_still_parses_and_is_not_a_noul() {
+        let a: Answer = serde_json::from_str(
+            r#"{"type":"score","score":3.9,"legend":{},
+                "probabilities":{"4":0.95},"confidence":0.93}"#,
+        )
+        .unwrap();
+        assert!(a.noul().is_none(), "a score must not read as a probability");
+        let Answer::Score {
+            probabilities,
+            confidence,
+        } = a
+        else {
+            panic!("expected a score");
+        };
+        assert_eq!(confidence, 0.93);
+        assert_eq!(probabilities["4"], 0.95);
+    }
+
+    /// An answer type this app never asks for fails rather than being dropped,
+    /// so it lands in the once-per-session failure path.
+    #[test]
+    fn an_unknown_answer_type_is_an_error() {
+        assert!(
+            serde_json::from_str::<Answer>(r#"{"type":"choice","choice":"a"}"#).is_err(),
+            "a choice must not deserialise into either variant"
         );
     }
 }

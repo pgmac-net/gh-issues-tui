@@ -63,7 +63,13 @@ pub(super) fn draw_detail_body(
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 
-    let (lines, links) = body_lines_links(issue, selected, inner_w as usize, t);
+    let (lines, links) = body_lines_links(
+        issue,
+        app.selected_readiness(),
+        selected,
+        inner_w as usize,
+        t,
+    );
     let (wrapped, rects) = linkmap::wrap(&lines, &links, inner_w as usize);
     let content_h = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
     let max_scroll = content_h.saturating_sub(inner_h);
@@ -152,11 +158,12 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
 /// The issue metadata + description lines, without link positions.
 pub(super) fn body_lines(
     issue: &Issue,
+    readiness: Option<&Readiness>,
     selected: bool,
     width: usize,
     t: &Theme,
 ) -> Vec<Line<'static>> {
-    body_lines_links(issue, selected, width, t).0
+    body_lines_links(issue, readiness, selected, width, t).0
 }
 
 /// [`body_lines`] plus the URL positions in the description, with each link's
@@ -164,6 +171,7 @@ pub(super) fn body_lines(
 /// `Vec<Line>`.
 pub(super) fn body_lines_links(
     issue: &Issue,
+    readiness: Option<&Readiness>,
     selected: bool,
     width: usize,
     t: &Theme,
@@ -214,8 +222,18 @@ pub(super) fn body_lines_links(
             ),
             Style::default().fg(t.assignee),
         )),
-        Line::default(),
     ];
+    // Ticket readiness (#160), when a judgement has landed. Absent renders no
+    // line at all, so with the feature off the pane is identical to before —
+    // geometry included, which `body_content_height` depends on.
+    if let Some(r) = readiness {
+        let verdict = r.verdict();
+        lines.push(Line::from(Span::styled(
+            format!("readiness: {}", verdict.line()),
+            Style::default().fg(verdict_colour(&verdict, t)),
+        )));
+    }
+    lines.push(Line::default());
     let base = lines.len();
     let (md_lines, md_links) = markdown::render_with_links(&issue.body, width, t);
     let links = md_links
@@ -279,9 +297,26 @@ pub(super) fn comment_card_lines_links(
 /// Wrapped (visual) height of the body region's content at inner width
 /// `width`, measured with the same wrapper the region renders with so the
 /// scroll clamps match the drawn rows.
-pub fn body_content_height(issue: &Issue, width: u16) -> u16 {
+/// Colour for a verdict: a veto reads as a warning, a thin or undecided ticket
+/// as dim, and a ready one takes no emphasis at all — the badge is advice, and
+/// "ready" is the unremarkable case.
+fn verdict_colour(verdict: &Verdict, t: &Theme) -> Color {
+    match verdict {
+        Verdict::Blocked | Verdict::MaybeDuplicate | Verdict::NotActionable => t.warning,
+        Verdict::Unsure(_) | Verdict::Thin(_) => t.dim,
+        Verdict::Ready => t.assignee,
+    }
+}
+
+/// Wrapped height of the body region's content.
+///
+/// Takes the same `readiness` the renderer does: `detail_scroll` clamps against
+/// this, so a line drawn but not counted here would let the body scroll past its
+/// own end (CLAUDE.md: "both `ui::draw` and `event.rs`'s scroll clamps call
+/// these so the renderer and key handler can't drift").
+pub fn body_content_height(issue: &Issue, readiness: Option<&Readiness>, width: u16) -> u16 {
     paragraph_height(
-        &body_lines(issue, false, width as usize, &Theme::default()),
+        &body_lines(issue, readiness, false, width as usize, &Theme::default()),
         width,
     )
 }
@@ -314,6 +349,17 @@ pub(super) fn rule_line(prefix: &str, width: usize, style: Style) -> Line<'stati
 
 #[cfg(test)]
 mod tests {
+    /// `body_content_height` with no readiness badge — what every test here
+    /// predates, and what the pane renders with the feature off.
+    fn body_content_height_t(issue: &Issue, width: u16) -> u16 {
+        super::body_content_height(issue, None, width)
+    }
+
+    /// `body_lines` with no readiness badge.
+    fn body_lines_t(issue: &Issue, selected: bool, width: usize, t: &Theme) -> Vec<Line<'static>> {
+        super::body_lines(issue, None, selected, width, t)
+    }
+
     use super::super::draw;
     use super::super::testutil::*;
     use super::*;
@@ -324,11 +370,11 @@ mod tests {
     fn body_content_height_counts_metadata_and_body() {
         // 4 metadata lines (title, state, assignees, blank) + 0 body lines.
         let empty = issue(vec![]);
-        assert_eq!(body_content_height(&empty, 80), 4);
+        assert_eq!(body_content_height_t(&empty, 80), 4);
         // + three body lines, none wide enough to wrap at width 80.
         let mut three = issue(vec![]);
         three.body = "line one\nline two\nline three".into();
-        assert_eq!(body_content_height(&three, 80), 7);
+        assert_eq!(body_content_height_t(&three, 80), 7);
     }
 
     #[test]
@@ -350,10 +396,10 @@ mod tests {
         with_table.body = body.into();
 
         for width in [30u16, 46, 80] {
-            let lines = body_lines(&with_table, false, width as usize, &Theme::default());
+            let lines = body_lines_t(&with_table, false, width as usize, &Theme::default());
             let drawn = linkmap::wrap(&lines, &[], width as usize).0.len();
             assert_eq!(
-                body_content_height(&with_table, width) as usize,
+                body_content_height_t(&with_table, width) as usize,
                 drawn,
                 "at width {width}"
             );
@@ -378,10 +424,10 @@ mod tests {
             with_fence.body = body.into();
 
             for width in [20u16, 46, 80] {
-                let lines = body_lines(&with_fence, false, width as usize, &Theme::default());
+                let lines = body_lines_t(&with_fence, false, width as usize, &Theme::default());
                 let drawn = linkmap::wrap(&lines, &[], width as usize).0.len();
                 assert_eq!(
-                    body_content_height(&with_fence, width) as usize,
+                    body_content_height_t(&with_fence, width) as usize,
                     drawn,
                     "at width {width} for {body:?}"
                 );
@@ -402,10 +448,10 @@ mod tests {
         // at this width cancels out: the table contributes a header row, a rule,
         // and a body row laid out over three rows. Left as raw pipes it would
         // contribute four.
-        let baseline = body_content_height(&issue(vec![]), 30);
-        assert_eq!(body_content_height(&with_table, 30), baseline + 5);
+        let baseline = body_content_height_t(&issue(vec![]), 30);
+        assert_eq!(body_content_height_t(&with_table, 30), baseline + 5);
 
-        let lines = body_lines(&with_table, false, 30, &Theme::default());
+        let lines = body_lines_t(&with_table, false, 30, &Theme::default());
         let rendered: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -628,5 +674,113 @@ mod tests {
                 "detail_inner_width disagrees with the drawn pane at {cols}x{rows}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::super::testutil::issue;
+    use super::*;
+    use crate::typesafe::readiness::Readiness;
+
+    fn ready() -> Readiness {
+        Readiness {
+            repro: 0.95,
+            criteria: 0.92,
+            actionable: 0.98,
+            blocked: 0.02,
+            duplicate: 0.03,
+        }
+    }
+
+    /// The renderer and the scroll clamp must measure the same thing, or the
+    /// body scrolls past its own end. `body_content_height` therefore takes the
+    /// readiness the renderer draws.
+    #[test]
+    fn the_badge_is_counted_in_the_measured_height() {
+        let issue = issue(vec![]);
+        let without = body_content_height(&issue, None, 80);
+        let with = body_content_height(&issue, Some(&ready()), 80);
+        assert_eq!(with, without + 1, "one line, counted");
+    }
+
+    /// With the feature off there is no badge, so the pane is what it was —
+    /// geometry included.
+    #[test]
+    fn no_judgement_renders_nothing_and_changes_no_geometry() {
+        let issue = issue(vec![]);
+        assert_eq!(body_content_height(&issue, None, 80), 4);
+        let lines = body_lines(&issue, None, false, 80, &Theme::default());
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(!text.contains("readiness"));
+    }
+
+    fn badge(readiness: &Readiness) -> String {
+        body_lines(
+            &issue(vec![]),
+            Some(readiness),
+            false,
+            200,
+            &Theme::default(),
+        )
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect::<String>()
+    }
+
+    #[test]
+    fn a_ready_ticket_says_so() {
+        assert!(
+            badge(&ready()).contains("readiness: ready"),
+            "{}",
+            badge(&ready())
+        );
+    }
+
+    #[test]
+    fn a_veto_is_named_in_the_badge() {
+        let blocked = Readiness {
+            blocked: 0.93,
+            ..ready()
+        };
+        assert!(
+            badge(&blocked).contains("readiness: blocked"),
+            "{}",
+            badge(&blocked)
+        );
+    }
+
+    #[test]
+    fn a_thin_ticket_names_what_is_missing() {
+        let thin = Readiness {
+            repro: 0.03,
+            criteria: 0.02,
+            ..ready()
+        };
+        assert!(
+            badge(&thin).contains("thin \u{2014} no repro, criteria"),
+            "{}",
+            badge(&thin)
+        );
+    }
+
+    #[test]
+    fn an_undecided_ticket_does_not_claim_a_verdict() {
+        let unsure = Readiness {
+            repro: 0.5,
+            ..ready()
+        };
+        let line = badge(&unsure);
+        assert!(line.contains("unsure"), "{line}");
+        assert!(
+            !line.contains("ready \u{2014}"),
+            "must not claim ready: {line}"
+        );
+        assert!(!line.contains("thin"), "must not claim thin: {line}");
     }
 }
