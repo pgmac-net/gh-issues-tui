@@ -2914,3 +2914,143 @@ fn selecting_an_inferred_label_filters_to_the_issues_carrying_it() {
         .collect();
     assert_eq!(visible, vec![3], "only the issue labelled P0");
 }
+
+// ---- ticket readiness (#160) ----
+
+fn readiness_app() -> (App, String) {
+    let mut app = app_with(one_repo(vec![labelled(1, &["bug"])]));
+    app.selected = 1; // 0 = repo header, 1 = the issue
+    let id = app.repos[0].issues[0].id.clone();
+    (app, id)
+}
+
+fn some_readiness() -> Readiness {
+    Readiness {
+        repro: 0.9,
+        criteria: 0.9,
+        actionable: 0.9,
+        blocked: 0.1,
+        duplicate: 0.1,
+    }
+}
+
+#[test]
+fn readiness_is_not_asked_for_until_the_comment_thread_has_settled() {
+    let (mut app, _id) = readiness_app();
+    // `blocked` and `duplicate` are answered from the comments, so judging on
+    // the body alone would cache a wrong answer.
+    assert_eq!(app.begin_readiness(), None, "no thread yet");
+
+    let id = app.repos[0].issues[0].id.clone();
+    app.cache_comments(id, Vec::new());
+    assert!(app.begin_readiness().is_some(), "settled thread, empty");
+}
+
+#[test]
+fn readiness_is_asked_for_once_per_issue() {
+    let (mut app, id) = readiness_app();
+    app.cache_comments(id.clone(), Vec::new());
+
+    let (asked, _state) = app.begin_readiness().expect("first ask");
+    assert_eq!(asked, id);
+    assert_eq!(
+        app.begin_readiness(),
+        None,
+        "a request is already out for this issue"
+    );
+
+    app.apply_readiness(id, Ok(some_readiness()));
+    assert_eq!(app.begin_readiness(), None, "already answered");
+}
+
+#[test]
+fn a_landed_judgement_is_shown_against_its_own_issue() {
+    let (mut app, id) = readiness_app();
+    app.cache_comments(id.clone(), Vec::new());
+    app.begin_readiness();
+    app.apply_readiness(id, Ok(some_readiness()));
+    assert_eq!(app.selected_readiness(), Some(&some_readiness()));
+}
+
+#[test]
+fn a_failed_judgement_stops_asking_and_says_nothing() {
+    let (mut app, id) = readiness_app();
+    app.cache_comments(id.clone(), Vec::new());
+    app.begin_readiness();
+    app.apply_readiness(id, Err("TypeSafe returned 429".into()));
+
+    assert!(app.readiness.has_failed());
+    assert_eq!(app.begin_readiness(), None, "no retry storm");
+    assert!(app.selected_readiness().is_none());
+    // Unlike the label-rank failure, this sets no status: a missing badge is
+    // not actionable and must not displace a real message.
+    assert_eq!(app.status, None);
+}
+
+#[test]
+fn the_comment_thread_and_its_judgement_are_invalidated_together() {
+    let (mut app, id) = readiness_app();
+    app.cache_comments(id.clone(), Vec::new());
+    app.begin_readiness();
+    app.apply_readiness(id.clone(), Ok(some_readiness()));
+
+    // Editing the body or adding a comment invalidates the thread; the
+    // judgement was derived from it, so it goes too.
+    app.invalidate_comments(&id);
+    assert!(app.selected_readiness().is_none());
+    assert!(
+        app.begin_readiness().is_none(),
+        "and cannot be re-asked until the thread settles again"
+    );
+}
+
+#[test]
+fn fresh_data_clears_judgements_and_the_failure() {
+    let (mut app, id) = readiness_app();
+    app.cache_comments(id.clone(), Vec::new());
+    app.begin_readiness();
+    app.apply_readiness(id, Err("boom".into()));
+
+    app.set_data(one_repo(vec![labelled(1, &["bug"])]));
+    assert!(
+        !app.readiness.has_failed(),
+        "a refetch deserves a fresh attempt"
+    );
+    assert!(app.selected_readiness().is_none());
+}
+
+#[test]
+fn switching_org_clears_judgements() {
+    let (mut app, id) = readiness_app();
+    app.cache_comments(id.clone(), Vec::new());
+    app.begin_readiness();
+    app.apply_readiness(id, Ok(some_readiness()));
+
+    app.switch_org("other".into());
+    app.set_data(one_repo(vec![labelled(1, &["bug"])]));
+    assert!(app.selected_readiness().is_none());
+}
+
+#[test]
+fn the_state_sent_is_the_selected_issues_own_text() {
+    let mut app = app_with(one_repo(vec![labelled(1, &["bug"])]));
+    app.repos[0].issues[0].title = "Upgrade Calico".into();
+    app.repos[0].issues[0].body = "steps to reproduce".into();
+    app.rebuild_rows();
+    app.selected = 1;
+    let id = app.repos[0].issues[0].id.clone();
+    app.cache_comments(
+        id,
+        vec![crate::provider::types::Comment {
+            id: "c1".into(),
+            author: "a".into(),
+            created_at: Utc::now(),
+            body: "blocked on #184".into(),
+        }],
+    );
+
+    let (_id, state) = app.begin_readiness().expect("ask");
+    assert_eq!(state["title"], "Upgrade Calico");
+    assert_eq!(state["body"], "steps to reproduce");
+    assert_eq!(state["recent_comments"][0], "blocked on #184");
+}

@@ -15,6 +15,7 @@ mod mode;
 mod picker;
 mod pr;
 mod ranks;
+pub mod readiness;
 mod rows;
 
 #[cfg(test)]
@@ -103,6 +104,10 @@ pub struct App {
     /// `set_data` and `switch_org` — a refetch can reveal comments added
     /// elsewhere, and a stale thread is worse than a cheap refetch.
     pub comment_cache: HashMap<String, Vec<Comment>>,
+    /// Ticket-readiness judgements this session (#160). Advisory and
+    /// display-only — nothing here reaches a harness launch. Dropped with the
+    /// comment threads they were derived from.
+    pub readiness: ReadinessState,
     /// Coding-harness sessions (#23) — metadata only; the PTYs themselves
     /// are owned by the event loop. Deliberately *not* reset by
     /// `switch_org`: an agent working a ticket is unaffected by the list
@@ -155,6 +160,7 @@ impl App {
             rate_limit: None,
             rate_limit_error: None,
             comment_cache: HashMap::new(),
+            readiness: ReadinessState::default(),
             pr: PrState::default(),
             label_rank: RankState::default(),
             harness: HarnessState::default(),
@@ -174,8 +180,10 @@ impl App {
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
         let prev_selected = self.selected_issue().map(|i| i.id.clone());
         // Fresh data can carry comments added since the last fetch, so the
-        // cached threads are no longer trustworthy.
+        // cached threads are no longer trustworthy — nor are the readiness
+        // judgements derived from them (#160).
         self.comment_cache.clear();
+        self.readiness.clear();
         self.repos = repos;
         // A refresh brings fresh issues whose labels carry no rank.
         self.stamp_label_ranks();
@@ -247,6 +255,7 @@ impl App {
         self.org = org;
         self.repos.clear();
         self.comment_cache.clear();
+        self.readiness.clear();
         self.rows.clear();
         self.collapsed.clear();
         self.seen_repos.clear();
@@ -292,6 +301,10 @@ pub(crate) mod prelude {
 
     pub use super::App;
 
+    pub use std::collections::HashSet;
+
     pub use super::pr::PrState;
     pub use super::ranks::RankState;
+    pub use super::readiness::ReadinessState;
+    pub use crate::typesafe::readiness::Readiness;
 }

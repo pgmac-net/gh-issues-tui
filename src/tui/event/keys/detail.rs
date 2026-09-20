@@ -240,7 +240,7 @@ pub(crate) fn detail_scroll(app: &mut App, lines: isize) {
             let Some(issue) = app.selected_issue() else {
                 return;
             };
-            let content = ui::body_content_height(issue, inner_w);
+            let content = ui::body_content_height(issue, app.selected_readiness(), inner_w);
             let max = content.saturating_sub(body_view);
             app.detail.scroll_body(lines, max);
         }

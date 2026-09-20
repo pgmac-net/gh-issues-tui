@@ -40,6 +40,7 @@ mod prelude {
     pub use crate::tui::layout;
     pub use crate::tui::linkmap::{self, LinkRect};
     pub use crate::tui::theme::Theme;
+    pub use crate::typesafe::readiness::{Readiness, Verdict};
 }
 
 use prelude::*;

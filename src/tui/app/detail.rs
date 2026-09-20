@@ -129,8 +129,12 @@ impl App {
     }
 
     /// Forget one thread — used after a mutation that may have changed it.
+    ///
+    /// Also drops the readiness judgement (#160): it was derived from this
+    /// thread, so whatever changed the thread may have changed the answer.
     pub fn invalidate_comments(&mut self, id: &str) {
         self.comment_cache.remove(id);
+        self.invalidate_readiness(id);
     }
 
     /// `→` on an issue row: move focus into the detail pane, opening the
