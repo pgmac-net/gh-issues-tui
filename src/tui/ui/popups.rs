@@ -918,6 +918,40 @@ mod tests {
     }
 
     #[test]
+    fn golden_priority_filter_popup_lists_an_inferred_label_without_a_rank_word() {
+        use crate::provider::types::{Label, RepoIssues};
+
+        let mut app = picker_app(Mode::SelectFieldMulti(4));
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(vec![
+                Label {
+                    name: "priority:low".into(),
+                    ..Default::default()
+                },
+                Label {
+                    name: "P0".into(),
+                    ..Default::default()
+                },
+            ])],
+        }]);
+        app.merge_label_ranks([("P0".to_string(), Some(4))].into());
+        let options = app.compute_multi_options(4);
+        app.picker.start(options, 0);
+        let text = popup_box(&render_app(&app, 100, 30)).text();
+
+        assert!(text.contains("[ ] low"), "convention entry missing: {text}");
+        assert!(text.contains("[ ] P0"), "inferred entry missing: {text}");
+        // Ordering carries the rank here, and the rows already have marks;
+        // the `p` picker's annotation would only add noise.
+        assert!(
+            !text.contains("P0  urgent") && !text.contains("P0 urgent"),
+            "no rank word on the filter picker: {text}"
+        );
+    }
+
+    #[test]
     fn golden_priority_set_popup_leaves_convention_labels_bare() {
         let mut app = picker_app(Mode::PrioritySet);
         app.picker

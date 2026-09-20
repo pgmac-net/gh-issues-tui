@@ -842,3 +842,36 @@ Work driven by [pgmac-net/gh-issues-tui#162](https://github.com/pgmac-net/gh-iss
 - `cargo test` — 688 passed, 0 failed (27 new). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — clean.
 - The acceptance criterion that matters most ("setting a priority never removes a label the user was not shown") is held by two tests from opposite sides: a ranked label present routes to `ConfirmPriority` with that label named in `removes`, and a convention repo with a ranked label on the issue writes straight through **keeping** it.
 - **Not driven against a live org.** The picker's own rank request and the confirmation were exercised through `handle_app_event` and the key handlers with stubbed events, and the two popups through the golden renderer. The keypress-to-network path (`spawn_priority_ranks` reaching the real API) is untested end to end; it is the same `typesafe::resolve` the background pass uses, which #163 verified live.
+
+
+# Development log — list inferred priority labels in the priority filter picker (2026-09-20)
+
+Work driven by [pgmac-net/gh-issues-tui#164](https://github.com/pgmac-net/gh-issues-tui/issues/164), on branch `164-priority-filter-inferred-labels`. Folded into [`priority-rank-inference.md`](priority-rank-inference.md#the-priority-filter-picker) rather than given its own page: one ordering rule in one function, read-only.
+
+## Process
+
+1. **Grilling** put four decisions one at a time; all four took the recommended option. The ticket read as trivial ("list them, ordered by rank") and had three unstated design questions in it.
+2. Plan posted to the ticket and approved before implementation. Planning ran on Opus 5; implementation on Sonnet 5 as the plan rated it STANDARD.
+3. No ADR. Nothing here is hard to reverse, and the consent and write-safety decisions this touches are already recorded in ADRs 0002 and 0003.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Gate on the repo using `priority:*`? | No | #162's gate guarded a *write* and was per-repo. This list is read-only and spans the whole org, so gating it would let one convention repo hide `P0` from every other repo — the bug being fixed |
+| Ordering | One low → urgent scale; convention first on an equal rank | Every entry that exists today keeps its relative position, and with inference off the sort key collapses to today's `(rank, text)` — which is what makes AC3 structural |
+| Same text from both sources | One entry, ranked by the convention when it recognises the value, by inference otherwise | `priority:P1` and a bare `P1` yield the same option string and `label_filter_matches` matches both, so two entries would be indistinguishable. `unwrap_or(5)` meant "unrecognised", not a position |
+| Rank word on rows | None | The order already carries the rank; the rows have `[x]`/`[ ]` marks; convention values are the rank word |
+
+## Diversions from plan
+
+- **The first version of the "convention keeps its rank" test was vacuous.** It used a bare `low` inferred as 2 against a declared `priority:low` (1) with only `high` (3) alongside, so swapping which source wins changed nothing. Found by mutation-checking, not by reading it; the same trap #156's log records for its reselect test. Fixed by making the inferred rank *cross* another entry (bare `low` inferred as urgent, against `medium`), and re-checked.
+- **One surviving mutant was equivalent, not a gap.** Swapping `ranked_labels()` for all labels survived because `l.rank?` already drops unranked ones — the guard is redundant with the extraction. Checked by mutating both together (admit unranked at rank 5), which three tests caught. `ranked_labels()` stays: it is #162's single definition of "ranked label".
+- **The `src/typesafe/mod.rs` module docs were not in the plan's docs list.** They say what a rank may reach ("only affects sorting and title colour"), which the filter picker made stale. Found by grepping for the claim, as in #162; the plan's list otherwise held.
+
+## Verification
+
+- `cargo test` — 698 passed, 0 failed (10 new). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — clean.
+- **Mutation-checked** five mutations of `priority_filter_options`: dropping the convention-first tie-break, inferred rank overriding the convention's (caught only after the test fix above), dropping the fallback to an inferred rank, dropping the already-present exclusion, and admitting unranked labels. Each is caught by at least one test.
+- AC2 is held by a round trip: choosing `P0` filters to the issue carrying it, and reopening the picker pre-checks it — without that the checkmark would silently vanish and the next Enter would drop the filter.
+- **Not driven against a live org.** Nothing here touches the network — it reads ranks already stamped on loaded labels, so the tests are the whole of the verification.

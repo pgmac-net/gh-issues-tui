@@ -1,5 +1,19 @@
 use super::prelude::*;
 
+/// Sorts after the four known ranks: a `priority:<value>` label the
+/// convention does not recognise and inference has no opinion on.
+const UNRECOGNISED_PRIORITY: u8 = 5;
+
+/// One row of the priority filter picker, carrying the three sort keys by
+/// name rather than by tuple position.
+struct PriorityOption {
+    text: String,
+    rank: u8,
+    /// Came from a `priority:<value>` label. Sorts ahead of an inferred label
+    /// of the same rank.
+    convention: bool,
+}
+
 /// Everything a list-of-choices popup needs, for every mode that shows one:
 /// the option list, the type-ahead filter narrowing it, the highlighted
 /// position, the multi-select working set, and the staleness guards for the
@@ -166,18 +180,75 @@ impl App {
     /// Options for a multi-select filter field (priority, status). No "—"
     /// row — clearing is deselecting everything. Priority values are
     /// ordered low → urgent with unknown values last (like the set-priority
-    /// picker); status values stay alphabetical.
+    /// picker) and include labels whose rank was inferred (#164); status
+    /// values stay alphabetical.
     pub fn compute_multi_options(&self, idx: usize) -> Vec<String> {
         match idx {
-            4 => {
-                let rank = |v: &str| priority_value_rank(v).unwrap_or(5);
-                let mut v = self.label_values("priority");
-                v.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.cmp(b)));
-                v
-            }
+            4 => self.priority_filter_options(),
             5 => self.label_values("status"),
             _ => vec![],
         }
+    }
+
+    /// The priority filter picker's options: `priority:<value>` values and
+    /// labels whose rank was inferred (#156), on one low → urgent scale.
+    ///
+    /// Deliberately *not* gated on the repo using the `priority:*` convention,
+    /// unlike the set-priority picker (#162, ADR 0003). That gate guards a
+    /// write; this list is read-only and spans every loaded repo, so gating it
+    /// would let one convention repo hide `P0` from every other repo in the
+    /// org — the very thing this exists to fix.
+    ///
+    /// One entry per option text. `label_filter_matches` makes a filter of
+    /// `P1` match both `P1` and `priority:P1`, so two entries for the same
+    /// text would look identical and select identical issues. The rank the
+    /// entry sorts by is the convention's when it recognises the value, and an
+    /// inferred rank only fills a gap: the fallback `5` means "unrecognised",
+    /// not a position, so a declared `low` is never reordered by a model's
+    /// opinion of a bare `low` elsewhere, while `priority:P1` still sorts
+    /// with the inferred `P1` rather than dropping to the end.
+    ///
+    /// With no ranks resolved every entry is a convention entry and the sort
+    /// key collapses to `(rank, text)` — the list as it was before inference
+    /// existed.
+    fn priority_filter_options(&self) -> Vec<String> {
+        let mut options: Vec<PriorityOption> = self
+            .label_values("priority")
+            .into_iter()
+            .map(|text| PriorityOption {
+                rank: priority_value_rank(&text)
+                    .or_else(|| self.label_rank.rank_of(&text))
+                    .unwrap_or(UNRECOGNISED_PRIORITY),
+                convention: true,
+                text,
+            })
+            .collect();
+
+        let mut inferred: Vec<PriorityOption> = self
+            .repos
+            .iter()
+            .flat_map(|r| r.issues.iter())
+            .flat_map(|i| i.ranked_labels())
+            .filter(|l| priority_value(&l.name).is_none())
+            .filter(|l| !options.iter().any(|o| o.text.eq_ignore_ascii_case(&l.name)))
+            .filter_map(|l| {
+                Some(PriorityOption {
+                    text: l.name.clone(),
+                    rank: l.rank?,
+                    convention: false,
+                })
+            })
+            .collect();
+        inferred.sort_by(|a, b| a.text.cmp(&b.text));
+        inferred.dedup_by(|a, b| a.text.eq_ignore_ascii_case(&b.text));
+        options.extend(inferred);
+
+        // Convention first on an equal rank, so every entry that exists today
+        // keeps its position relative to the others.
+        options.sort_by(|a, b| {
+            (a.rank, !a.convention, &a.text).cmp(&(b.rank, !b.convention, &b.text))
+        });
+        options.into_iter().map(|o| o.text).collect()
     }
 
     /// Distinct sorted values of `<prefix>:<value>` labels across all issues.

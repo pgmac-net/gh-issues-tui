@@ -2748,3 +2748,169 @@ fn ranked_label_set_on_an_unranked_issue_removes_nothing() {
         "nothing to lose, so nothing to confirm: {removed:?}"
     );
 }
+
+// ---- inferred labels in the priority filter picker (#164) ----
+
+/// Two repos so the org-wide shape is real: repo `a` follows the convention,
+/// repo `b` labels priority `P0`/`P1`/`P2`. Ranks are supplied as answers.
+fn mixed_convention_app(ranks: &[(&str, Option<u8>)]) -> App {
+    let mut app = app_with(vec![
+        RepoIssues {
+            repo: "a".into(),
+            repo_url: "u".into(),
+            issues: vec![
+                labelled(1, &["priority:low", "priority:high"]),
+                labelled(2, &["priority:urgent", "priority:medium"]),
+            ],
+        },
+        RepoIssues {
+            repo: "b".into(),
+            repo_url: "u".into(),
+            issues: vec![
+                labelled(3, &["P0", "bug"]),
+                labelled(4, &["P1"]),
+                labelled(5, &["P2", "bug"]),
+            ],
+        },
+    ]);
+    app.merge_label_ranks(ranks.iter().map(|(k, v)| (k.to_string(), *v)).collect());
+    app
+}
+
+const P_SCALE: &[(&str, Option<u8>)] = &[
+    ("P0", Some(4)),
+    ("P1", Some(3)),
+    ("P2", Some(2)),
+    ("bug", None),
+];
+
+#[test]
+fn filter_picker_interleaves_inferred_labels_by_rank_convention_first_on_a_tie() {
+    let mut app = mixed_convention_app(&[
+        ("P0", Some(4)),
+        ("P1", Some(3)),
+        ("P2", Some(2)),
+        ("P3", Some(1)),
+        ("bug", None),
+    ]);
+    // Give repo b a rank-1 label so the tie-break with `low` is exercised.
+    app.repos[1].issues.push(labelled(6, &["P3"]));
+    app.merge_label_ranks([("P3".to_string(), Some(1))].into());
+
+    assert_eq!(
+        app.compute_multi_options(4),
+        vec!["low", "P3", "medium", "P2", "high", "P1", "urgent", "P0"],
+        "one low-to-urgent scale; on an equal rank the convention value leads"
+    );
+}
+
+#[test]
+fn filter_picker_is_unchanged_when_no_ranks_have_resolved() {
+    // AC3: inference off means an empty ranks map. A bare `P0` must not
+    // appear, and the convention entries keep today's order.
+    let app = mixed_convention_app(&[]);
+    assert_eq!(
+        app.compute_multi_options(4),
+        vec!["low", "medium", "high", "urgent"]
+    );
+}
+
+#[test]
+fn filter_picker_is_not_gated_on_any_repo_using_the_convention() {
+    // Repo `a` has `priority:*` labels, and repo `b` still gets its own
+    // ranked labels listed — the gate guards the p-picker's write, and this
+    // list is read-only and org-wide.
+    let app = mixed_convention_app(P_SCALE);
+    let opts = app.compute_multi_options(4);
+    for label in ["P0", "P1", "P2"] {
+        assert!(opts.iter().any(|o| o == label), "{label} missing: {opts:?}");
+    }
+    assert!(opts.iter().any(|o| o == "low"), "convention lost: {opts:?}");
+}
+
+#[test]
+fn a_label_answered_as_not_priority_never_appears() {
+    let app = mixed_convention_app(P_SCALE);
+    assert!(!app.compute_multi_options(4).iter().any(|o| o == "bug"));
+}
+
+#[test]
+fn a_convention_value_and_a_bare_label_of_the_same_text_are_one_entry() {
+    // `priority:P1` yields the option `P1`, and a bare `P1` label elsewhere
+    // ranked 3 yields the same text. `label_filter_matches` makes a filter of
+    // `P1` match both, so two entries would be indistinguishable.
+    let mut app = app_with(vec![
+        RepoIssues {
+            repo: "a".into(),
+            repo_url: "u".into(),
+            issues: vec![labelled(1, &["priority:P1", "priority:urgent"])],
+        },
+        RepoIssues {
+            repo: "b".into(),
+            repo_url: "u".into(),
+            issues: vec![labelled(2, &["P1"])],
+        },
+    ]);
+    app.merge_label_ranks([("P1".to_string(), Some(3))].into());
+
+    assert_eq!(
+        app.compute_multi_options(4),
+        vec!["P1", "urgent"],
+        "one entry, ordered at the inferred rank 3 rather than dropped last"
+    );
+}
+
+#[test]
+fn an_unrecognised_convention_value_stays_last_when_inference_has_no_opinion() {
+    // Same shape as `compute_priority_options_rank_order_unknown_last`, with
+    // the resolver running but saying nothing about `P1`.
+    let mut app = app_with(one_repo(vec![labelled(
+        1,
+        &["priority:urgent", "priority:medium", "priority:P1"],
+    )]));
+    app.merge_label_ranks([("bug".to_string(), None)].into());
+    assert_eq!(app.compute_multi_options(4), vec!["medium", "urgent", "P1"]);
+}
+
+#[test]
+fn a_recognised_convention_value_keeps_its_rank_over_an_inferred_one() {
+    // A bare `low` in repo b that a model reads as urgent (4) must not drag
+    // repo a's declared `priority:low` (1) past `medium` (2). The inferred
+    // rank has to *cross* another entry, or swapping which source wins would
+    // change nothing and the test would prove nothing.
+    let mut app = app_with(vec![
+        RepoIssues {
+            repo: "a".into(),
+            repo_url: "u".into(),
+            issues: vec![labelled(1, &["priority:low", "priority:medium"])],
+        },
+        RepoIssues {
+            repo: "b".into(),
+            repo_url: "u".into(),
+            issues: vec![labelled(2, &["low"])],
+        },
+    ]);
+    app.merge_label_ranks([("low".to_string(), Some(4))].into());
+    assert_eq!(app.compute_multi_options(4), vec!["low", "medium"]);
+}
+
+#[test]
+fn selecting_an_inferred_label_filters_to_the_issues_carrying_it() {
+    // AC2. Matching already compares label names directly; this pins that the
+    // picker's value round-trips through it.
+    let mut app = mixed_convention_app(P_SCALE);
+    app.apply_multi_filter(4, vec!["P0".into()]);
+
+    let visible: Vec<u64> = app
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Issue {
+                repo_idx,
+                issue_idx,
+            } => Some(app.repos[*repo_idx].issues[*issue_idx].number),
+            Row::RepoHeader { .. } => None,
+        })
+        .collect();
+    assert_eq!(visible, vec![3], "only the issue labelled P0");
+}
