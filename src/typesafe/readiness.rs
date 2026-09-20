@@ -48,12 +48,12 @@ pub const BODY_CHARS: usize = 4000;
 ///
 /// ```text
 /// blocked    > YES  ->  Blocked          duplicate  > YES  ->  MaybeDuplicate
-/// actionable < NO   ->  NotActionable    repro/criteria < NO  ->  Thin
+/// actionable < NO   ->  NotActionable    specifics/criteria < NO  ->  Thin
 /// ```
 ///
 /// — so:
 ///
-/// * `repro`, `criteria`: "ready — has a repro and a stated outcome" is a
+/// * `specifics`, `criteria`: "ready — is specific and states an outcome" is a
 ///   positive claim. It must not be asserted on a coin flip.
 /// * `blocked`, `duplicate`: missing one costs a whole agent run, so "might be"
 ///   is worth saying even though it is not enough to veto.
@@ -65,7 +65,7 @@ pub const BODY_CHARS: usize = 4000;
 /// Add a signal to [`SIGNALS`] and this is where you must decide which direction
 /// the verdict reads it.
 const HEDGED: [Signal; 4] = [
-    Signal::Repro,
+    Signal::Specifics,
     Signal::Criteria,
     Signal::Blocked,
     Signal::Duplicate,
@@ -74,7 +74,7 @@ const HEDGED: [Signal; 4] = [
 /// One judgement about a ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
-    Repro,
+    Specifics,
     Criteria,
     Actionable,
     Blocked,
@@ -85,7 +85,7 @@ impl Signal {
     /// Question id on the wire, and the name used in the badge.
     pub fn id(self) -> &'static str {
         match self {
-            Signal::Repro => "repro",
+            Signal::Specifics => "specifics",
             Signal::Criteria => "criteria",
             Signal::Actionable => "actionable",
             Signal::Blocked => "blocked",
@@ -96,7 +96,7 @@ impl Signal {
 
 /// Every signal, in the order a badge lists them.
 pub const SIGNALS: [Signal; 5] = [
-    Signal::Repro,
+    Signal::Specifics,
     Signal::Criteria,
     Signal::Actionable,
     Signal::Blocked,
@@ -108,15 +108,18 @@ pub const SIGNALS: [Signal; 5] = [
 /// "explicit criteria aligned with instructions".
 fn question(signal: Signal) -> Value {
     let (instructions, yes, no) = match signal {
-        Signal::Repro => (
-            "Does this ticket give enough specifics \u{2014} steps, inputs, commands, code \
-             locations, or observed output \u{2014} that someone could see the problem or \
-             the current behaviour for themselves?",
-            "It gives concrete specifics: steps to follow, inputs, commands, named \
-             files or code locations, observed output, or the conditions under \
-             which it happens",
-            "It describes the situation only in general terms, so someone would \
-             have to work out for themselves what to look at",
+        // Was `repro` ("could someone see the problem or the current behaviour
+        // for themselves?") until #171. That wording asked about the *current*
+        // state, so a precise spec for something not yet built scored 0.08 while
+        // a record of finished work scored 0.73 — right for the question, wrong
+        // for readiness. This asks the decision the badge serves instead.
+        Signal::Specifics => (
+            "Could someone begin work on this without having to ask what is meant?",
+            "It names what to change, where to change it, or how to see the current \
+             behaviour \u{2014} files, commands, inputs, steps, or a concrete description \
+             of the wanted result",
+            "It is in general terms only, so a reader would have to decide for \
+             themselves what is being asked for",
         ),
         Signal::Criteria => (
             "Does this ticket state what finishing it would look like — an acceptance \
@@ -214,7 +217,7 @@ fn request_body(state: Value) -> Value {
 /// threshold or the badge wording never needs a new request.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Readiness {
-    pub repro: f64,
+    pub specifics: f64,
     pub criteria: f64,
     pub actionable: f64,
     pub blocked: f64,
@@ -224,7 +227,7 @@ pub struct Readiness {
 impl Readiness {
     fn get(&self, signal: Signal) -> f64 {
         match signal {
-            Signal::Repro => self.repro,
+            Signal::Specifics => self.specifics,
             Signal::Criteria => self.criteria,
             Signal::Actionable => self.actionable,
             Signal::Blocked => self.blocked,
@@ -234,7 +237,7 @@ impl Readiness {
 
     /// What to show. Vetoes are checked first and named individually: they do
     /// not compensate, so averaging them into one score would let a blocked
-    /// ticket with an excellent repro read as ready.
+    /// ticket with an excellent specifics read as ready.
     pub fn verdict(&self) -> Verdict {
         if self.blocked > YES {
             return Verdict::Blocked;
@@ -256,7 +259,7 @@ impl Readiness {
         if !undecided.is_empty() {
             return Verdict::Unsure(undecided);
         }
-        let missing: Vec<Signal> = [Signal::Repro, Signal::Criteria]
+        let missing: Vec<Signal> = [Signal::Specifics, Signal::Criteria]
             .into_iter()
             .filter(|s| self.get(*s) < NO)
             .collect();
@@ -276,7 +279,7 @@ impl Readiness {
             }
         };
         Ok(Self {
-            repro: at(Signal::Repro)?,
+            specifics: at(Signal::Specifics)?,
             criteria: at(Signal::Criteria)?,
             actionable: at(Signal::Actionable)?,
             blocked: at(Signal::Blocked)?,
@@ -296,7 +299,7 @@ pub enum Verdict {
     NotActionable,
     /// These signals landed between the thresholds.
     Unsure(Vec<Signal>),
-    /// A repro and a stated outcome.
+    /// A specifics and a stated outcome.
     Ready,
     /// Workable, but these are absent.
     Thin(Vec<Signal>),
@@ -315,7 +318,7 @@ impl Verdict {
                 "not a work item \u{2014} reads as a question or update".into()
             }
             Verdict::Unsure(s) => format!("unsure \u{2014} cannot judge {}", names(s)),
-            Verdict::Ready => "ready \u{2014} has a repro and a stated outcome".into(),
+            Verdict::Ready => "ready \u{2014} is specific and states an outcome".into(),
             Verdict::Thin(s) => format!("thin \u{2014} no {}", names(s)),
         }
     }
@@ -335,7 +338,7 @@ mod tests {
     /// A clean, decisive answer: workable and nothing wrong with it.
     fn ready() -> Readiness {
         Readiness {
-            repro: 0.95,
+            specifics: 0.95,
             criteria: 0.92,
             actionable: 0.98,
             blocked: 0.02,
@@ -374,9 +377,9 @@ mod tests {
     #[test]
     fn a_veto_beats_strong_quality_signals() {
         // The whole reason vetoes are not averaged in: a blocked ticket with an
-        // excellent repro and clear criteria is still blocked.
+        // excellent specifics and clear criteria is still blocked.
         let r = Readiness {
-            repro: 1.0,
+            specifics: 1.0,
             criteria: 1.0,
             blocked: 0.95,
             ..ready()
@@ -397,29 +400,32 @@ mod tests {
 
     #[test]
     fn a_missing_quality_signal_is_named() {
-        let thin_repro = Readiness {
-            repro: 0.04,
+        let thin_specifics = Readiness {
+            specifics: 0.04,
             ..ready()
         };
         assert_eq!(
-            thin_repro.verdict(),
-            Verdict::Thin(vec![Signal::Repro]),
-            "{thin_repro:?}"
+            thin_specifics.verdict(),
+            Verdict::Thin(vec![Signal::Specifics]),
+            "{thin_specifics:?}"
         );
-        assert_eq!(thin_repro.verdict().line(), "thin \u{2014} no repro");
+        assert_eq!(
+            thin_specifics.verdict().line(),
+            "thin \u{2014} no specifics"
+        );
 
         let thin_both = Readiness {
-            repro: 0.04,
+            specifics: 0.04,
             criteria: 0.08,
             ..ready()
         };
         assert_eq!(
             thin_both.verdict(),
-            Verdict::Thin(vec![Signal::Repro, Signal::Criteria])
+            Verdict::Thin(vec![Signal::Specifics, Signal::Criteria])
         );
         assert_eq!(
             thin_both.verdict().line(),
-            "thin \u{2014} no repro, criteria"
+            "thin \u{2014} no specifics, criteria"
         );
     }
 
@@ -430,19 +436,19 @@ mod tests {
         // guessing a verdict from it would be inventing an answer.
         for p in [NO, 0.5, YES] {
             let r = Readiness {
-                repro: p,
+                specifics: p,
                 ..ready()
             };
             assert_eq!(
                 r.verdict(),
-                Verdict::Unsure(vec![Signal::Repro]),
-                "repro = {p} should not resolve either way"
+                Verdict::Unsure(vec![Signal::Specifics]),
+                "specifics = {p} should not resolve either way"
             );
         }
         // Just outside the band it resolves again.
         assert_eq!(
             Readiness {
-                repro: YES + 0.01,
+                specifics: YES + 0.01,
                 ..ready()
             }
             .verdict(),
@@ -450,11 +456,11 @@ mod tests {
         );
         assert_eq!(
             Readiness {
-                repro: NO - 0.01,
+                specifics: NO - 0.01,
                 ..ready()
             }
             .verdict(),
-            Verdict::Thin(vec![Signal::Repro])
+            Verdict::Thin(vec![Signal::Specifics])
         );
     }
 
@@ -484,7 +490,7 @@ mod tests {
         for signal in HEDGED {
             let mut r = ready();
             match signal {
-                Signal::Repro => r.repro = 0.5,
+                Signal::Specifics => r.specifics = 0.5,
                 Signal::Criteria => r.criteria = 0.5,
                 Signal::Blocked => r.blocked = 0.5,
                 Signal::Duplicate => r.duplicate = 0.5,
@@ -532,7 +538,7 @@ mod tests {
     fn a_decisive_veto_wins_over_another_signal_being_undecided() {
         let r = Readiness {
             blocked: 0.95,
-            repro: 0.5,
+            specifics: 0.5,
             ..ready()
         };
         assert_eq!(r.verdict(), Verdict::Blocked);
@@ -644,20 +650,20 @@ mod tests {
     #[test]
     fn answers_are_read_by_question_id() {
         let r = Readiness::from_answers(&answers(&[
-            ("repro", 0.9),
+            ("specifics", 0.9),
             ("criteria", 0.8),
             ("actionable", 0.7),
             ("blocked", 0.1),
             ("duplicate", 0.2),
         ]))
         .expect("all five present");
-        assert_eq!(r.repro, 0.9);
+        assert_eq!(r.specifics, 0.9);
         assert_eq!(r.duplicate, 0.2);
     }
 
     #[test]
     fn a_missing_answer_fails_rather_than_defaulting_to_a_verdict() {
-        let err = Readiness::from_answers(&answers(&[("repro", 0.9)]))
+        let err = Readiness::from_answers(&answers(&[("specifics", 0.9)]))
             .expect_err("four answers are missing");
         assert!(err.to_string().contains("criteria"), "{err}");
     }
@@ -673,7 +679,7 @@ mod tests {
             ("duplicate", 0.2),
         ]);
         a.insert(
-            "repro".into(),
+            "specifics".into(),
             Answer::Score {
                 probabilities: HashMap::new(),
                 confidence: 0.9,
@@ -740,11 +746,17 @@ mod calibration {
 
     /// Expectations written from reading each ticket, before any request.
     ///
+    /// The `specifics` column was **re-derived for #171** against "could someone
+    /// begin work on this without having to ask what is meant?", from the ticket
+    /// text, in the commit *before* the one that recorded any measurement — so
+    /// `git log` proves the order. Seven changed from the `repro` column it
+    /// replaces; the reasons are in `docs/development-log.md`.
+    ///
     /// `blocked` has **no `Yes` case**: no open issue in any public `pgmac-net`
     /// repo is waiting on something unresolved as its thread currently stands.
     /// That side is therefore unmeasured, and the harness says so rather than
     /// resting a threshold on a manufactured example.
-    //                                    repro criteria actionable blocked duplicate
+    //                                    specifics criteria actionable blocked duplicate
     const CORPUS: &[Case] = &[
         // ---- well-specified bug reports: both quality signals present ----
         Case {
@@ -819,10 +831,6 @@ mod calibration {
             expect: [N, N, V, N, N],
             note: "speculative throughout, ends 'Maybe not that'",
         },
-        // criteria REVISED No -> Unasserted after re-reading (round 1): it does
-        // name concrete wants (card-style left nav, "the ToC on the right is
-        // OK") while also saying the design needs brainstorming. A reader can
-        // defend either answer, so it should not pin a threshold.
         Case {
             repo: "incidents",
             number: 72,
@@ -845,28 +853,21 @@ mod calibration {
         Case {
             repo: "Docker-Nagios",
             number: 4,
-            expect: [N, Y, V, N, N],
+            expect: [Y, Y, V, N, N],
             note: "small precise spec, but no problem to observe",
         },
         Case {
             repo: "metasearch",
             number: 22,
-            expect: [N, Y, V, N, N],
+            expect: [U, Y, V, N, N],
             note: "two-bullet outcome, plus Linear migration metadata as noise",
         },
-        // repro REVISED No -> Yes after re-reading (round 1): it has explicit
-        // "Current State" and "Gaps to Fix" sections describing behaviour a
-        // reader can go and look at.
         Case {
             repo: "metasearch",
             number: 19,
-            expect: [Y, U, V, N, N],
-            note: "has Current State and Gaps to Fix sections; criteria arguable",
+            expect: [U, U, V, N, N],
+            note: "body is one sentence; the Current State and Gaps to Fix detail is in a comment",
         },
-        // repro REVISED No -> Yes after re-reading (round 1): it gives the
-        // concrete input format (`owner/repo#N`) and the keypress that triggers
-        // it. My `No` came from reading `repro` as "bug reproduction"; the
-        // question asks about observable current behaviour.
         Case {
             repo: "gh-issues-tui",
             number: 129,
@@ -883,32 +884,27 @@ mod calibration {
         Case {
             repo: "tremendous-cve",
             number: 10,
-            expect: [N, U, N, N, U],
+            expect: [U, U, N, N, U],
             note: "open, but the body is a record of work already DONE & MERGED",
         },
         // ---- references to other issues that are not duplicate claims ----
         Case {
             repo: "incidents",
             number: 75,
-            expect: [N, Y, V, N, N],
+            expect: [Y, Y, V, N, N],
             note: "'Follow-up to #63 / #12' — a lineage, not a duplicate",
         },
-        // repro REVISED No -> Unasserted for both (round 1): these are feature
-        // proposals that quote exact code locations. "Is there a problem to
-        // reproduce" says no; "could a reader go and look at the current
-        // behaviour" says yes. The question cannot mean both, and that tension
-        // is reported as a finding rather than resolved by picking a side here.
         Case {
             repo: "gh-issues-tui",
             number: 160,
-            expect: [U, Y, V, N, N],
+            expect: [Y, Y, V, N, N],
             note: "feature proposal citing code locations; last comment says \
                       a follow-up was filed as #168",
         },
         Case {
             repo: "gh-issues-tui",
             number: 168,
-            expect: [U, Y, V, N, N],
+            expect: [Y, Y, V, N, N],
             note: "LITERAL-MINDEDNESS: discusses duplicate detection at \
                       length without being a duplicate",
         },
@@ -1096,7 +1092,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         println!("\nYES = {YES}   NO = {NO}   model = {MODEL}\n");
         println!(
             "{:<42} {:>10} {:>10} {:>11} {:>9} {:>10}   verdict",
-            "ref", "repro", "criteria", "actionable", "blocked", "duplicate"
+            "ref", "specifics", "criteria", "actionable", "blocked", "duplicate"
         );
         for c in cases {
             let cell = |s: Signal| {
@@ -1113,7 +1109,7 @@ query($owner: String!, $name: String!, $number: Int!) {
             println!(
                 "{:<42} {:>10} {:>10} {:>11} {:>9} {:>10}   {}",
                 c.r#ref,
-                cell(Signal::Repro),
+                cell(Signal::Specifics),
                 cell(Signal::Criteria),
                 cell(Signal::Actionable),
                 cell(Signal::Blocked),
@@ -1128,7 +1124,7 @@ query($owner: String!, $name: String!, $number: Int!) {
     // Offline guards over the committed recording. Run in CI with no key.
     //
     // These deliberately do **not** assert that every expectation holds. It
-    // does not: `repro` and `duplicate` do not separate at all, and
+    // does not: `specifics` and `duplicate` do not separate at all, and
     // `actionable` separates only well below `YES`. Asserting the intended
     // behaviour would mean a permanently red suite, so instead these pin the
     // measured state — characterisation tests, like the `#87` screen goldens —
@@ -1229,20 +1225,20 @@ query($owner: String!, $name: String!, $number: Int!) {
         assert_eq!(rec.no, NO);
     }
 
-    /// **Known-bad, pinned deliberately.** `repro` and `duplicate` do not
+    /// **Known-bad, pinned deliberately.** `specifics` and `duplicate` do not
     /// separate: in each case the worst asserted `no` scores *above* the worst
     /// asserted `yes`, so no threshold can split them.
     ///
-    /// `repro` asks two questions at once — "is there a reproduction" and "is
+    /// `specifics` asks two questions at once — "is there a reproduction" and "is
     /// this specific enough to act on" — and a feature request cannot have the
     /// first. `duplicate` conflates "covered somewhere else" with "this ticket
     /// is finished", and a closed thread ends in its own completion notice.
     ///
     /// Both need redesign, not rewording. When that lands, this test changes.
     #[test]
-    fn repro_and_duplicate_do_not_separate_and_that_is_recorded() {
+    fn specifics_and_duplicate_do_not_separate_and_that_is_recorded() {
         let rec = recording();
-        for signal in [Signal::Repro, Signal::Duplicate] {
+        for signal in [Signal::Specifics, Signal::Duplicate] {
             let (worst_no, worst_yes) = gap(&rec, signal).expect("both sides asserted");
             assert!(
                 worst_no > worst_yes,
@@ -1300,7 +1296,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         for c in &rec.cases {
             let p = &c.probabilities;
             let readiness = Readiness {
-                repro: p["repro"],
+                specifics: p["specifics"],
                 criteria: p["criteria"],
                 actionable: p["actionable"],
                 blocked: p["blocked"],
