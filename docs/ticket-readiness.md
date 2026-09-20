@@ -14,9 +14,9 @@ duplicate, all burn a session before the agent discovers it.
 With the feature on, the detail pane carries one extra line:
 
 ```
-readiness: thin — no repro, criteria
+readiness: thin — no specifics, criteria
 readiness: blocked — waiting on something unresolved
-readiness: ready — has a repro and a stated outcome
+readiness: ready — is specific and states an outcome
 readiness: unsure — cannot judge blocked
 ```
 
@@ -81,7 +81,7 @@ explicit `criteria` for both the yes and the no side.
 
 | Question | Asks | Kind |
 |---|---|---|
-| `repro` | Concrete steps, inputs or conditions that reproduce or show the problem | quality |
+| `specifics` | **Could someone begin work on this without having to ask what is meant?** Names what to change, where, or how to see the current behaviour | quality |
 | `criteria` | States what finishing looks like | quality |
 | `actionable` | Work to carry out, not a question or a status update | veto on *no* |
 | `blocked` | **As the thread currently stands**, waiting on something unresolved | veto on *yes* |
@@ -119,8 +119,8 @@ Vetoes are checked first and named individually, because they do not compensate:
 blocked    > 0.7   -> "blocked"
 duplicate  > 0.7   -> "may be a duplicate"
 actionable < 0.3   -> "not a work item"
-repro, criteria, blocked or duplicate undecided -> "unsure — cannot judge <which>"
-otherwise, from repro and criteria:
+specifics, criteria, blocked or duplicate undecided -> "unsure — cannot judge <which>"
+otherwise, from specifics and criteria:
   both present -> "ready"
   either absent -> "thin — no <which>"
 ```
@@ -132,7 +132,7 @@ just means *not vetoed*; hedging on it makes a well-specified bug report read
 
 | signal | direction read | hedges when in 0.3–0.7? | why |
 |---|---|---|---|
-| `repro`, `criteria` | `< NO` → thin | yes | "ready — has a repro and a stated outcome" is a positive claim; it must not be asserted on a coin flip |
+| `specifics`, `criteria` | `< NO` → thin | yes | "ready — is specific and states an outcome" is a positive claim; it must not be asserted on a coin flip |
 | `blocked`, `duplicate` | `> YES` → veto | yes | missing one costs a whole agent run, so "might be" is worth saying |
 | `actionable` | `< NO` → veto | **no** | only its low end matters, and real tickets sit in its band routinely |
 
@@ -140,7 +140,7 @@ This is the `HEDGED` constant in `readiness.rs`, written as a rule rather than a
 list: a signal belongs there only if the verdict makes a claim resting on it being
 decisive. Add a signal and you must decide which direction the verdict reads it.
 A single weighted score would have averaged a veto away: a blocked ticket with an
-excellent repro and clear criteria reads as ready. The raw five probabilities are
+excellent specifics and clear criteria reads as ready. The raw five probabilities are
 stored and the policy is a pure function over them, so changing a threshold or the
 wording needs no new request.
 
@@ -198,14 +198,14 @@ For each signal, the worst case a reader marked `no` against the worst marked
 
 | signal | n(yes) | n(no) | worst no | worst yes | separates? |
 |---|---|---|---|---|---|
-| `repro` | 11 | 9 | 0.73 | 0.40 | **no** |
-| `criteria` | 13 | 5 | 0.43 | 0.60 | yes |
-| `blocked` | 0 | 22 | 0.47 | — | `yes` side **unmeasured** |
-| `duplicate` | 1 | 19 | 0.97 | 0.84 | **no** |
+| `specifics` | 14 | 5 | 0.58 | 0.49 | **no, by 0.09** — but see below |
+| `criteria` | 13 | 5 | 0.44 | 0.59 | yes |
+| `blocked` | 0 | 22 | 0.49 | — | `yes` side **unmeasured** |
+| `duplicate` | 1 | 19 | 0.97 | 0.87 | **no** |
 
 `actionable` is deliberately not in that table. It is read only as `< NO`, so it has
 no yes-side to separate: 18 cases are asserted *not vetoed* and 2 asserted vetoed,
-and `NO` must fall in **(0.13, 0.34]** — above the worst vetoed case and no higher
+and `NO` must fall in **(0.13, 0.39]** — above the worst vetoed case and no higher
 than the worst real work item. `NO = 0.3` does.
 
 Probabilities drift between runs. The same wordings and model, re-recorded for
@@ -228,10 +228,35 @@ the undecided check demanded every signal sit outside 0.3–0.7, so a middling
 `actionable` made five well-specified bug reports read `unsure`. That is fixed by
 scoping the hedge, not by rewording the question — see the table above.
 
-**`repro` asks two questions at once** — "is there a reproduction" and "is this
-specific enough to act on" — and a feature request cannot have the first. Two
-corpus cases had to be left unasserted for exactly that reason. No wording fixes
-this; the signal is doing two jobs.
+**`specifics` replaced `repro` (#171), and improved but did not clear the bar.**
+`repro` asked whether someone "could see the problem or the current behaviour for
+themselves". That asks about the *current* state, so a precise spec for something
+not yet built scored 0.08 while a record of merged work scored 0.73 — right for the
+question, wrong for readiness. It also correlated with `criteria` at r = 0.81, and
+every divergence was a failure case.
+
+`specifics` asks the decision the badge serves — *could someone begin work on this
+without having to ask what is meant?* — and names the three forms specifics take
+(what to change, where, or how to see current behaviour), so a defect report and a
+feature spec can both satisfy it. Measured:
+
+- `Docker-Nagios#4`, a precise spec, no longer reads `thin`.
+- The three cases where `repro` was the sole reason for `unsure` all resolved:
+  `incidents#48` 0.59→0.82 and `#75` 0.36→0.78 read `ready`; `#49` 0.40→0.77 now
+  reads `thin — no criteria`, correctly, for an investigation with no definition of done.
+- **It still does not separate**: worst no 0.58, worst yes 0.49, inverted by 0.09
+  (was 0.33).
+
+**That inversion rests entirely on two cases**, both flagged as hard before any
+measurement: `incidents#72` (asserted `no`; names concrete wants but says it needs
+brainstorming — the one expectation I hesitated on) and `Docker-Nagios#4` (asserted
+`yes`; the anchor case). Set those two aside and the rest separate at **0.29 .. 0.76**.
+
+Neither was re-marked after the result. Moving `incidents#72` to unasserted would
+make the gap positive, which is exactly why it was not done: the expectations were
+committed before the measurement so that this could not be quietly adjusted.
+`specifics` is therefore a better signal than `repro` that is still not a threshold
+one can defend.
 
 **`duplicate` conflates "covered somewhere else" with "this ticket is finished".**
 A closed thread ends in its own "Work complete", so any wording asking whether the
@@ -243,22 +268,21 @@ redesign, not rewording.
 tickets with no blocker at all, up to 0.70, because "waiting on … a decision" is
 true of any vague ticket. It now names an *external* dependency and says outright
 that vague, undesigned, unscheduled or under-investigation is not blocked. All 22
-cases now score at most 0.47.
+cases now score at most 0.49.
 
 **`criteria` is the one signal that works** as intended.
 
 ### Consequence for the badge
 
-`unsure` on 9 of 22 cases, down from 14 before #169 scoped the hedge, with 6 `ready`
-(from 1) and the five vetoes unchanged. It is more useful than it was, but it still
-declines to speak on 9 tickets, and `repro` and `duplicate` genuinely do not
-separate. **Treat it as unproven until the follow-ups land:**
+`unsure` on 8 of 22 cases (14 before #169, 9 before #171), with 7 `ready` (from 1)
+and the five vetoes unchanged. It is more useful than it was, but it still declines to
+speak on 8 tickets, and `specifics` and `duplicate` do not separate. **Treat it as unproven until the follow-ups land:**
 
 | finding | ticket |
 |---|---|
 | ~~`actionable` under-reads real work~~ — the veto was right; the undecided check was two-sided. Fixed | [#169](https://github.com/pgmac-net/gh-issues-tui/issues/169) |
 | `duplicate` conflates "covered elsewhere" with "finished" | [#170](https://github.com/pgmac-net/gh-issues-tui/issues/170) |
-| `repro` asks two questions at once | [#171](https://github.com/pgmac-net/gh-issues-tui/issues/171) |
+| ~~`repro` asks two questions at once~~ — replaced by `specifics`, which improved but is still inverted by 0.09 on two contested cases | [#171](https://github.com/pgmac-net/gh-issues-tui/issues/171) |
 | the corpus cannot measure `blocked=yes` or `duplicate=yes` | [#172](https://github.com/pgmac-net/gh-issues-tui/issues/172) |
 
 ### The corpus, and its limits
@@ -280,30 +304,30 @@ wordings change, and every change is disclosed.
 
 ### The recording
 
-| ref | repro | criteria | actionable | blocked | duplicate | verdict |
+| ref | specifics | criteria | actionable | blocked | duplicate | verdict |
 |---|---|---|---|---|---|---|
-| `nagios-public-status-page#69` | 0.92 | 0.84 | 0.64 | 0.03 | 0.23 | ready |
-| `nagios-public-status-page#60` | 0.97 | 0.89 | 0.53 | 0.13 | 0.25 | ready |
-| `nagios-public-status-page#67` | 0.94 | 0.91 | 0.59 | 0.08 | 0.21 | ready |
-| `nagios-public-status-page#71` | 0.96 | 0.94 | 0.54 | 0.03 | 0.97 ! | may be a duplicate |
-| `incidents#48` | 0.59 ! | 0.91 | 0.95 | 0.07 | 0.03 | unsure |
-| `docker-registry-walk#59` | 0.87 | 0.91 | 0.51 | 0.06 | 0.49 ! | unsure |
-| `docker-registry-walk#96` | 0.87 | 0.87 | 0.45 | 0.47 ! | 0.12 | unsure |
-| `incidents#86` | 0.95 | 0.88 · | 0.46 | 0.05 | 0.84 | may be a duplicate |
-| `incidents#49` | 0.40 ! | 0.23 | 0.97 | 0.13 | 0.06 | unsure |
-| `Docker-Nagios#1` | 0.08 | 0.43 ! | 0.87 | 0.09 | 0.03 | unsure |
-| `incidents#72` | 0.41 ! | 0.61 · | 0.71 | 0.10 | 0.06 | unsure |
-| `gh-issues-tui#60` | 0.07 | 0.12 | 0.81 · | 0.12 | 0.04 | thin |
-| `Docker-Nagios#3` | 0.04 | 0.06 | 0.14 · | 0.10 | 0.39 · | not a work item |
-| `Docker-Nagios#4` | 0.08 | 0.81 | 0.95 | 0.12 | 0.03 | thin |
-| `metasearch#22` | 0.45 ! | 0.60 ! | 0.49 | 0.06 | 0.04 | unsure |
-| `metasearch#19` | 0.82 | 0.76 · | 0.34 | 0.04 | 0.15 | ready |
-| `gh-issues-tui#129` | 0.85 | 0.86 | 0.63 | 0.06 | 0.04 | ready |
-| `gh-issues-tui#130` | 0.04 | 0.08 | 0.13 | 0.19 | 0.04 | not a work item |
-| `tremendous-cve#10` | 0.73 ! | 0.70 · | 0.06 | 0.06 | 0.27 · | not a work item |
-| `incidents#75` | 0.36 ! | 0.78 | 0.97 | 0.07 | 0.28 | unsure |
-| `gh-issues-tui#160` | 0.78 · | 0.91 | 0.86 | 0.09 | 0.08 | ready |
-| `gh-issues-tui#168` | 0.76 · | 0.86 | 0.67 | 0.31 ! | 0.10 | unsure |
+| `nagios-public-status-page#69` | 0.88 | 0.83 | 0.65 | 0.04 | 0.27 | ready |
+| `nagios-public-status-page#60` | 0.95 | 0.90 | 0.50 | 0.13 | 0.22 | ready |
+| `nagios-public-status-page#67` | 0.94 | 0.91 | 0.59 | 0.07 | 0.20 | ready |
+| `nagios-public-status-page#71` | 0.95 | 0.94 | 0.53 | 0.03 | 0.97 ! | may be a duplicate |
+| `incidents#48` | 0.82 | 0.91 | 0.95 | 0.07 | 0.03 | ready |
+| `docker-registry-walk#59` | 0.93 | 0.91 | 0.56 | 0.07 | 0.55 ! | unsure |
+| `docker-registry-walk#96` | 0.82 | 0.88 | 0.48 | 0.49 ! | 0.13 | unsure |
+| `incidents#86` | 0.94 | 0.88 · | 0.46 | 0.04 | 0.87 | may be a duplicate |
+| `incidents#49` | 0.77 | 0.22 | 0.97 | 0.12 | 0.06 | thin |
+| `Docker-Nagios#1` | 0.29 | 0.44 ! | 0.86 | 0.09 | 0.03 | unsure |
+| `incidents#72` | 0.58 ! | 0.65 · | 0.71 | 0.10 | 0.05 | unsure |
+| `gh-issues-tui#60` | 0.17 | 0.12 | 0.82 · | 0.11 | 0.04 | thin |
+| `Docker-Nagios#3` | 0.12 | 0.06 | 0.14 · | 0.09 | 0.32 · | not a work item |
+| `Docker-Nagios#4` | 0.49 ! | 0.81 | 0.95 | 0.11 | 0.03 | unsure |
+| `metasearch#22` | 0.43 · | 0.59 ! | 0.47 | 0.06 | 0.04 | unsure |
+| `metasearch#19` | 0.68 · | 0.76 · | 0.39 | 0.04 | 0.16 | unsure |
+| `gh-issues-tui#129` | 0.86 | 0.85 | 0.68 | 0.06 | 0.04 | ready |
+| `gh-issues-tui#130` | 0.11 | 0.08 | 0.13 | 0.19 | 0.04 | not a work item |
+| `tremendous-cve#10` | 0.81 · | 0.68 · | 0.06 | 0.06 | 0.25 · | not a work item |
+| `incidents#75` | 0.78 | 0.77 | 0.97 | 0.08 | 0.28 | ready |
+| `gh-issues-tui#160` | 0.83 | 0.91 | 0.86 | 0.09 | 0.08 | ready |
+| `gh-issues-tui#168` | 0.76 | 0.87 | 0.65 | 0.33 ! | 0.11 | unsure |
 
 `!` disagrees with the expectation · `·` unasserted
 
