@@ -975,3 +975,51 @@ Work driven by [pgmac-net/gh-issues-tui#168](https://github.com/pgmac-net/gh-iss
 - **Three live rounds against the real API**, 22 GitHub fetches and 22 TypeSafe calls each, about a third of a cent per round.
 - **Mutation-checked the three guards**: rewording a question fails the digest test, moving a threshold without re-recording fails the thresholds test, and dropping a corpus case fails the coverage test.
 - The `duplicate` revert was confirmed by re-measuring, not assumed: false positives 6 → 1, true positive 0.83.
+
+
+# Development log — readiness: hedge only where the verdict relies on a signal (2026-09-21)
+
+Work driven by [pgmac-net/gh-issues-tui#169](https://github.com/pgmac-net/gh-issues-tui/issues/169), on branch `169-readiness-onesided-verdict`. Corrects a claim from #168; see [`ticket-readiness.md`](ticket-readiness.md).
+
+## The ticket's diagnosis was wrong, and so was mine
+
+#169 said `actionable` under-reads real work "so the veto misfires". **The veto never misfired.** It fired on three cases — `gh-issues-tui#130` (literally a question), `Docker-Nagios#3` (115 characters), `tremendous-cve#10` (a record of merged work) — and all three are right. Zero false vetoes across 22 cases.
+
+What was broken is that the verdict reads every signal one-sidedly (`actionable < NO`, `blocked > YES`, …) but the undecided check demanded all five sit outside 0.3–0.7. So `actionable = 0.55` forced `unsure` for a property nothing consumes.
+
+**The error was mine, in #168.** I set the corpus expectations two-sided — `actionable: Yes` on 18 cases — for a signal the verdict reads one-sidedly, then reported the resulting mismatch as a defect in the question wording. It measured something nothing consumes. Under a one-sided reading `actionable` is the best-behaved signal in the set. #168's docs and the `CLAUDE.md` invariant repeated the claim and both are corrected here.
+
+## Process
+
+1. Phase 1 checked whether the veto ever fired wrongly *before* touching a wording, which is what overturned the diagnosis. That step is the one to repeat.
+2. Four decisions put one at a time; all four took the recommended option.
+3. Plan approved before implementation. Planning on Opus 5; implementation on Sonnet 5, as the STANDARD rating recorded.
+4. No ADR: this refines verdict composition inside a feature whose consent and safety decisions are already in ADRs 0002–0004.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| What to fix | The undecided check, not the question | The veto is right; only the composition was wrong |
+| Which signals hedge | `repro`, `criteria`, `blocked`, `duplicate` — not `actionable` | Hedge where a positive claim rests on the signal, or missing it costs a whole agent run. `actionable` is only read as `< NO` |
+| Corpus | `Expect::NotVetoed`, `actionable` switched on 18 cases, harness re-run | An expectation should say what the verdict consumes |
+| Badge wording | Unchanged | Splitting veto hedges from quality hedges is its own decision — #175 |
+
+## Result
+
+On the recorded corpus, **6 ready / 9 unsure / 5 vetoes**, from 1 / 14 / 5, with every veto unchanged. Five well-specified bug reports move from `unsure` to `ready`.
+
+## Diversions from plan
+
+- **The existing tests did not catch the bug.** Adding `HEDGED` broke nothing, which meant nothing pinned the asymmetry; the new test was confirmed to fail against the old blanket rule before being trusted. Worth noting because a fix that breaks no test is exactly the kind that can be silently reverted.
+- **`gap()` and the harness report had to change.** They treated `Yes` as the only positive side, so `actionable` would have silently lost its whole asserted set and printed "one side unmeasured". It now reports a one-sided range for `NO` instead: (0.13, 0.34], inside which `NO = 0.3` sits.
+- **Re-run drift was 0.22, larger than #163's ~0.1.** All of it on `gh-issues-tui#168`, a live ticket whose thread grew (I posted its completion comment after the previous recording). So it is real input change rather than necessarily model noise, but the two cannot be cleanly separated, and the doc says so. Every number quoted in the docs was refreshed from the new run rather than carried over — `blocked`'s worst score moved from 0.44 to 0.47 as a result.
+- **A test the plan did not list**: `the_recorded_verdicts_are_what_the_current_code_says` recomputes each recorded verdict from its probabilities. Without it, a change to the verdict logic with no re-record leaves the committed table describing behaviour the code no longer has — which is how this fix could have gone unrecorded.
+- **Deferred wording split filed as #175** rather than dropped, as the plan said.
+
+## Verification
+
+- `cargo test` — 749 passed, 0 failed. `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- **Mutation-checked**: loosening `NO`, dropping the `actionable` veto, and adding `actionable` back to `HEDGED` (the original bug) — each caught, the last by four tests.
+- The digest was confirmed unchanged across the re-run, so it was a regeneration rather than a tuning round. Live re-run: 22 GitHub fetches and 22 TypeSafe calls, about a third of a cent.
+- Not driven end-to-end against the running app; the badge's rendering is covered by the existing golden tests, which this does not touch.
