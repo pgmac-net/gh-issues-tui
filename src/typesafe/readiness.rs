@@ -40,6 +40,37 @@ pub const COMMENT_CHARS: usize = 500;
 /// Characters kept of the body.
 pub const BODY_CHARS: usize = 4000;
 
+/// The signals that earn an `unsure` when they land between `NO` and `YES`.
+///
+/// **A rule, not a list:** a signal belongs here only if the verdict makes a
+/// claim that rests on it being decisive. The verdict reads every signal
+/// one-sidedly —
+///
+/// ```text
+/// blocked    > YES  ->  Blocked          duplicate  > YES  ->  MaybeDuplicate
+/// actionable < NO   ->  NotActionable    repro/criteria < NO  ->  Thin
+/// ```
+///
+/// — so:
+///
+/// * `repro`, `criteria`: "ready — has a repro and a stated outcome" is a
+///   positive claim. It must not be asserted on a coin flip.
+/// * `blocked`, `duplicate`: missing one costs a whole agent run, so "might be"
+///   is worth saying even though it is not enough to veto.
+/// * **not `actionable`**: it is only ever consumed as `< NO`, so a middling
+///   value just means "not vetoed" and hedging on it is noise. Real tickets sit
+///   in its band routinely; treating that as undecided made 5 of 22 well-specified
+///   bug reports read `unsure` (#169).
+///
+/// Add a signal to [`SIGNALS`] and this is where you must decide which direction
+/// the verdict reads it.
+const HEDGED: [Signal; 4] = [
+    Signal::Repro,
+    Signal::Criteria,
+    Signal::Blocked,
+    Signal::Duplicate,
+];
+
 /// One judgement about a ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
@@ -214,9 +245,10 @@ impl Readiness {
         if self.actionable < NO {
             return Verdict::NotActionable;
         }
-        // Anything the model could not call leaves the verdict undecided
-        // rather than rounded into a confident one.
-        let undecided: Vec<Signal> = SIGNALS
+        // A signal the model could not call leaves the verdict undecided rather
+        // than rounded into a confident one — but only for the signals whose
+        // direction the verdict is about to rely on, listed in [`HEDGED`].
+        let undecided: Vec<Signal> = HEDGED
             .iter()
             .copied()
             .filter(|s| (NO..=YES).contains(&self.get(*s)))
@@ -426,6 +458,66 @@ mod tests {
         );
     }
 
+    /// The verdict reads `actionable` only as `< NO`, so a middling value means
+    /// "not vetoed" and must not force `unsure`. This is the bug #169 fixed:
+    /// five well-specified bug reports read `unsure` because `actionable` sat in
+    /// the band, though nothing depends on it being high.
+    #[test]
+    fn a_middling_actionable_is_not_vetoed_and_does_not_hedge() {
+        for p in [NO, 0.37, 0.5, 0.65, YES] {
+            let r = Readiness {
+                actionable: p,
+                ..ready()
+            };
+            assert_eq!(
+                r.verdict(),
+                Verdict::Ready,
+                "actionable = {p} must not make a ready ticket unsure"
+            );
+        }
+    }
+
+    /// ...and the asymmetry is real: the same middling value on a signal a
+    /// positive claim rests on *does* hedge, for every signal in `HEDGED`.
+    #[test]
+    fn every_hedged_signal_still_hedges_when_undecided() {
+        for signal in HEDGED {
+            let mut r = ready();
+            match signal {
+                Signal::Repro => r.repro = 0.5,
+                Signal::Criteria => r.criteria = 0.5,
+                Signal::Blocked => r.blocked = 0.5,
+                Signal::Duplicate => r.duplicate = 0.5,
+                Signal::Actionable => unreachable!("not hedged"),
+            }
+            assert_eq!(r.verdict(), Verdict::Unsure(vec![signal]), "{signal:?}");
+        }
+    }
+
+    /// `actionable` is the only signal outside `HEDGED`, so adding a sixth to
+    /// `SIGNALS` without deciding its direction fails here rather than silently
+    /// inheriting one.
+    #[test]
+    fn hedged_is_every_signal_except_actionable() {
+        let unhedged: Vec<Signal> = SIGNALS
+            .iter()
+            .copied()
+            .filter(|s| !HEDGED.contains(s))
+            .collect();
+        assert_eq!(unhedged, vec![Signal::Actionable]);
+    }
+
+    /// The veto is untouched: a low `actionable` still fires, however the
+    /// undecided rule is scoped.
+    #[test]
+    fn a_low_actionable_still_vetoes() {
+        let r = Readiness {
+            actionable: NO - 0.01,
+            ..ready()
+        };
+        assert_eq!(r.verdict(), Verdict::NotActionable);
+    }
+
     #[test]
     fn an_undecided_veto_signal_does_not_veto_but_is_reported() {
         let r = Readiness {
@@ -621,13 +713,21 @@ mod calibration {
         Yes,
         /// Must come back below `NO`.
         No,
+        /// Must not fall below `NO`, and nothing more.
+        ///
+        /// For a signal the verdict reads only as `< NO` — `actionable` — this
+        /// is the whole of what "yes" can mean. `Yes` would assert it exceeds
+        /// `YES`, a property nothing consumes: #168 asserted exactly that on 18
+        /// cases and reported the resulting mismatch as a defect in the question
+        /// (#169).
+        NotVetoed,
         /// Genuinely arguable. Recorded, asserted on neither side — #163's
         /// "ambiguous band", which is what stops a threshold being fitted to a
         /// case a reader could not call either.
         Unasserted,
     }
 
-    use Expect::{No as N, Unasserted as U, Yes as Y};
+    use Expect::{No as N, NotVetoed as V, Unasserted as U, Yes as Y};
 
     /// One corpus case. `expect` is in [`SIGNALS`] order.
     struct Case {
@@ -650,37 +750,37 @@ mod calibration {
         Case {
             repo: "nagios-public-status-page",
             number: 69,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "route pattern plus the exact URL that fails to match",
         },
         Case {
             repo: "nagios-public-status-page",
             number: 60,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "observed JSON from the live deployment",
         },
         Case {
             repo: "nagios-public-status-page",
             number: 67,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "has its own Measured section",
         },
         Case {
             repo: "nagios-public-status-page",
             number: 71,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "names the offending fixtures and files",
         },
         Case {
             repo: "incidents",
             number: 48,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "incident date, observed restart counts, explicit thresholds",
         },
         Case {
             repo: "docker-registry-walk",
             number: 59,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "cites another repo's code as the model to copy, which is \
                       not a duplicate claim",
         },
@@ -691,7 +791,7 @@ mod calibration {
         Case {
             repo: "docker-registry-walk",
             number: 96,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "THE BLOCKED TRAP: 'Blocked on Step 0' mid-thread, \
                       resolved by the last comment",
         },
@@ -702,21 +802,21 @@ mod calibration {
         Case {
             repo: "incidents",
             number: 86,
-            expect: [Y, U, Y, N, Y],
+            expect: [Y, U, V, N, Y],
             note: "THE DUPLICATE: 'Addressed in #87 (merged)', still open",
         },
         // ---- observable problem, no stated outcome ----
         Case {
             repo: "incidents",
             number: 49,
-            expect: [Y, N, Y, N, N],
+            expect: [Y, N, V, N, N],
             note: "investigation with times and symptoms but no definition of done",
         },
         // ---- thin: vague or speculative ----
         Case {
             repo: "Docker-Nagios",
             number: 1,
-            expect: [N, N, Y, N, N],
+            expect: [N, N, V, N, N],
             note: "speculative throughout, ends 'Maybe not that'",
         },
         // criteria REVISED No -> Unasserted after re-reading (round 1): it does
@@ -726,7 +826,7 @@ mod calibration {
         Case {
             repo: "incidents",
             number: 72,
-            expect: [N, U, Y, N, N],
+            expect: [N, U, V, N, N],
             note: "says it needs brainstorming, yet names concrete wants",
         },
         Case {
@@ -745,13 +845,13 @@ mod calibration {
         Case {
             repo: "Docker-Nagios",
             number: 4,
-            expect: [N, Y, Y, N, N],
+            expect: [N, Y, V, N, N],
             note: "small precise spec, but no problem to observe",
         },
         Case {
             repo: "metasearch",
             number: 22,
-            expect: [N, Y, Y, N, N],
+            expect: [N, Y, V, N, N],
             note: "two-bullet outcome, plus Linear migration metadata as noise",
         },
         // repro REVISED No -> Yes after re-reading (round 1): it has explicit
@@ -760,7 +860,7 @@ mod calibration {
         Case {
             repo: "metasearch",
             number: 19,
-            expect: [Y, U, Y, N, N],
+            expect: [Y, U, V, N, N],
             note: "has Current State and Gaps to Fix sections; criteria arguable",
         },
         // repro REVISED No -> Yes after re-reading (round 1): it gives the
@@ -770,7 +870,7 @@ mod calibration {
         Case {
             repo: "gh-issues-tui",
             number: 129,
-            expect: [Y, Y, Y, N, N],
+            expect: [Y, Y, V, N, N],
             note: "gives the input format and the triggering keypress",
         },
         // ---- not a work item ----
@@ -790,7 +890,7 @@ mod calibration {
         Case {
             repo: "incidents",
             number: 75,
-            expect: [N, Y, Y, N, N],
+            expect: [N, Y, V, N, N],
             note: "'Follow-up to #63 / #12' — a lineage, not a duplicate",
         },
         // repro REVISED No -> Unasserted for both (round 1): these are feature
@@ -801,14 +901,14 @@ mod calibration {
         Case {
             repo: "gh-issues-tui",
             number: 160,
-            expect: [U, Y, Y, N, N],
+            expect: [U, Y, V, N, N],
             note: "feature proposal citing code locations; last comment says \
                       a follow-up was filed as #168",
         },
         Case {
             repo: "gh-issues-tui",
             number: 168,
-            expect: [U, Y, Y, N, N],
+            expect: [U, Y, V, N, N],
             note: "LITERAL-MINDEDNESS: discusses duplicate detection at \
                       length without being a duplicate",
         },
@@ -1003,6 +1103,7 @@ query($owner: String!, $name: String!, $number: Int!) {
                 let p = c.probabilities[s.id()];
                 let mark = match c.expect[s.id()] {
                     Expect::Yes if p > YES => " ",
+                    Expect::NotVetoed if p >= NO => " ",
                     Expect::No if p < NO => " ",
                     Expect::Unasserted => "\u{00b7}",
                     _ => "!",
@@ -1060,6 +1161,32 @@ query($owner: String!, $name: String!, $number: Int!) {
         Some((
             no.iter().copied().fold(f64::MIN, f64::max),
             yes.iter().copied().fold(f64::MAX, f64::min),
+        ))
+    }
+
+    /// For a signal the verdict reads only as `< NO` — `actionable` — the range
+    /// `NO` must fall inside: above the worst asserted `no` (so those are
+    /// vetoed) and at or below the worst asserted `not_vetoed` (so none of those
+    /// is). `None` when either side has no case.
+    ///
+    /// This is a constraint on `NO` alone. It says nothing about `YES`, which is
+    /// the point: #168 folded `actionable` into the two-sided gap and reported
+    /// its low yes-side as a defect.
+    fn veto_range(rec: &Recording, signal: Signal) -> Option<(f64, f64)> {
+        let side = |e: Expect| -> Vec<f64> {
+            rec.cases
+                .iter()
+                .filter(|c| c.expect[signal.id()] == e)
+                .map(|c| c.probabilities[signal.id()])
+                .collect()
+        };
+        let (kept, vetoed) = (side(Expect::NotVetoed), side(Expect::No));
+        if kept.is_empty() || vetoed.is_empty() {
+            return None;
+        }
+        Some((
+            vetoed.iter().copied().fold(f64::MIN, f64::max),
+            kept.iter().copied().fold(f64::MAX, f64::min),
         ))
     }
 
@@ -1126,20 +1253,81 @@ query($owner: String!, $name: String!, $number: Int!) {
         }
     }
 
-    /// **Known-bad, pinned deliberately.** `actionable` separates cleanly, but
-    /// its whole asserted-yes range sits *below* `YES`, so every real work item
-    /// reads as undecided or as not-work. It is the signal that vetoes, which
-    /// makes this the most damaging of the findings.
+    /// The `actionable` veto is right: it fires on the cases a reader expects and
+    /// never on a real work item.
+    ///
+    /// #168 reported `actionable` as under-reading because its asserted-`yes`
+    /// range sat below `YES`. That measured a property nothing consumes — the
+    /// verdict reads `actionable` only as `< NO` — so the expectation is
+    /// `NotVetoed`, and this asserts what the verdict actually does (#169).
     #[test]
-    fn actionable_separates_but_far_below_the_threshold() {
+    fn the_actionable_veto_never_fires_on_a_real_work_item() {
         let rec = recording();
-        let (worst_no, worst_yes) = gap(&rec, Signal::Actionable).expect("both sides");
-        assert!(worst_no < worst_yes, "actionable should still separate");
+        for c in &rec.cases {
+            let p = c.probabilities["actionable"];
+            match c.expect["actionable"] {
+                Expect::NotVetoed => assert!(
+                    p >= NO,
+                    "{} is a real work item but scores {p:.2} < NO ({NO}) and would be \
+                     vetoed \u{2014} {RECALIBRATE}",
+                    c.r#ref
+                ),
+                Expect::No => assert!(
+                    p < NO,
+                    "{} is not a work item but scores {p:.2} and escapes the veto",
+                    c.r#ref
+                ),
+                _ => {}
+            }
+        }
+        // And `NO` sits inside the one-sided range the recording measured.
+        let (worst_vetoed, worst_kept) =
+            veto_range(&rec, Signal::Actionable).expect("both sides asserted");
         assert!(
-            worst_yes < YES,
-            "actionable's worst yes ({worst_yes:.2}) now clears YES ({YES}) \u{2014} \
-             the wording or threshold was fixed, so update the docs and this test"
+            worst_vetoed < NO && NO <= worst_kept,
+            "NO = {NO} is outside ({worst_vetoed:.2} .. {worst_kept:.2}]"
         );
+    }
+
+    /// The recorded verdict line is what the current code says about the
+    /// recorded probabilities. A change to the verdict logic that is not
+    /// followed by a re-record would otherwise leave the committed table
+    /// describing behaviour the code no longer has — which is exactly how
+    /// #169's fix could have gone unrecorded.
+    #[test]
+    fn the_recorded_verdicts_are_what_the_current_code_says() {
+        let rec = recording();
+        for c in &rec.cases {
+            let p = &c.probabilities;
+            let readiness = Readiness {
+                repro: p["repro"],
+                criteria: p["criteria"],
+                actionable: p["actionable"],
+                blocked: p["blocked"],
+                duplicate: p["duplicate"],
+            };
+            assert_eq!(
+                c.verdict,
+                readiness.verdict().line(),
+                "{} \u{2014} the verdict logic changed since the recording; {RECALIBRATE}",
+                c.r#ref
+            );
+        }
+    }
+
+    /// An in-band `actionable` must not be what makes a ticket `unsure` (#169).
+    /// Every recorded `unsure` has a hedged signal in the band.
+    #[test]
+    fn no_recorded_unsure_rests_on_actionable_alone() {
+        let rec = recording();
+        for c in rec.cases.iter().filter(|c| c.verdict.starts_with("unsure")) {
+            assert!(
+                !c.verdict.contains("actionable"),
+                "{}: `{}` \u{2014} actionable must not be reported as undecided",
+                c.r#ref,
+                c.verdict
+            );
+        }
     }
 
     /// `criteria` is the one signal that both separates and straddles the
@@ -1193,6 +1381,8 @@ query($owner: String!, $name: String!, $number: Int!) {
     fn report_gaps(cases: &[RecordedCase]) {
         let mut worst_no_all = f64::MIN;
         let mut worst_yes_all = f64::MAX;
+        // The most `NO` may be while still not vetoing a not-vetoed case.
+        let mut veto_ceiling = f64::MAX;
         println!(
             "{:<12} {:>7} {:>7} {:>22} {:>7}",
             "signal", "n(yes)", "n(no)", "gap (worst no..worst yes)", "width"
@@ -1207,8 +1397,24 @@ query($owner: String!, $name: String!, $number: Int!) {
             };
             let yes = p(Expect::Yes);
             let no = p(Expect::No);
+            let kept = p(Expect::NotVetoed);
             let worst_yes = yes.iter().copied().fold(f64::MAX, f64::min);
             let worst_no = no.iter().copied().fold(f64::MIN, f64::max);
+            if !kept.is_empty() {
+                // One-sided: constrains NO alone and says nothing about YES.
+                let worst_kept = kept.iter().copied().fold(f64::MAX, f64::min);
+                worst_no_all = worst_no_all.max(worst_no);
+                veto_ceiling = veto_ceiling.min(worst_kept);
+                println!(
+                    "{:<12} {:>7} {:>7} {:>22} {:>7}",
+                    s.id(),
+                    format!("{}*", kept.len()),
+                    no.len(),
+                    format!("NO in ({worst_no:.2} .. {worst_kept:.2}]"),
+                    "1-sided"
+                );
+                continue;
+            }
             let gap = if yes.is_empty() || no.is_empty() {
                 "  (one side unmeasured)".to_string()
             } else {
@@ -1238,6 +1444,12 @@ query($owner: String!, $name: String!, $number: Int!) {
             );
         } else {
             println!("  NO must be > {worst_no_all:.2}; YES must be < {worst_yes_all:.2}");
+        }
+        if veto_ceiling < f64::MAX {
+            println!(
+                "  * one-sided signal: NO must also be <= {veto_ceiling:.2}, or a real \
+                 work item is vetoed"
+            );
         }
         let unsure = cases
             .iter()

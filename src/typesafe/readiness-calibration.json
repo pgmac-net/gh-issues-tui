@@ -8,71 +8,71 @@
       "ref": "pgmac-net/nagios-public-status-page#69",
       "note": "route pattern plus the exact URL that fails to match",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.65,
-        "blocked": 0.04,
-        "criteria": 0.83,
-        "duplicate": 0.29,
+        "actionable": 0.64,
+        "blocked": 0.03,
+        "criteria": 0.84,
+        "duplicate": 0.23,
         "repro": 0.92
       },
-      "verdict": "unsure — cannot judge actionable"
+      "verdict": "ready — has a repro and a stated outcome"
     },
     {
       "ref": "pgmac-net/nagios-public-status-page#60",
       "note": "observed JSON from the live deployment",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.52,
+        "actionable": 0.53,
         "blocked": 0.13,
-        "criteria": 0.9,
-        "duplicate": 0.26,
-        "repro": 0.96
+        "criteria": 0.89,
+        "duplicate": 0.25,
+        "repro": 0.97
       },
-      "verdict": "unsure — cannot judge actionable"
+      "verdict": "ready — has a repro and a stated outcome"
     },
     {
       "ref": "pgmac-net/nagios-public-status-page#67",
       "note": "has its own Measured section",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.57,
-        "blocked": 0.06,
-        "criteria": 0.92,
-        "duplicate": 0.19,
+        "actionable": 0.59,
+        "blocked": 0.08,
+        "criteria": 0.91,
+        "duplicate": 0.21,
         "repro": 0.94
       },
-      "verdict": "unsure — cannot judge actionable"
+      "verdict": "ready — has a repro and a stated outcome"
     },
     {
       "ref": "pgmac-net/nagios-public-status-page#71",
       "note": "names the offending fixtures and files",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.55,
+        "actionable": 0.54,
         "blocked": 0.03,
         "criteria": 0.94,
         "duplicate": 0.97,
@@ -84,14 +84,14 @@
       "ref": "pgmac-net/incidents#48",
       "note": "incident date, observed restart counts, explicit thresholds",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.94,
+        "actionable": 0.95,
         "blocked": 0.07,
         "criteria": 0.91,
         "duplicate": 0.03,
@@ -103,45 +103,45 @@
       "ref": "pgmac-net/docker-registry-walk#59",
       "note": "cites another repo's code as the model to copy, which is not a duplicate claim",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.52,
-        "blocked": 0.07,
-        "criteria": 0.92,
-        "duplicate": 0.51,
-        "repro": 0.86
+        "actionable": 0.51,
+        "blocked": 0.06,
+        "criteria": 0.91,
+        "duplicate": 0.49,
+        "repro": 0.87
       },
-      "verdict": "unsure — cannot judge actionable, duplicate"
+      "verdict": "unsure — cannot judge duplicate"
     },
     {
       "ref": "pgmac-net/docker-registry-walk#96",
       "note": "THE BLOCKED TRAP: 'Blocked on Step 0' mid-thread, resolved by the last comment",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.47,
-        "blocked": 0.45,
-        "criteria": 0.88,
-        "duplicate": 0.11,
+        "actionable": 0.45,
+        "blocked": 0.47,
+        "criteria": 0.87,
+        "duplicate": 0.12,
         "repro": 0.87
       },
-      "verdict": "unsure — cannot judge actionable, blocked"
+      "verdict": "unsure — cannot judge blocked"
     },
     {
       "ref": "pgmac-net/incidents#86",
       "note": "THE DUPLICATE: 'Addressed in #87 (merged)', still open",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "unasserted",
         "duplicate": "yes",
@@ -149,10 +149,10 @@
       },
       "probabilities": {
         "actionable": 0.46,
-        "blocked": 0.04,
-        "criteria": 0.89,
-        "duplicate": 0.83,
-        "repro": 0.94
+        "blocked": 0.05,
+        "criteria": 0.88,
+        "duplicate": 0.84,
+        "repro": 0.95
       },
       "verdict": "may be a duplicate — the thread says this is covered elsewhere"
     },
@@ -160,7 +160,7 @@
       "ref": "pgmac-net/incidents#49",
       "note": "investigation with times and symptoms but no definition of done",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "no",
         "duplicate": "no",
@@ -170,7 +170,7 @@
         "actionable": 0.97,
         "blocked": 0.13,
         "criteria": 0.23,
-        "duplicate": 0.07,
+        "duplicate": 0.06,
         "repro": 0.4
       },
       "verdict": "unsure — cannot judge repro"
@@ -179,7 +179,7 @@
       "ref": "pgmac-net/Docker-Nagios#1",
       "note": "speculative throughout, ends 'Maybe not that'",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "no",
         "duplicate": "no",
@@ -188,7 +188,7 @@
       "probabilities": {
         "actionable": 0.87,
         "blocked": 0.09,
-        "criteria": 0.44,
+        "criteria": 0.43,
         "duplicate": 0.03,
         "repro": 0.08
       },
@@ -198,20 +198,20 @@
       "ref": "pgmac-net/incidents#72",
       "note": "says it needs brainstorming, yet names concrete wants",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "unasserted",
         "duplicate": "no",
         "repro": "no"
       },
       "probabilities": {
-        "actionable": 0.7,
-        "blocked": 0.11,
-        "criteria": 0.62,
-        "duplicate": 0.05,
-        "repro": 0.45
+        "actionable": 0.71,
+        "blocked": 0.1,
+        "criteria": 0.61,
+        "duplicate": 0.06,
+        "repro": 0.41
       },
-      "verdict": "unsure — cannot judge repro, criteria, actionable"
+      "verdict": "unsure — cannot judge repro, criteria"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#60",
@@ -244,9 +244,9 @@
       },
       "probabilities": {
         "actionable": 0.14,
-        "blocked": 0.09,
+        "blocked": 0.1,
         "criteria": 0.06,
-        "duplicate": 0.34,
+        "duplicate": 0.39,
         "repro": 0.04
       },
       "verdict": "not a work item — reads as a question or update"
@@ -255,15 +255,15 @@
       "ref": "pgmac-net/Docker-Nagios#4",
       "note": "small precise spec, but no problem to observe",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "no"
       },
       "probabilities": {
-        "actionable": 0.94,
-        "blocked": 0.11,
+        "actionable": 0.95,
+        "blocked": 0.12,
         "criteria": 0.81,
         "duplicate": 0.03,
         "repro": 0.08
@@ -274,58 +274,58 @@
       "ref": "pgmac-net/metasearch#22",
       "note": "two-bullet outcome, plus Linear migration metadata as noise",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "no"
       },
       "probabilities": {
-        "actionable": 0.46,
+        "actionable": 0.49,
         "blocked": 0.06,
         "criteria": 0.6,
         "duplicate": 0.04,
-        "repro": 0.46
+        "repro": 0.45
       },
-      "verdict": "unsure — cannot judge repro, criteria, actionable"
+      "verdict": "unsure — cannot judge repro, criteria"
     },
     {
       "ref": "pgmac-net/metasearch#19",
       "note": "has Current State and Gaps to Fix sections; criteria arguable",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "unasserted",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.37,
+        "actionable": 0.34,
         "blocked": 0.04,
-        "criteria": 0.77,
-        "duplicate": 0.17,
+        "criteria": 0.76,
+        "duplicate": 0.15,
         "repro": 0.82
       },
-      "verdict": "unsure — cannot judge actionable"
+      "verdict": "ready — has a repro and a stated outcome"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#129",
       "note": "gives the input format and the triggering keypress",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "yes"
       },
       "probabilities": {
-        "actionable": 0.62,
-        "blocked": 0.07,
-        "criteria": 0.85,
+        "actionable": 0.63,
+        "blocked": 0.06,
+        "criteria": 0.86,
         "duplicate": 0.04,
         "repro": 0.85
       },
-      "verdict": "unsure — cannot judge actionable"
+      "verdict": "ready — has a repro and a stated outcome"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#130",
@@ -338,8 +338,8 @@
         "repro": "no"
       },
       "probabilities": {
-        "actionable": 0.12,
-        "blocked": 0.21,
+        "actionable": 0.13,
+        "blocked": 0.19,
         "criteria": 0.08,
         "duplicate": 0.04,
         "repro": 0.04
@@ -357,11 +357,11 @@
         "repro": "no"
       },
       "probabilities": {
-        "actionable": 0.05,
+        "actionable": 0.06,
         "blocked": 0.06,
-        "criteria": 0.67,
-        "duplicate": 0.3,
-        "repro": 0.71
+        "criteria": 0.7,
+        "duplicate": 0.27,
+        "repro": 0.73
       },
       "verdict": "not a work item — reads as a question or update"
     },
@@ -369,7 +369,7 @@
       "ref": "pgmac-net/incidents#75",
       "note": "'Follow-up to #63 / #12' — a lineage, not a duplicate",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
@@ -379,16 +379,16 @@
         "actionable": 0.97,
         "blocked": 0.07,
         "criteria": 0.78,
-        "duplicate": 0.3,
-        "repro": 0.35
+        "duplicate": 0.28,
+        "repro": 0.36
       },
-      "verdict": "unsure — cannot judge repro, duplicate"
+      "verdict": "unsure — cannot judge repro"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#160",
       "note": "feature proposal citing code locations; last comment says a follow-up was filed as #168",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
@@ -397,7 +397,7 @@
       "probabilities": {
         "actionable": 0.86,
         "blocked": 0.09,
-        "criteria": 0.92,
+        "criteria": 0.91,
         "duplicate": 0.08,
         "repro": 0.78
       },
@@ -407,20 +407,20 @@
       "ref": "pgmac-net/gh-issues-tui#168",
       "note": "LITERAL-MINDEDNESS: discusses duplicate detection at length without being a duplicate",
       "expect": {
-        "actionable": "yes",
+        "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
         "duplicate": "no",
         "repro": "unasserted"
       },
       "probabilities": {
-        "actionable": 0.89,
-        "blocked": 0.47,
-        "criteria": 0.75,
-        "duplicate": 0.11,
-        "repro": 0.69
+        "actionable": 0.67,
+        "blocked": 0.31,
+        "criteria": 0.86,
+        "duplicate": 0.1,
+        "repro": 0.76
       },
-      "verdict": "unsure — cannot judge repro, blocked"
+      "verdict": "unsure — cannot judge blocked"
     }
   ]
 }
