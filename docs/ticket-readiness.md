@@ -169,14 +169,121 @@ wholesale by `set_data` and `switch_org`.
 | The badge line and its colour | `src/tui/ui/detail.rs` |
 | `send_issue_text` | `src/config.rs` |
 
-## Not verified
+## What calibration showed (#168)
 
-**The five question wordings and the two thresholds are unmeasured.** The test
-suite pins the composition — every veto, every band, every invalidation path, each
-confirmed by mutation — but no test can tell you whether Jev answers *these five
-questions* well on real tickets. The docs say plainly to "validate their
-performance in the target domain".
+Measured against 22 real, public `pgmac-net` tickets. **The result is that the
+feature does not work as intended, and the thresholds cannot yet be justified.**
 
-#163 exists because #156 shipped one guessed threshold. This ships two thresholds
-and five prompts. A calibration pass against real tickets, in the shape of #163,
-is the honest follow-up.
+`YES = 0.7` and `NO = 0.3` were deliberately **not changed**: no single pair fits
+all five signals, so moving them would hide the problem rather than fix it.
+
+### Per-signal separation
+
+For each signal, the worst case a reader marked `no` against the worst marked
+`yes`. A threshold can only exist between them.
+
+| signal | n(yes) | n(no) | worst no | worst yes | separates? |
+|---|---|---|---|---|---|
+| `repro` | 11 | 9 | 0.71 | 0.40 | **no** |
+| `criteria` | 13 | 5 | 0.44 | 0.60 | yes |
+| `actionable` | 18 | 2 | 0.12 | 0.37 | yes, but **wholly below `YES`** |
+| `blocked` | 0 | 22 | — | — | `yes` side **unmeasured** |
+| `duplicate` | 1 | 19 | 0.97 | 0.83 | **no** |
+
+### What that means for each question
+
+**`actionable` is the damaging one.** It separates cleanly, but every asserted
+`yes` scores between 0.12 and 0.37 — so against a threshold of 0.7 a well-written
+bug report reads as *not a work item* or as undecided. It is the signal that
+vetoes, so it is the one most able to give bad advice.
+
+**`repro` asks two questions at once** — "is there a reproduction" and "is this
+specific enough to act on" — and a feature request cannot have the first. Two
+corpus cases had to be left unasserted for exactly that reason. No wording fixes
+this; the signal is doing two jobs.
+
+**`duplicate` conflates "covered somewhere else" with "this ticket is finished".**
+A closed thread ends in its own "Work complete", so any wording asking whether the
+work is already done reads as true. A rewording during calibration made this
+worse — six false positives against one true positive — and was reverted. It needs
+redesign, not rewording.
+
+**`blocked` was fixed during calibration.** As shipped in #167 it fired on seven
+tickets with no blocker at all, up to 0.70, because "waiting on … a decision" is
+true of any vague ticket. It now names an *external* dependency and says outright
+that vague, undesigned, unscheduled or under-investigation is not blocked. All 22
+cases now score 0.03–0.44.
+
+**`criteria` is the one signal that works** as intended.
+
+### Consequence for the badge
+
+`unsure` on 14 of 22 cases, driven almost entirely by `actionable`. In its current
+state the badge mostly declines to say anything, and where it does speak it can be
+wrong. **Treat it as unproven until the follow-ups land:**
+
+| finding | ticket |
+|---|---|
+| `actionable` under-reads real work, so the veto misfires | [#169](https://github.com/pgmac-net/gh-issues-tui/issues/169) |
+| `duplicate` conflates "covered elsewhere" with "finished" | [#170](https://github.com/pgmac-net/gh-issues-tui/issues/170) |
+| `repro` asks two questions at once | [#171](https://github.com/pgmac-net/gh-issues-tui/issues/171) |
+| the corpus cannot measure `blocked=yes` or `duplicate=yes` | [#172](https://github.com/pgmac-net/gh-issues-tui/issues/172) |
+
+### The corpus, and its limits
+
+Public repos only, so any reviewer can open any case and disagree with the
+expectation recorded against it. Expectations were written from reading each
+ticket before any request, and are never edited to make a number pass — only
+wordings change, and every change is disclosed.
+
+- **`blocked = yes` is unmeasured.** No open issue in any public `pgmac-net` repo
+  is waiting on something unresolved as its thread currently stands. None was
+  manufactured.
+- **`duplicate = yes` rests on one case** (`incidents#86`: "Addressed in #87
+  (merged)", still open). One case cannot measure a signal.
+- **The corpus is weighted to closed tickets**, which is out of domain — the badge
+  exists to be read *before* starting work. `homelabia` has the variety and 194
+  issues, but is private, so its tickets cannot carry committed expectations in a
+  public repo.
+
+### The recording
+
+| ref | repro | criteria | actionable | blocked | duplicate | verdict |
+|---|---|---|---|---|---|---|
+| `nagios-public-status-page#69` | 0.92 | 0.83 | 0.65 ! | 0.04 | 0.29 | unsure |
+| `nagios-public-status-page#60` | 0.96 | 0.90 | 0.52 ! | 0.13 | 0.26 | unsure |
+| `nagios-public-status-page#67` | 0.94 | 0.92 | 0.57 ! | 0.06 | 0.19 | unsure |
+| `nagios-public-status-page#71` | 0.96 | 0.94 | 0.55 ! | 0.03 | 0.97 ! | may be a duplicate |
+| `incidents#48` | 0.59 ! | 0.91 | 0.94 | 0.07 | 0.03 | unsure |
+| `docker-registry-walk#59` | 0.86 | 0.92 | 0.52 ! | 0.07 | 0.51 ! | unsure |
+| `docker-registry-walk#96` | 0.87 | 0.88 | 0.47 ! | 0.45 ! | 0.11 | unsure |
+| `incidents#86` | 0.94 | 0.89 · | 0.46 ! | 0.04 | 0.83 | may be a duplicate |
+| `incidents#49` | 0.40 ! | 0.23 | 0.97 | 0.13 | 0.07 | unsure |
+| `Docker-Nagios#1` | 0.08 | 0.44 ! | 0.87 | 0.09 | 0.03 | unsure |
+| `incidents#72` | 0.45 ! | 0.62 · | 0.70 ! | 0.11 | 0.05 | unsure |
+| `gh-issues-tui#60` | 0.07 | 0.12 | 0.81 · | 0.12 | 0.04 | thin |
+| `Docker-Nagios#3` | 0.04 | 0.06 | 0.14 · | 0.09 | 0.34 · | not a work item |
+| `Docker-Nagios#4` | 0.08 | 0.81 | 0.94 | 0.11 | 0.03 | thin |
+| `metasearch#22` | 0.46 ! | 0.60 ! | 0.46 ! | 0.06 | 0.04 | unsure |
+| `metasearch#19` | 0.82 | 0.77 · | 0.37 ! | 0.04 | 0.17 | unsure |
+| `gh-issues-tui#129` | 0.85 | 0.85 | 0.62 ! | 0.07 | 0.04 | unsure |
+| `gh-issues-tui#130` | 0.04 | 0.08 | 0.12 | 0.21 | 0.04 | not a work item |
+| `tremendous-cve#10` | 0.71 ! | 0.67 · | 0.05 | 0.06 | 0.30 · | not a work item |
+| `incidents#75` | 0.35 ! | 0.78 | 0.97 | 0.07 | 0.30 ! | unsure |
+| `gh-issues-tui#160` | 0.78 · | 0.92 | 0.86 | 0.09 | 0.08 | ready |
+| `gh-issues-tui#168` | 0.69 · | 0.75 | 0.89 | 0.47 ! | 0.11 | unsure |
+
+`!` disagrees with the expectation · `·` unasserted
+
+Full numbers in `src/typesafe/readiness-calibration.json`. Re-run with:
+
+```sh
+cargo test calibrate_readiness_against_live_api -- --ignored --nocapture
+```
+
+Needs `TYPESAFE_API_KEY` and a GitHub token, costs about a third of a cent, and
+overwrites the recording. It reports only and asserts nothing, so model drift
+cannot fail CI. Offline tests then hold the code to the recording: they pin which
+signals separate and which do not, and a reworded question fails the digest guard
+rather than silently inheriting this tuning. **Read the table before touching
+`YES` or `NO`.**
