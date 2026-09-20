@@ -206,6 +206,78 @@ pub fn priority_label_set(issue: &Issue, pick: Option<&str>) -> Vec<String> {
     names
 }
 
+/// Whether the repo labels priority by the `priority:<value>` convention.
+///
+/// The gate on the whole inferred write path (#162): one such label anywhere
+/// in the repo's list and the set-priority picker behaves exactly as it did
+/// before inference existed, so a model judgement can never reach a repo that
+/// already says what it means. Mirrors `Issue::priority_label`, where the
+/// convention always wins.
+pub fn repo_uses_priority_convention(repo_labels: &[RepoLabel]) -> bool {
+    repo_labels
+        .iter()
+        .any(|l| priority_value(&l.name).is_some())
+}
+
+/// Options for the set-priority picker on a repo with no `priority:*`
+/// convention: `—` (clear) first, then the repo's labels that inference gave
+/// a rank, ordered low → urgent, alphabetical within a rank (#162).
+///
+/// Labels with no rank are left out. They are not priority labels as far as
+/// anything here knows, and the `l` picker already edits the full label set.
+pub fn inferred_priority_set_options(repo_labels: &[RepoLabel], ranks: &RankState) -> Vec<String> {
+    let mut ranked: Vec<(u8, &str)> = repo_labels
+        .iter()
+        .filter_map(|l| Some((ranks.rank_of(&l.name)?, l.name.as_str())))
+        .collect();
+    ranked.sort_by(|(ra, a), (rb, b)| ra.cmp(rb).then(a.cmp(b)));
+    let mut opts = vec!["\u{2014}".to_string()];
+    opts.extend(ranked.into_iter().map(|(_, name)| name.to_string()));
+    opts
+}
+
+/// Whether a set-priority picker's options came from the `priority:*`
+/// convention rather than from inferred ranks (#162).
+///
+/// Read off the options the user is looking at rather than remembered on
+/// `PickerState`, so the write path and the visible list cannot disagree —
+/// and so there is no flag to forget to clear.
+pub fn options_are_convention(options: &[String]) -> bool {
+    options.iter().any(|o| priority_value(o).is_some())
+}
+
+/// The label set to write when the inferred picker commits, and the labels
+/// that write removes: `(names, removed)`.
+///
+/// Every label carrying an inferred rank is stripped, not just the one
+/// `Issue::priority_label` designates — leaving a second ranked label behind
+/// would make the issue's own priority a tie-break. `pick` is never reported
+/// as removed: re-picking what the issue already has removes nothing.
+///
+/// The caller must name `removed` to the user before writing it. A rank is a
+/// model's judgement, and this is the one place one can delete a real label
+/// from a real issue — see `docs/adr/0003-*`.
+pub fn ranked_label_set(issue: &Issue, pick: Option<&str>) -> (Vec<String>, Vec<String>) {
+    let stripped = |name: &str| pick.is_none_or(|p| !p.eq_ignore_ascii_case(name));
+    let removed: Vec<String> = issue
+        .ranked_labels()
+        .map(|l| l.name.clone())
+        .filter(|n| stripped(n))
+        .collect();
+    let mut names: Vec<String> = issue
+        .labels
+        .iter()
+        .map(|l| l.name.clone())
+        .filter(|n| !removed.iter().any(|r| r == n))
+        .collect();
+    if let Some(p) = pick
+        && !names.iter().any(|n| n.eq_ignore_ascii_case(p))
+    {
+        names.push(p.to_string());
+    }
+    (names, removed)
+}
+
 /// Comma-separated text → filter values (trimmed, empties dropped). The
 /// free-text path into the priority/status filters.
 pub(super) fn parse_filter_list(input: &str) -> Vec<String> {

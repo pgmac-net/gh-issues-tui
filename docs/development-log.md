@@ -802,3 +802,43 @@ Two findings worth remembering:
 - `cargo test` — all pass; `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` and `cargo build --release` — clean.
 - **Mutation-checked** the offline tests by breaking what they guard. Threshold 0.10 (too loose) failed exactly the two tests about wrong answers ranking; 0.99 (too strict) failed the positives, scale and gap tests; rewording a level with no re-record failed *only* the drift guard.
 - Live: the harness was run twice against the real API (the second time after the reclassification above).
+
+
+# Development log — let the priority picker offer inferred labels (2026-09-20)
+
+Work driven by [pgmac-net/gh-issues-tui#162](https://github.com/pgmac-net/gh-issues-tui/issues/162), on branch `162-priority-picker-inferred-labels`. The write path #156 deliberately left closed — see [ADR 0003](adr/0003-inferred-priority-ranks-may-be-written-behind-a-named-confirmation.md) and [`docs/inferred-priority-write-path.md`](inferred-priority-write-path.md).
+
+## Process
+
+1. **The ticket was written as a design question, not a task**, and said so: ADR 0002 records that widening the write path "is a new decision, not a tidy-up". It listed three candidate safeguards and two open questions rather than an approach.
+2. **Grilling** put seven decisions one at a time; all seven took the recommended option. Two of them were only answerable by reading the code first, and reading it is what killed one of the ticket's own candidates (below).
+3. Plan posted to the ticket and approved before implementation. Planning and implementation both ran on Opus 5 — the plan rated the ticket COMPLEX, whose model is Fable 5 with Opus as the recorded fallback.
+4. Two commits: the feature with its tests, then documentation.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Safeguard against a wrong rank stripping a real label | Name every removal in a confirmation defaulting to `No` | The alternatives do not work — see the two diversions below |
+| Scope | Repos with **zero** `priority:*` labels only | Makes "convention repos are unchanged" a property of the control flow, not of a test. Mirrors `priority_label`, where the convention always wins |
+| Strip set | Every label carrying a rank, minus the pick | Leaving a second ranked label behind makes the issue's own priority a tie-break. Matches the convention path, which strips every `priority:*` label |
+| When it confirms | Only when something is removed | A popup on every write is one the user learns to dismiss unread, which defeats its purpose |
+| Where the picker's ranks come from | `p` ranks the repo's own label list | `begin_rank_inference` only sees labels on *loaded issues*, so a freshly-adopted convention has no ranks and the acceptance criterion would fail on exactly the repo it describes |
+| Telling the two paths apart at commit time | Read the options the user is looking at (`options_are_convention`) | A flag on `PickerState` can be left stale and disagree with the screen |
+| Rank word in the picker | Render-time decoration | `picker.options` holds the string sent to the backend |
+| Recording it | New ADR 0003; 0002 keeps its body, gains a superseding note | 0002's reasoning is *why* the confirmation exists |
+
+## Diversions from plan
+
+- **"Strip only above a higher confidence bar" is not implementable as the code stands**, which the ticket listed as a candidate. `rank_from_answer` collapses the answer to `Option<u8>` at `MIN_CONFIDENCE`, and the cache stores `{ rank, model }` — no confidence survives anywhere. This was found by reading `typesafe/` during grilling, not while planning around it, and it removed one of three options before any plan existed. (#163 had already noted the same discard for a different reason.)
+- **"Never strip, only add" silently no-ops.** Setting `P1` on an issue already labelled `P0` writes `[P0, bug, P1]`, and `priority_label` still returns `P0` — the row does not move and the colour does not change. Discarded for that, not for safety.
+- **`options_are_convention` was not in the plan.** The plan named the gate (`repo_uses_priority_convention`) for the *opening* path but not the discriminator the *commit* path needs, since `repo_labels` is long gone by then.
+- **The plan under-listed the documentation.** `README.md` ("the `p` picker and anything written back to your tracker are untouched") and the `CLAUDE.md` invariant both asserted the read-only boundary; neither was in the plan's docs list. Found by grepping for the claim rather than by working from the list.
+- **A golden test's expected padding was wrong**, not the renderer: the rank words align to the widest *ranked* option (`blocker`, 7), so it is `P1` + 7 columns, not 6. Corrected to the rendered output after reading it.
+- **Stale ranks are kept rather than dropped.** Not in the plan. If `PriorityRanks` lands after the selection moved, the picker cannot open but the answers are merged anyway — the request was already paid for and sorting can use them. The `LabelRanks` precedent drops a *wrong-org* answer; this is the same org.
+
+## Verification
+
+- `cargo test` — 688 passed, 0 failed (27 new). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — clean.
+- The acceptance criterion that matters most ("setting a priority never removes a label the user was not shown") is held by two tests from opposite sides: a ranked label present routes to `ConfirmPriority` with that label named in `removes`, and a convention repo with a ranked label on the issue writes straight through **keeping** it.
+- **Not driven against a live org.** The picker's own rank request and the confirmation were exercised through `handle_app_event` and the key handlers with stubbed events, and the two popups through the golden renderer. The keypress-to-network path (`spawn_priority_ranks` reaching the real API) is untested end to end; it is the same `typesafe::resolve` the background pass uses, which #163 verified live.

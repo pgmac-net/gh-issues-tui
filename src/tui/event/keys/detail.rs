@@ -37,10 +37,33 @@ pub(crate) fn handle_priority_set_key(
                 app.status = Some("selection changed — priority not set".into());
                 return;
             }
-            let names = priority_label_set(
-                app.selected_issue().expect("checked above"),
-                (pick != "\u{2014}").then_some(pick.as_str()),
-            );
+            let pick = (pick != "\u{2014}").then_some(pick);
+            // Which kind of picker this was is read off the options just on
+            // screen rather than remembered, so the two cannot disagree.
+            let convention = options_are_convention(&app.picker.options);
+            let (names, removes, issue_id) = {
+                let issue = app.selected_issue().expect("checked above");
+                let (names, removes) = if convention {
+                    (priority_label_set(issue, pick.as_deref()), Vec::new())
+                } else {
+                    ranked_label_set(issue, pick.as_deref())
+                };
+                (names, removes, issue.id.clone())
+            };
+            if !removes.is_empty() {
+                // A rank is a model's judgement, and this is the one place it
+                // can delete a real label from a real issue. Name them first
+                // (#162, ADR 0003).
+                app.pending_priority = Some(PendingPriority {
+                    issue_id,
+                    pick,
+                    removes,
+                    names,
+                });
+                app.confirm_choice = ConfirmChoice::No;
+                app.mode = Mode::ConfirmPriority;
+                return;
+            }
             let (org, repo) = match app.selected_repo() {
                 Some(r) => (app.org.clone(), r.repo.clone()),
                 None => return,
@@ -283,6 +306,7 @@ mod tests {
                 ]),
             },
             &client,
+            None,
             &tx,
         );
 
@@ -314,6 +338,7 @@ mod tests {
                 result: Ok(vec![repo_label("L1", "bug")]),
             },
             &client,
+            None,
             &tx,
         );
 
@@ -335,6 +360,7 @@ mod tests {
                 result: Ok(vec![]),
             },
             &client,
+            None,
             &tx,
         );
 

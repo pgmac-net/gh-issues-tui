@@ -2620,3 +2620,131 @@ fn switching_org_forgets_the_ranks_and_the_failure() {
         "a new org gets a fresh attempt"
     );
 }
+
+// ---- inferred priority write path (#162) ----
+
+/// An `App` whose session ranks are `pairs`, for the option/strip-set helpers.
+/// Ranks have no public setter — they arrive as answers — so they go in the
+/// way the real thing does.
+fn app_ranked(issues: Vec<Issue>, pairs: &[(&str, Option<u8>)]) -> App {
+    let mut app = app_with(one_repo(issues));
+    app.merge_label_ranks(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect());
+    app
+}
+
+#[test]
+fn one_priority_label_anywhere_means_the_repo_uses_the_convention() {
+    assert!(repo_uses_priority_convention(&[
+        repo_label("bug"),
+        repo_label("P0"),
+        repo_label("priority:low"),
+    ]));
+    // Ranked-looking names are not the convention, whatever a model thinks.
+    assert!(!repo_uses_priority_convention(&[
+        repo_label("P0"),
+        repo_label("blocker"),
+        repo_label("bug"),
+    ]));
+    assert!(!repo_uses_priority_convention(&[]));
+}
+
+#[test]
+fn inferred_options_order_by_rank_and_leave_out_the_unranked() {
+    let app = app_ranked(
+        vec![labelled(1, &["P0"])],
+        &[
+            ("P0", Some(4)),
+            ("blocker", Some(4)),
+            ("P1", Some(3)),
+            ("P3", Some(1)),
+            ("bug", None),
+        ],
+    );
+    let labels = vec![
+        repo_label("bug"),
+        repo_label("P0"),
+        repo_label("P3"),
+        repo_label("blocker"),
+        repo_label("P1"),
+        repo_label("docs"),
+    ];
+    assert_eq!(
+        inferred_priority_set_options(&labels, &app.label_rank),
+        vec!["\u{2014}", "P3", "P1", "P0", "blocker"],
+        "low to urgent, alphabetical within a rank, unranked left out"
+    );
+}
+
+#[test]
+fn inferred_options_with_nothing_ranked_are_clear_only() {
+    let app = app_with(one_repo(vec![]));
+    assert_eq!(
+        inferred_priority_set_options(&[repo_label("bug")], &app.label_rank),
+        vec!["\u{2014}"]
+    );
+}
+
+#[test]
+fn options_are_convention_reads_the_list_the_user_saw() {
+    assert!(options_are_convention(&[
+        "\u{2014}".into(),
+        "priority:low".into()
+    ]));
+    assert!(!options_are_convention(&[
+        "\u{2014}".into(),
+        "P1".into(),
+        "blocker".into()
+    ]));
+    // `—` alone never reaches a commit, but it must not read as either.
+    assert!(!options_are_convention(&["\u{2014}".into()]));
+}
+
+#[test]
+fn ranked_label_set_strips_every_ranked_label_not_just_the_designated_one() {
+    let app = app_ranked(
+        vec![labelled(1, &["blocker", "sev2", "bug"])],
+        &[("blocker", Some(4)), ("sev2", Some(3)), ("bug", None)],
+    );
+    let issue = &app.repos[0].issues[0];
+    let (names, removed) = ranked_label_set(issue, Some("P1"));
+    assert_eq!(names, vec!["bug", "P1"]);
+    assert_eq!(removed, vec!["blocker", "sev2"]);
+}
+
+#[test]
+fn ranked_label_set_never_reports_the_pick_as_removed() {
+    let app = app_ranked(
+        vec![labelled(1, &["P1", "bug"])],
+        &[("P1", Some(3)), ("bug", None)],
+    );
+    let issue = &app.repos[0].issues[0];
+    // Re-picking what the issue already has removes nothing, so no
+    // confirmation is owed — and the label is not written twice.
+    let (names, removed) = ranked_label_set(issue, Some("P1"));
+    assert_eq!(names, vec!["P1", "bug"]);
+    assert!(removed.is_empty());
+}
+
+#[test]
+fn ranked_label_set_clearing_removes_the_ranked_labels_only() {
+    let app = app_ranked(
+        vec![labelled(1, &["blocker", "bug", "docs"])],
+        &[("blocker", Some(4)), ("bug", None), ("docs", None)],
+    );
+    let issue = &app.repos[0].issues[0];
+    let (names, removed) = ranked_label_set(issue, None);
+    assert_eq!(names, vec!["bug", "docs"]);
+    assert_eq!(removed, vec!["blocker"]);
+}
+
+#[test]
+fn ranked_label_set_on_an_unranked_issue_removes_nothing() {
+    let app = app_ranked(vec![labelled(1, &["bug"])], &[("bug", None)]);
+    let issue = &app.repos[0].issues[0];
+    let (names, removed) = ranked_label_set(issue, Some("P0"));
+    assert_eq!(names, vec!["bug", "P0"]);
+    assert!(
+        removed.is_empty(),
+        "nothing to lose, so nothing to confirm: {removed:?}"
+    );
+}

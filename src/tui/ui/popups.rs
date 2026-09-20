@@ -1,6 +1,7 @@
 use super::list::input_prompt;
 use super::prelude::*;
 use super::widgets::centered;
+use crate::provider::types::priority_rank_word;
 use crate::tui::app::{
     ConfirmChoice, FILTER_FIELDS, HarnessConfirm, INPUT_POPUP_WIDTH, ISSUE_FORM_FIELDS, InputKind,
     input_popup_width, input_scroll_skip,
@@ -92,6 +93,27 @@ pub(super) fn draw_confirm_move_popup(f: &mut Frame, app: &App, t: &Theme) {
         "Gets a new number; mentioned users are notified.".to_string(),
     ];
     draw_confirm(f, app, t, " move issue ", &lines);
+}
+
+/// Confirmation before a set-priority write that removes labels an inferred
+/// rank identified (`Mode::ConfirmPriority`, #162).
+///
+/// The removals are named in full. A rank is a model's judgement, and this
+/// popup is the whole of what stands between a wrong one and a real label
+/// disappearing from a real issue — see `docs/adr/0003-*`.
+pub(super) fn draw_confirm_priority_popup(f: &mut Frame, app: &App, t: &Theme) {
+    let Some(pending) = &app.pending_priority else {
+        return;
+    };
+    let number = app.selected_issue().map(|i| i.number);
+    let subject = match (&pending.pick, number) {
+        (Some(p), Some(n)) => format!("set {p} on #{n}?"),
+        (Some(p), None) => format!("set {p} on this issue?"),
+        (None, Some(n)) => format!("clear the priority on #{n}?"),
+        (None, None) => "clear this issue's priority?".to_string(),
+    };
+    let lines = vec![subject, format!("Removes: {}", pending.removes.join(", "))];
+    draw_confirm(f, app, t, " set priority ", &lines);
 }
 
 /// The confirmation in front of an irreversible harness action (#23).
@@ -197,6 +219,7 @@ pub(super) fn picker_items(
     t: &Theme,
     multi: bool,
     clear_label: &str,
+    annotate_ranks: bool,
 ) -> Vec<ListItem<'static>> {
     let mut items: Vec<ListItem> = Vec::new();
     if !app.picker.filter.is_empty() {
@@ -206,6 +229,19 @@ pub(super) fn picker_items(
             Span::styled("█", Style::default().fg(t.accent)),
         ])));
     }
+    // Column the rank words line up in. Measured over every option rather
+    // than the filtered view so narrowing the list doesn't shift the column.
+    let rank_col = if annotate_ranks {
+        app.picker
+            .options
+            .iter()
+            .filter(|o| app.label_rank.rank_of(o).is_some())
+            .map(|o| o.chars().count())
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let filtered = app.picker.filtered();
     if filtered.is_empty() {
         let msg = if app.picker.options.is_empty() {
@@ -235,7 +271,18 @@ pub(super) fn picker_items(
         } else if opt == "\u{2014}" {
             format!(" \u{2014} {clear_label} \u{2014}")
         } else {
-            format!(" {opt}")
+            // What a rank means, for a label whose name does not say (#162).
+            // Decoration only: `picker.options` holds the label name that is
+            // written to the backend, and the type-ahead filter matches that
+            // name alone, so the word can never end up in a mutation.
+            match annotate_ranks
+                .then(|| app.label_rank.rank_of(opt))
+                .flatten()
+                .and_then(priority_rank_word)
+            {
+                Some(word) => format!(" {opt:<rank_col$}  {word}"),
+                None => format!(" {opt}"),
+            }
         };
         items.push(ListItem::new(Line::from(Span::styled(text, style))));
     }
@@ -263,6 +310,10 @@ pub(super) struct PickerSpec {
     multi: bool,
     /// Wording for the leading "clear this field" entry.
     clear_label: &'static str,
+    /// Rows name what an inferred rank means (`P0  urgent`). Only the
+    /// set-priority picker does: elsewhere a ranked label is just a label,
+    /// and the `l` picker lists the repo's whole set.
+    annotate_ranks: bool,
 }
 
 impl PickerSpec {
@@ -273,6 +324,7 @@ impl PickerSpec {
             width: PICKER_WIDTH,
             multi,
             clear_label: "clear",
+            annotate_ranks: false,
         }
     }
 
@@ -304,10 +356,13 @@ impl PickerSpec {
 
     /// Setting the selected issue's priority (`Mode::PrioritySet`).
     pub(super) fn priority() -> Self {
-        Self::new(
-            " set priority (type to filter · Enter sets · Esc cancels) ",
-            false,
-        )
+        Self {
+            annotate_ranks: true,
+            ..Self::new(
+                " set priority (type to filter · Enter sets · Esc cancels) ",
+                false,
+            )
+        }
     }
 
     /// Editing the selected issue's labels (`Mode::LabelsSet`).
@@ -363,7 +418,7 @@ impl PickerSpec {
 /// The one picker popup. Every `Mode` that shows a list of choices renders
 /// through here; only the [`PickerSpec`] differs.
 pub(super) fn draw_picker(f: &mut Frame, app: &App, t: &Theme, spec: PickerSpec) {
-    let items = picker_items(app, t, spec.multi, spec.clear_label);
+    let items = picker_items(app, t, spec.multi, spec.clear_label, spec.annotate_ranks);
     let area = centered(f.area(), spec.width, picker_height(f, items.len()));
     f.render_widget(Clear, area);
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(spec.title));
@@ -838,6 +893,82 @@ mod tests {
             "title missing: {text}"
         );
         assert!(!text.contains("[ ]"), "unexpected multi marks: {text}");
+    }
+
+    #[test]
+    fn golden_priority_set_popup_names_what_an_inferred_rank_means() {
+        let mut app = picker_app(Mode::PrioritySet);
+        app.picker
+            .start(vec!["\u{2014}".into(), "P1".into(), "blocker".into()], 1);
+        app.merge_label_ranks(
+            [
+                ("P1".to_string(), Some(3)),
+                ("blocker".to_string(), Some(4)),
+            ]
+            .into(),
+        );
+        let text = popup_box(&render_app(&app, 100, 30)).text();
+
+        // Padded to the widest ranked option so the words share a column.
+        assert!(text.contains("P1       high"), "rank word missing: {text}");
+        assert!(
+            text.contains("blocker  urgent"),
+            "rank words must line up in one column: {text}"
+        );
+    }
+
+    #[test]
+    fn golden_priority_set_popup_leaves_convention_labels_bare() {
+        let mut app = picker_app(Mode::PrioritySet);
+        app.picker
+            .start(vec!["\u{2014}".into(), "priority:high".into()], 1);
+        let text = popup_box(&render_app(&app, 100, 30)).text();
+
+        assert!(text.contains("priority:high"), "option missing: {text}");
+        assert!(
+            !text.contains("priority:high  high"),
+            "the convention says what it means; no annotation: {text}"
+        );
+    }
+
+    #[test]
+    fn golden_confirm_priority_popup_names_every_removal() {
+        let mut app = confirm_app(crate::provider::types::IssueState::Open);
+        app.pending_priority = Some(crate::tui::app::PendingPriority {
+            issue_id: "id".into(),
+            pick: Some("P1".into()),
+            removes: vec!["blocker".into(), "sev2".into()],
+            names: vec!["bug".into(), "P1".into()],
+        });
+        app.mode = Mode::ConfirmPriority;
+        let text = popup_box(&render_app(&app, 100, 30)).text();
+
+        assert!(text.contains("set priority"), "title missing: {text}");
+        assert!(text.contains("set P1 on #114?"), "subject missing: {text}");
+        assert!(
+            text.contains("Removes: blocker, sev2"),
+            "every removal must be named: {text}"
+        );
+        assert!(text.contains("[ Yes ]"), "buttons missing: {text}");
+    }
+
+    #[test]
+    fn golden_confirm_priority_popup_says_clear_when_nothing_is_picked() {
+        let mut app = confirm_app(crate::provider::types::IssueState::Open);
+        app.pending_priority = Some(crate::tui::app::PendingPriority {
+            issue_id: "id".into(),
+            pick: None,
+            removes: vec!["blocker".into()],
+            names: vec!["bug".into()],
+        });
+        app.mode = Mode::ConfirmPriority;
+        let text = popup_box(&render_app(&app, 100, 30)).text();
+
+        assert!(
+            text.contains("clear the priority on #114?"),
+            "clear wording missing: {text}"
+        );
+        assert!(text.contains("Removes: blocker"), "removal missing: {text}");
     }
 
     #[test]

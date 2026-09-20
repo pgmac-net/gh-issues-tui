@@ -66,6 +66,10 @@ pub enum Mode {
     MovePicker,
     /// Confirmation popup for a move committed from `MovePicker`.
     ConfirmMove,
+    /// Confirmation popup for a priority committed from `PrioritySet` on a
+    /// repo with no `priority:*` convention, where the write would strip
+    /// labels an inferred rank identified (#162).
+    ConfirmPriority,
     /// A coding-harness session is on screen (#23). Every key is forwarded
     /// to the child except the `F12` prefix chord — see
     /// `event::keys::harness`.
@@ -142,6 +146,26 @@ pub struct PrTarget {
 pub struct PendingMove {
     pub issue_id: String,
     pub target: String,
+}
+
+/// A priority committed from `Mode::PrioritySet` on a repo with no
+/// `priority:*` convention, awaiting confirmation in `Mode::ConfirmPriority`.
+///
+/// Lives in `App` for the same reason as [`PendingMove`] — `Mode` stays
+/// `Copy`. Both the written set and the removals are captured at
+/// picker-commit time: a refetch while the popup is open must not let the
+/// mutation land on a different issue, and must not silently change which
+/// labels go missing after the user read the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPriority {
+    pub issue_id: String,
+    /// The chosen label, or `None` for `—` (clear).
+    pub pick: Option<String>,
+    /// Labels this write removes. Never empty — an empty strip set writes
+    /// straight through without a confirmation.
+    pub removes: Vec<String>,
+    /// The full label set to write.
+    pub names: Vec<String>,
 }
 
 /// Which element of the inline comment section (`Mode::CommentEditor`) has

@@ -12,6 +12,7 @@ pub(crate) mod input;
 pub(crate) mod move_issue;
 pub(crate) mod normal;
 pub(crate) mod pr;
+pub(crate) mod priority;
 pub(super) mod shared;
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -32,6 +33,7 @@ use input::handle_input_key;
 use move_issue::{handle_confirm_move_key, handle_move_picker_key};
 use normal::handle_normal_key;
 use pr::{handle_pr_picker_key, handle_pr_summary_key};
+use priority::handle_confirm_priority_key;
 
 pub(super) fn handle_key(
     app: &mut App,
@@ -62,6 +64,7 @@ pub(super) fn handle_key(
         Mode::PrSummary => handle_pr_summary_key(app, key, client, tx),
         Mode::MovePicker => handle_move_picker_key(app, key),
         Mode::ConfirmMove => handle_confirm_move_key(app, key, client, tx),
+        Mode::ConfirmPriority => handle_confirm_priority_key(app, key, client, tx),
         // Dismissing help returns where it was opened from — `F12 ?` inside a
         // session must not drop you back on the issue list.
         Mode::Help => {
