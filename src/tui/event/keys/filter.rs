@@ -286,6 +286,34 @@ mod tests {
         assert_eq!(app.mode, Mode::FilterMenu);
     }
 
+    /// An inferred label chosen in the priority filter picker (#164) is
+    /// carried in `filters.priority` by its bare name. Reopening the picker
+    /// must find it in the options again, or the checkmark would silently
+    /// vanish and the next Enter would drop the filter.
+    #[test]
+    fn inferred_priority_label_round_trips_through_the_filter_picker() {
+        let (mut app, _id) = app_with_issue(&["P0", "bug"]);
+        app.merge_label_ranks([("P0".to_string(), Some(4)), ("bug".to_string(), None)].into());
+        app.mode = Mode::FilterMenu;
+        app.filter_menu_idx = 4;
+
+        handle_filter_menu_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::SelectFieldMulti(4));
+        assert_eq!(app.picker.options, vec!["P0".to_string()]);
+        handle_select_field_multi_key(&mut app, key(KeyCode::Char(' ')), 4);
+        handle_select_field_multi_key(&mut app, key(KeyCode::Enter), 4);
+        assert_eq!(app.filters.priority, vec!["P0"]);
+
+        // Reopen: the current filter is pre-checked.
+        app.filter_menu_idx = 4;
+        handle_filter_menu_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(
+            app.picker.multi_selected,
+            [0].into_iter().collect(),
+            "P0 must still be checked on reopen"
+        );
+    }
+
     #[test]
     fn multi_filter_picker_esc_discards_toggles() {
         let mut app = App::new(

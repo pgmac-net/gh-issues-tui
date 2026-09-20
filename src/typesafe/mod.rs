@@ -8,7 +8,8 @@
 //! the answers are stamped onto `Label::rank`.
 //!
 //! **The convention always wins, and gates the write path.** On a repo with
-//! any `priority:*` label, a rank only affects sorting and title colour and
+//! any `priority:*` label, a rank only affects sorting, title colour and what
+//! the priority filter picker lists (#164 — read-only, so not gated) and
 //! never reaches `priority_set_options` or `priority_label_set`. On a repo
 //! with none, #162 lets the `p` picker offer and write the repo's own ranked
 //! labels — but a write that would remove a ranked label names every one of
