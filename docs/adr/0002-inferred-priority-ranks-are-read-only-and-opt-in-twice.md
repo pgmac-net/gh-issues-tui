@@ -2,11 +2,19 @@
 
 ## Status
 
-Accepted (#156). Clause 1 (**inferred ranks are read-only**) superseded by
-[ADR 0003](0003-inferred-priority-ranks-may-be-written-behind-a-named-confirmation.md)
-(#162), which widened the write path behind a confirmation that names every label a write
-would remove. Clauses 2-4 stand. The reasoning below is why that confirmation exists, so it
-is left as written rather than revised.
+Accepted (#156), with two clauses since superseded — both by widenings that needed
+their own argument, and the reasoning below is why each carries the safeguard it does,
+so it is left as written rather than revised.
+
+- Clause 1 (**inferred ranks are read-only**) superseded by
+  [ADR 0003](0003-inferred-priority-ranks-may-be-written-behind-a-named-confirmation.md)
+  (#162), which widened the write path behind a confirmation naming every label a write
+  would remove.
+- Clause 3 (**only label names leave the machine**) narrowed by
+  [ADR 0004](0004-issue-text-may-be-sent-behind-a-second-consent.md) (#160), which allows
+  issue text behind a second consent flag. The org name is still never sent.
+
+Clauses 2 and 4 stand as written.
 
 ## Context
 

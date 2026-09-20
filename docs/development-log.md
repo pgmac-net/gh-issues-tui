@@ -875,3 +875,51 @@ Work driven by [pgmac-net/gh-issues-tui#164](https://github.com/pgmac-net/gh-iss
 - **Mutation-checked** five mutations of `priority_filter_options`: dropping the convention-first tie-break, inferred rank overriding the convention's (caught only after the test fix above), dropping the fallback to an inferred rank, dropping the already-present exclusion, and admitting unranked labels. Each is caught by at least one test.
 - AC2 is held by a round trip: choosing `P0` filters to the issue carrying it, and reopening the picker pre-checks it — without that the checkmark would silently vanish and the next Enter would drop the filter.
 - **Not driven against a live org.** Nothing here touches the network — it reads ranks already stamped on loaded labels, so the tests are the whole of the verification.
+
+
+# Development log — ticket readiness gate before launching a harness session (2026-09-20)
+
+Work driven by [pgmac-net/gh-issues-tui#160](https://github.com/pgmac-net/gh-issues-tui/issues/160), on branch `160-ticket-readiness-gate`. Consent decision: [ADR 0004](adr/0004-issue-text-may-be-sent-behind-a-second-consent.md). Feature docs: [`ticket-readiness.md`](ticket-readiness.md).
+
+## Process
+
+1. **Grilling found four claims in the ticket that did not survive inspection**, one of which changed what was being asked for. They are listed below because three of them were only findable by reading code and live docs, not by reasoning about the ticket.
+2. Six decisions put one at a time; all six took the recommended option.
+3. Plan posted and approved before implementation. Planning and implementation both on Opus 5 — the plan rated it COMPLEX, whose tier model is Fable 5 with Opus as the recorded fallback.
+4. Two commits: the feature with its tests, then documentation.
+
+## Corrections to the ticket
+
+- **There is no pre-launch confirmation to warn on.** `LaunchAction::Spawn` goes straight to `hx.launch()`; `HarnessConfirm` has only `Kill`, `Relaunch`, `Quit`. The ticket's "warning on the pre-launch confirm" would have meant *introducing* a confirmation into a one-keypress path. Resolved as badge-only, which also dissolves the ticket's own contradiction: fetching on detail-open means `A` from the list has no answer yet, so a launch-time warning would fire late or block.
+- **The launch key is `A`, not `F12`.** `F12` is the in-session chord prefix.
+- **A Noul carries no `confidence`.** Checked against the live docs rather than assumed: `{"type":"noul","noul":0.99}`, with neither `probabilities` nor `confidence`. So `MIN_CONFIDENCE` and `rank_from_answer` do not transfer, `struct Answer` could not deserialise a noul at all, and `0.5` means *equally likely* rather than "medium" — which is why the verdict has three bands.
+- **`looks_duplicate` was unanswerable as written.** It asked whether the ticket describes the same problem as an issue referenced in the thread, but that issue's content is never in state; the model sees only `#129`. Reframed to whether the thread *states* it is already covered, which is answerable from text that is present.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Consent for sending issue text | Second flag `send_issue_text` + ADR 0004 | Label names are a vocabulary; a private thread is its contents. Opting into one is not opting into the other |
+| Granularity of that consent | One flag for the disclosure, not one per feature | The honest unit of consent is what leaves the machine, not which feature sends it. #157–#159 need the same permission |
+| Where a poor score surfaces | Detail-pane badge only | No path from a judgement to an execution, so attacker-controlled issue text cannot cost a launch |
+| Question set | Five nouls, `duplicate` reframed | Independent questions share one request; the original comparison had no evidence in state |
+| Verdict composition | Vetoes named individually, then completeness | A weighted score averages a veto away: blocked + great repro reads as ready |
+| Undecided band | Reported, never rounded | No confidence value exists to gate on, and 0.5 is genuinely ambiguous |
+| State | Title, body, last 10 comments, true total | "Accuracy falls as the state grows with content unrelated to the decision"; and Jev "reads dates as text", so a stale blocker in an old comment is the documented failure mode |
+| Cache | In-memory, dropped with the comment thread | Readiness drifts the moment someone adds a repro — the opposite of a label rank. And no judgement about private text on disk |
+
+## Diversions from plan
+
+- **`spawn_readiness` is called from two places, not one.** The plan said the trigger sits where `load_comments` settles. That happens both asynchronously (a `Comments` event) and synchronously (arrowing onto an issue whose thread is cached), so it is called after `handle_key` and after `handle_app_event`. Both are guarded by `begin_readiness`, which is why duplicating the call is safe rather than merely tolerable.
+- **`ReadinessState` gained an in-flight set and a failure latch**, which the plan described only as a `HashMap`. Without the in-flight set, arrowing through a list fires one request per row before any answer lands; both are modelled on `RankState`, which exists for the same two reasons.
+- **The ranker parameter became `Consents`.** The plan implied a second `Option<Client>` threaded alongside the first; `run`/`event_loop` already carry eleven arguments under `#[allow(clippy::too_many_arguments)]`. Bundling both into `typesafe::Consents { ranks, issue_text }` replaces the existing parameter instead of adding one, and makes `None` the entirety of "not permitted".
+- **Four app-state tests failed first run** because `app_with` leaves the selection on the repo header, so `selected_issue()` was `None`. Fixture fixed, not the code.
+- **The existing `body_lines`/`body_content_height` tests got no-badge shims** rather than an extra argument each, so they keep asserting what the pane does with the feature off.
+
+## Verification
+
+- `cargo test` — 735 passed, 0 failed (47 new). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- **Mutation-checked seven mutations, each caught**: removing the consent gate, removing a veto check, rounding the undecided band, keeping a judgement past its thread's invalidation, asking before the thread settles, dropping the in-flight guard, and dropping the failure latch.
+- **The hard constraint is checked mechanically, not by inspection**: `git diff --name-only main` touches none of `src/tui/harness/`, `app/harness.rs`, `keys/harness.rs` or `keys/normal.rs`, and "readiness" appears nowhere in them. The `$(touch /tmp/pwned)` argv test is untouched and passes.
+- **The five prompts and two thresholds are unmeasured.** The suite pins the composition; it cannot say whether Jev answers these questions well on real tickets. A calibration pass in the shape of #163 is the honest follow-up, and `ticket-readiness.md` says so under "Not verified".
+- **Not driven against a live org or a real key.** The wire shape is covered by serde tests against the documented response, not by a live call.
