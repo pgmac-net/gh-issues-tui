@@ -119,12 +119,26 @@ Vetoes are checked first and named individually, because they do not compensate:
 blocked    > 0.7   -> "blocked"
 duplicate  > 0.7   -> "may be a duplicate"
 actionable < 0.3   -> "not a work item"
-any signal undecided -> "unsure — cannot judge <which>"
+repro, criteria, blocked or duplicate undecided -> "unsure — cannot judge <which>"
 otherwise, from repro and criteria:
   both present -> "ready"
   either absent -> "thin — no <which>"
 ```
 
+**The verdict reads every signal one-sidedly, and only the signals a claim rests on
+earn an `unsure`.** `actionable` is consumed only as `< 0.3`, so a middling value
+just means *not vetoed*; hedging on it makes a well-specified bug report read
+`unsure` for a property nothing depends on (#169).
+
+| signal | direction read | hedges when in 0.3–0.7? | why |
+|---|---|---|---|
+| `repro`, `criteria` | `< NO` → thin | yes | "ready — has a repro and a stated outcome" is a positive claim; it must not be asserted on a coin flip |
+| `blocked`, `duplicate` | `> YES` → veto | yes | missing one costs a whole agent run, so "might be" is worth saying |
+| `actionable` | `< NO` → veto | **no** | only its low end matters, and real tickets sit in its band routinely |
+
+This is the `HEDGED` constant in `readiness.rs`, written as a rule rather than a
+list: a signal belongs there only if the verdict makes a claim resting on it being
+decisive. Add a signal and you must decide which direction the verdict reads it.
 A single weighted score would have averaged a veto away: a blocked ticket with an
 excellent repro and clear criteria reads as ready. The raw five probabilities are
 stored and the policy is a pure function over them, so changing a threshold or the
@@ -184,18 +198,35 @@ For each signal, the worst case a reader marked `no` against the worst marked
 
 | signal | n(yes) | n(no) | worst no | worst yes | separates? |
 |---|---|---|---|---|---|
-| `repro` | 11 | 9 | 0.71 | 0.40 | **no** |
-| `criteria` | 13 | 5 | 0.44 | 0.60 | yes |
-| `actionable` | 18 | 2 | 0.12 | 0.37 | yes, but **wholly below `YES`** |
-| `blocked` | 0 | 22 | — | — | `yes` side **unmeasured** |
-| `duplicate` | 1 | 19 | 0.97 | 0.83 | **no** |
+| `repro` | 11 | 9 | 0.73 | 0.40 | **no** |
+| `criteria` | 13 | 5 | 0.43 | 0.60 | yes |
+| `blocked` | 0 | 22 | 0.47 | — | `yes` side **unmeasured** |
+| `duplicate` | 1 | 19 | 0.97 | 0.84 | **no** |
 
+`actionable` is deliberately not in that table. It is read only as `< NO`, so it has
+no yes-side to separate: 18 cases are asserted *not vetoed* and 2 asserted vetoed,
+and `NO` must fall in **(0.13, 0.34]** — above the worst vetoed case and no higher
+than the worst real work item. `NO = 0.3` does.
+
+Probabilities drift between runs. The same wordings and model, re-recorded for
+#169, moved by up to 0.22; that was all on `gh-issues-tui#168`, a live ticket
+whose thread had grown in between, so it is real input change rather than
+necessarily model noise — but the two cannot be cleanly separated, so treat
+differences of ~0.1–0.2 as within noise.
 ### What that means for each question
 
-**`actionable` is the damaging one.** It separates cleanly, but every asserted
-`yes` scores between 0.12 and 0.37 — so against a threshold of 0.7 a well-written
-bug report reads as *not a work item* or as undecided. It is the signal that
-vetoes, so it is the one most able to give bad advice.
+**`actionable` works, and #168 wrongly reported that it did not.** The veto fires
+on exactly three cases and all three are right — `gh-issues-tui#130` (literally a
+question), `Docker-Nagios#3` (115 characters, "Nothing to see here"),
+`tremendous-cve#10` (a record of merged work) — and never on a real work item.
+
+The original finding was mine and it was wrong. I marked `actionable: yes` on 18
+cases, a two-sided expectation for a signal the verdict reads one-sidedly, then
+reported the low yes-side (0.34–0.55, against a `YES` of 0.7) as the question
+under-reading. Nothing consumes that side. The real defect was in the composition:
+the undecided check demanded every signal sit outside 0.3–0.7, so a middling
+`actionable` made five well-specified bug reports read `unsure`. That is fixed by
+scoping the hedge, not by rewording the question — see the table above.
 
 **`repro` asks two questions at once** — "is there a reproduction" and "is this
 specific enough to act on" — and a feature request cannot have the first. Two
@@ -212,19 +243,20 @@ redesign, not rewording.
 tickets with no blocker at all, up to 0.70, because "waiting on … a decision" is
 true of any vague ticket. It now names an *external* dependency and says outright
 that vague, undesigned, unscheduled or under-investigation is not blocked. All 22
-cases now score 0.03–0.44.
+cases now score at most 0.47.
 
 **`criteria` is the one signal that works** as intended.
 
 ### Consequence for the badge
 
-`unsure` on 14 of 22 cases, driven almost entirely by `actionable`. In its current
-state the badge mostly declines to say anything, and where it does speak it can be
-wrong. **Treat it as unproven until the follow-ups land:**
+`unsure` on 9 of 22 cases, down from 14 before #169 scoped the hedge, with 6 `ready`
+(from 1) and the five vetoes unchanged. It is more useful than it was, but it still
+declines to speak on 9 tickets, and `repro` and `duplicate` genuinely do not
+separate. **Treat it as unproven until the follow-ups land:**
 
 | finding | ticket |
 |---|---|
-| `actionable` under-reads real work, so the veto misfires | [#169](https://github.com/pgmac-net/gh-issues-tui/issues/169) |
+| ~~`actionable` under-reads real work~~ — the veto was right; the undecided check was two-sided. Fixed | [#169](https://github.com/pgmac-net/gh-issues-tui/issues/169) |
 | `duplicate` conflates "covered elsewhere" with "finished" | [#170](https://github.com/pgmac-net/gh-issues-tui/issues/170) |
 | `repro` asks two questions at once | [#171](https://github.com/pgmac-net/gh-issues-tui/issues/171) |
 | the corpus cannot measure `blocked=yes` or `duplicate=yes` | [#172](https://github.com/pgmac-net/gh-issues-tui/issues/172) |
@@ -250,28 +282,28 @@ wordings change, and every change is disclosed.
 
 | ref | repro | criteria | actionable | blocked | duplicate | verdict |
 |---|---|---|---|---|---|---|
-| `nagios-public-status-page#69` | 0.92 | 0.83 | 0.65 ! | 0.04 | 0.29 | unsure |
-| `nagios-public-status-page#60` | 0.96 | 0.90 | 0.52 ! | 0.13 | 0.26 | unsure |
-| `nagios-public-status-page#67` | 0.94 | 0.92 | 0.57 ! | 0.06 | 0.19 | unsure |
-| `nagios-public-status-page#71` | 0.96 | 0.94 | 0.55 ! | 0.03 | 0.97 ! | may be a duplicate |
-| `incidents#48` | 0.59 ! | 0.91 | 0.94 | 0.07 | 0.03 | unsure |
-| `docker-registry-walk#59` | 0.86 | 0.92 | 0.52 ! | 0.07 | 0.51 ! | unsure |
-| `docker-registry-walk#96` | 0.87 | 0.88 | 0.47 ! | 0.45 ! | 0.11 | unsure |
-| `incidents#86` | 0.94 | 0.89 · | 0.46 ! | 0.04 | 0.83 | may be a duplicate |
-| `incidents#49` | 0.40 ! | 0.23 | 0.97 | 0.13 | 0.07 | unsure |
-| `Docker-Nagios#1` | 0.08 | 0.44 ! | 0.87 | 0.09 | 0.03 | unsure |
-| `incidents#72` | 0.45 ! | 0.62 · | 0.70 ! | 0.11 | 0.05 | unsure |
+| `nagios-public-status-page#69` | 0.92 | 0.84 | 0.64 | 0.03 | 0.23 | ready |
+| `nagios-public-status-page#60` | 0.97 | 0.89 | 0.53 | 0.13 | 0.25 | ready |
+| `nagios-public-status-page#67` | 0.94 | 0.91 | 0.59 | 0.08 | 0.21 | ready |
+| `nagios-public-status-page#71` | 0.96 | 0.94 | 0.54 | 0.03 | 0.97 ! | may be a duplicate |
+| `incidents#48` | 0.59 ! | 0.91 | 0.95 | 0.07 | 0.03 | unsure |
+| `docker-registry-walk#59` | 0.87 | 0.91 | 0.51 | 0.06 | 0.49 ! | unsure |
+| `docker-registry-walk#96` | 0.87 | 0.87 | 0.45 | 0.47 ! | 0.12 | unsure |
+| `incidents#86` | 0.95 | 0.88 · | 0.46 | 0.05 | 0.84 | may be a duplicate |
+| `incidents#49` | 0.40 ! | 0.23 | 0.97 | 0.13 | 0.06 | unsure |
+| `Docker-Nagios#1` | 0.08 | 0.43 ! | 0.87 | 0.09 | 0.03 | unsure |
+| `incidents#72` | 0.41 ! | 0.61 · | 0.71 | 0.10 | 0.06 | unsure |
 | `gh-issues-tui#60` | 0.07 | 0.12 | 0.81 · | 0.12 | 0.04 | thin |
-| `Docker-Nagios#3` | 0.04 | 0.06 | 0.14 · | 0.09 | 0.34 · | not a work item |
-| `Docker-Nagios#4` | 0.08 | 0.81 | 0.94 | 0.11 | 0.03 | thin |
-| `metasearch#22` | 0.46 ! | 0.60 ! | 0.46 ! | 0.06 | 0.04 | unsure |
-| `metasearch#19` | 0.82 | 0.77 · | 0.37 ! | 0.04 | 0.17 | unsure |
-| `gh-issues-tui#129` | 0.85 | 0.85 | 0.62 ! | 0.07 | 0.04 | unsure |
-| `gh-issues-tui#130` | 0.04 | 0.08 | 0.12 | 0.21 | 0.04 | not a work item |
-| `tremendous-cve#10` | 0.71 ! | 0.67 · | 0.05 | 0.06 | 0.30 · | not a work item |
-| `incidents#75` | 0.35 ! | 0.78 | 0.97 | 0.07 | 0.30 ! | unsure |
-| `gh-issues-tui#160` | 0.78 · | 0.92 | 0.86 | 0.09 | 0.08 | ready |
-| `gh-issues-tui#168` | 0.69 · | 0.75 | 0.89 | 0.47 ! | 0.11 | unsure |
+| `Docker-Nagios#3` | 0.04 | 0.06 | 0.14 · | 0.10 | 0.39 · | not a work item |
+| `Docker-Nagios#4` | 0.08 | 0.81 | 0.95 | 0.12 | 0.03 | thin |
+| `metasearch#22` | 0.45 ! | 0.60 ! | 0.49 | 0.06 | 0.04 | unsure |
+| `metasearch#19` | 0.82 | 0.76 · | 0.34 | 0.04 | 0.15 | ready |
+| `gh-issues-tui#129` | 0.85 | 0.86 | 0.63 | 0.06 | 0.04 | ready |
+| `gh-issues-tui#130` | 0.04 | 0.08 | 0.13 | 0.19 | 0.04 | not a work item |
+| `tremendous-cve#10` | 0.73 ! | 0.70 · | 0.06 | 0.06 | 0.27 · | not a work item |
+| `incidents#75` | 0.36 ! | 0.78 | 0.97 | 0.07 | 0.28 | unsure |
+| `gh-issues-tui#160` | 0.78 · | 0.91 | 0.86 | 0.09 | 0.08 | ready |
+| `gh-issues-tui#168` | 0.76 · | 0.86 | 0.67 | 0.31 ! | 0.10 | unsure |
 
 `!` disagrees with the expectation · `·` unasserted
 
