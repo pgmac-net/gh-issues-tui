@@ -2926,7 +2926,7 @@ fn readiness_app() -> (App, String) {
 
 fn some_readiness() -> Readiness {
     Readiness {
-        repro: 0.9,
+        specifics: 0.9,
         criteria: 0.9,
         actionable: 0.9,
         blocked: 0.1,

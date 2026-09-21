@@ -685,7 +685,7 @@ mod readiness_tests {
 
     fn ready() -> Readiness {
         Readiness {
-            repro: 0.95,
+            specifics: 0.95,
             criteria: 0.92,
             actionable: 0.98,
             blocked: 0.02,
@@ -758,12 +758,12 @@ mod readiness_tests {
     #[test]
     fn a_thin_ticket_names_what_is_missing() {
         let thin = Readiness {
-            repro: 0.03,
+            specifics: 0.03,
             criteria: 0.02,
             ..ready()
         };
         assert!(
-            badge(&thin).contains("thin \u{2014} no repro, criteria"),
+            badge(&thin).contains("thin \u{2014} no specifics, criteria"),
             "{}",
             badge(&thin)
         );
@@ -772,7 +772,7 @@ mod readiness_tests {
     #[test]
     fn an_undecided_ticket_does_not_claim_a_verdict() {
         let unsure = Readiness {
-            repro: 0.5,
+            specifics: 0.5,
             ..ready()
         };
         let line = badge(&unsure);

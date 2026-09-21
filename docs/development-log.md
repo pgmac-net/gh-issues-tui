@@ -1023,3 +1023,61 @@ On the recorded corpus, **6 ready / 9 unsure / 5 vetoes**, from 1 / 14 / 5, with
 - **Mutation-checked**: loosening `NO`, dropping the `actionable` veto, and adding `actionable` back to `HEDGED` (the original bug) — each caught, the last by four tests.
 - The digest was confirmed unchanged across the re-run, so it was a regeneration rather than a tuning round. Live re-run: 22 GitHub fetches and 22 TypeSafe calls, about a third of a cent.
 - Not driven end-to-end against the running app; the badge's rendering is covered by the existing golden tests, which this does not touch.
+
+
+# Development log — replace the readiness `repro` question with `specifics` (2026-09-21)
+
+Work driven by [pgmac-net/gh-issues-tui#171](https://github.com/pgmac-net/gh-issues-tui/issues/171), on branch `171-readiness-specifics`. Measurement in [`ticket-readiness.md`](ticket-readiness.md).
+
+**Improved, but did not clear the bar I set.** Kept as measured, on the requester's decision.
+
+## What `repro` actually cost
+
+The ticket I wrote implied a broad defect. Measured, it was narrower: **one wrong `thin` in 22** (`Docker-Nagios#4`, a precise spec, `criteria` 0.81, reading `thin — no repro`) plus **three `unsure` where `repro` was the sole reason**. The question was answering exactly what it was asked — "could someone see the problem or the *current behaviour*" — so a precise spec for something not yet built scored 0.08 and a record of merged work scored 0.73. Right for the question, wrong for readiness. It correlated with `criteria` at r = 0.81, and every divergence was a failure case.
+
+## The ordering guarantee
+
+Changing the question meant re-deriving all 22 expectations, which is legitimate and is exactly where fitting hides. So:
+
+1. Expectations were re-derived from the ticket text against the new question before any request.
+2. They were committed in their own commit (`e52719c`) **before** the recording commit (`60ebe9d`), so `git log` proves the order. That commit is deliberately red — four calibration tests fail on the stale recording — and says so in its message.
+3. One measurement round.
+4. A pre-declared success bar, set before measuring.
+
+### Expectation changes, `repro` → `specifics` (7 of 22)
+
+| ticket | change | reason |
+|---|---|---|
+| `Docker-Nagios#4` | No → Yes | precise spec of a Slack summary: exact counts per state, one pinned message. **The anchor case #171 was filed about**, stated for that reason — an expectation derived for the case the change exists to fix deserves the most scrutiny |
+| `incidents#75` | No → Yes | names two places (README, site home page) and what to add alongside which skills |
+| `gh-issues-tui#160`, `#168` | Unasserted → Yes | detailed proposals with code locations; the old `Unasserted` *was* the tension this ticket describes |
+| `metasearch#22` | No → Unasserted | "scan my pgmac repos" is ambiguous |
+| `metasearch#19` | Yes → Unasserted | the body is one sentence; the "Current State / Gaps to Fix" detail is in a *comment*. My #168 corpus note said the body had those sections, which was wrong |
+| `tremendous-cve#10` | No → Unasserted | a record of finished work has nothing to begin — that is `actionable`'s job |
+
+## Result against the pre-declared bar
+
+| criterion | result |
+|---|---|
+| `Docker-Nagios#4` no longer `thin` | **met** — `unsure`, specifics 0.49 |
+| the three `repro`-only `unsure` resolve | **met** — `#48` 0.59→0.82 and `#75` 0.36→0.78 `ready`; `#49` 0.40→0.77, now `thin — no criteria` (correct: an investigation with no definition of done) |
+| the signal separates | **not met** — worst no 0.58, worst yes 0.49, inverted by 0.09 (was 0.33) |
+
+Verdicts: **7 ready / 8 unsure**, from 6 / 9, with every veto unchanged.
+
+**The inversion rests entirely on two cases** — `incidents#72` (asserted `no`) and `Docker-Nagios#4` (asserted `yes`), both flagged as hard before measuring. Set aside, the rest separate at 0.29 .. 0.76. **Neither was re-marked**: moving `incidents#72` to unasserted would make the gap positive, which is exactly why it was not done.
+
+## Diversions from plan
+
+- **My plan contradicted itself, and I stopped rather than choose.** Item 5 said revert if the new question separates "no better than `repro`" — it separates better, so that did not fire. The success-bar section said failing a positive gap "is the revert trigger" — it did. I wrote both. Posted the measurement and the contradiction on the ticket, recommended keeping `specifics` *against the letter of my own stricter sentence*, and asked. The requester chose to keep it. A revert would have made the badge measurably worse by criteria 1 and 2 to honour a sentence criterion 3's own sibling contradicted.
+- **Commit 1 is deliberately red.** Four tests fail on the stale recording by design. Worth it: the alternative was to commit expectations and recording together, which would leave no evidence of order.
+- **The rename reached two files I had not grepped for.** I searched `Signal::Repro` and `"repro"`, missing the struct *field* in `tui/app/tests.rs` and `tui/ui/detail.rs`. Caught by the compiler, not by the search.
+- **A guard's rationale had gone false.** The characterisation test said `specifics` "asks two questions at once… a reproduction" — the `repro` bug, no longer true. Split into `duplicate_does_not_separate_and_that_is_recorded` and `specifics_is_inverted_only_because_of_two_contested_cases`. A test with the wrong reason is worse than none.
+- **A pinned claim about two named cases is a mild form of fitting**, and I want it flagged rather than hidden. The new test asserts that `incidents#72` and `Docker-Nagios#4` *are* the extremes and that the rest separate by more than 0.3. It characterises the measured state and does not alter any expectation, but it does encode "this is why". It should be deleted the moment either case is re-marked or the signal separates.
+
+## Verification
+
+- `cargo test` — 751 passed, 0 failed. `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- Mutation-checked the new guards: reverting the question fails the digest test; putting "has a repro" back fails the badge tests; dropping `specifics` from `HEDGED` fails five.
+- One live round, 22 GitHub fetches and 22 TypeSafe calls, about a third of a cent. Numbers in the docs are refreshed from it rather than carried over — `criteria` and `blocked` both moved by ~0.01–0.02 with unchanged wordings.
+- Not driven end-to-end against the running app; badge rendering is covered by the golden tests, updated for the new wording.
