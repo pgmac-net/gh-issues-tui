@@ -7,11 +7,11 @@ impl App {
     /// Returns the action the event loop must run, if any.
     pub fn apply_filter_input(&mut self, kind: InputKind, value: &str) {
         match kind {
-            InputKind::Search => self.filters.text = value.to_string(),
+            InputKind::Search => self.set_text_filter(value.to_string()),
             InputKind::FilterField(idx) => {
                 let v = value.trim().to_string();
                 match idx {
-                    0 => self.filters.text = v,
+                    0 => self.set_text_filter(v),
                     1 => self.filters.repo = v,
                     2 => self.filters.assignee = v,
                     3 => self.filters.author = v,
@@ -75,6 +75,8 @@ impl App {
     /// toggle returns to the *config* default, not blanket false.
     pub fn clear_filters(&mut self) {
         self.filters.clear();
+        // The text just went, so an in-flight semantic search is now stale.
+        self.invalidate_search();
         self.filters.hide_empty = self.hide_empty_default;
     }
 

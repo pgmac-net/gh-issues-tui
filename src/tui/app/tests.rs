@@ -3054,3 +3054,286 @@ fn the_state_sent_is_the_selected_issues_own_text() {
     assert_eq!(state["body"], "steps to reproduce");
     assert_eq!(state["recent_comments"][0], "blocked on #184");
 }
+
+// ---- semantic search (#158) ----
+
+/// Two repos: `a` holds a disk issue and an unrelated one; `b` holds a disk
+/// issue too. No title contains the query words, so any hit is semantic.
+fn search_app() -> App {
+    app_with(vec![
+        RepoIssues {
+            repo: "a".into(),
+            repo_url: "u".into(),
+            issues: vec![
+                issue(1, "PVC read-only on k8s02", IssueState::Open),
+                issue(2, "Update the help pane", IssueState::Open),
+            ],
+        },
+        RepoIssues {
+            repo: "b".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(3, "Jiva replica crash-loops", IssueState::Open)],
+        },
+    ])
+}
+
+fn shown(app: &App) -> Vec<u64> {
+    app.rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Issue {
+                repo_idx,
+                issue_idx,
+            } => Some(app.repos[*repo_idx].issues[*issue_idx].number),
+            Row::RepoHeader { .. } => None,
+        })
+        .collect()
+}
+
+fn hits(ids: &[&str]) -> HashSet<String> {
+    ids.iter().map(|s| s.to_string()).collect()
+}
+
+const QUERY: &str = "persistent disks becoming unwritable";
+
+#[test]
+fn a_semantic_hit_widens_the_text_match() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    app.rebuild_rows();
+    assert!(
+        shown(&app).is_empty(),
+        "no substring hit for a natural-language query"
+    );
+
+    let (g, _, _) = app.begin_semantic_search().expect("worth searching");
+    app.apply_semantic_search(g, Ok(hits(&["I_1", "I_3"])));
+    assert_eq!(shown(&app), vec![1, 3]);
+}
+
+#[test]
+fn substring_hits_still_show_alongside_semantic_ones() {
+    let mut app = search_app();
+    app.set_text_filter("help".into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(hits(&["I_3"])));
+    assert_eq!(shown(&app), vec![2, 3], "the substring hit is never lost");
+}
+
+/// A semantic hit must not bypass a filter that lives inside
+/// `Filters::matches`. The repo test below cannot catch that: the repo filter is
+/// applied per repo in `rebuild_rows`, outside `matches`, so a hit that
+/// short-circuited `matches` would still be hidden by it. Author is inside.
+#[test]
+fn a_semantic_hit_does_not_bypass_a_filter_inside_matches() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().expect("worth searching");
+    app.apply_semantic_search(g, Ok(hits(&["I_1", "I_3"])));
+    assert_eq!(shown(&app), vec![1, 3]);
+    // Now narrow by a filter inside `matches`. (It admits no candidates, so it
+    // would send nothing — the hits are the ones that already landed.)
+    app.filters.author = "someone-else".into();
+    app.rebuild_rows();
+    assert!(
+        shown(&app).is_empty(),
+        "every issue is by pgmac, so none may show"
+    );
+}
+
+/// Semantic hits widen only the text condition — every other filter applies.
+#[test]
+fn a_semantic_hit_does_not_bypass_another_filter() {
+    let mut app = search_app();
+    app.filters.repo = "a".into();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    // A hit in repo b, outside the repo filter, must stay hidden.
+    app.apply_semantic_search(g, Ok(hits(&["I_1", "I_3"])));
+    assert_eq!(shown(&app), vec![1]);
+}
+
+#[test]
+fn candidates_are_what_every_other_filter_admits() {
+    let mut app = search_app();
+    app.filters.repo = "a".into();
+    app.set_text_filter(QUERY.into());
+    let (_, query, cands) = app.begin_semantic_search().unwrap();
+    assert_eq!(query, QUERY);
+    // Order follows the list's sort, so compare as a set.
+    let mut ids: Vec<&str> = cands.iter().map(|c| c.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec!["I_1", "I_2"],
+        "repo b is excluded; the text is not applied"
+    );
+    assert!(cands.iter().all(|c| c.repo == "a"));
+}
+
+#[test]
+fn the_state_filter_limits_candidates() {
+    let mut app = search_app();
+    app.repos[1].issues[0].state = IssueState::Closed;
+    app.set_text_filter(QUERY.into());
+    let (_, _, cands) = app.begin_semantic_search().unwrap();
+    assert!(
+        !cands.iter().any(|c| c.id == "I_3"),
+        "closed, and the view is open-only"
+    );
+}
+
+#[test]
+fn empty_and_bare_number_queries_send_nothing() {
+    let mut app = search_app();
+    for q in ["", "3", "#3"] {
+        app.set_text_filter(q.into());
+        assert!(app.begin_semantic_search().is_none(), "{q:?}");
+    }
+}
+
+#[test]
+fn asking_again_for_the_same_query_and_candidates_sends_nothing() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    assert!(app.begin_semantic_search().is_some());
+    assert!(
+        app.begin_semantic_search().is_none(),
+        "already judged, even while in flight"
+    );
+}
+
+/// The deviation from the plan: relaxing a filter exposes issues never judged
+/// for this query, so it must search again.
+#[test]
+fn relaxing_a_filter_searches_the_newly_exposed_issues() {
+    let mut app = search_app();
+    app.filters.repo = "a".into();
+    app.set_text_filter(QUERY.into());
+    app.begin_semantic_search().unwrap();
+
+    app.filters.repo.clear();
+    let (_, _, cands) = app
+        .begin_semantic_search()
+        .expect("repo b's issue was never judged");
+    assert_eq!(
+        cands.len(),
+        3,
+        "the whole candidate set is re-sent, at measured shape"
+    );
+}
+
+#[test]
+fn narrowing_a_filter_sends_nothing() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    app.begin_semantic_search().unwrap();
+    app.filters.repo = "a".into();
+    assert!(
+        app.begin_semantic_search().is_none(),
+        "every remaining candidate was already judged"
+    );
+}
+
+#[test]
+fn changing_the_text_clears_the_hits_even_if_nothing_is_sent() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(hits(&["I_1"])));
+    // A bare number is never sent, so stale hits must not linger to widen it.
+    app.set_text_filter("#2".into());
+    app.rebuild_rows();
+    assert_eq!(shown(&app), vec![2]);
+    assert!(app.filters.semantic_hits.is_empty());
+}
+
+#[test]
+fn a_response_for_an_older_query_is_dropped() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.set_text_filter("something else entirely".into());
+    app.apply_semantic_search(g, Ok(hits(&["I_1"])));
+    assert!(app.filters.semantic_hits.is_empty());
+}
+
+#[test]
+fn a_response_after_clearing_the_filters_is_dropped() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.clear_filters();
+    app.apply_semantic_search(g, Ok(hits(&["I_1"])));
+    assert!(app.filters.semantic_hits.is_empty());
+}
+
+/// Generations only ever increase: resetting on an org switch must not let a
+/// new search reuse a number an old in-flight response still carries.
+#[test]
+fn a_reset_never_reuses_a_generation() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    let (old, _, _) = app.begin_semantic_search().unwrap();
+    app.reset_search();
+    app.set_text_filter(QUERY.into());
+    let (new, _, _) = app.begin_semantic_search().unwrap();
+    assert!(new > old);
+    app.apply_semantic_search(old, Ok(hits(&["I_2"])));
+    assert!(
+        app.filters.semantic_hits.is_empty(),
+        "the old response is stale"
+    );
+}
+
+#[test]
+fn a_landed_answer_replaces_the_hits() {
+    let mut app = search_app();
+    app.filters.repo = "a".into();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(hits(&["I_1"])));
+    app.filters.repo.clear();
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(hits(&["I_3"])));
+    assert_eq!(app.filters.semantic_hits, hits(&["I_3"]));
+}
+
+#[test]
+fn a_failure_latches_off_and_keeps_substring_results() {
+    let mut app = search_app();
+    app.set_text_filter("help".into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Err("TypeSafe returned 429".into()));
+    assert!(app.search.has_failed());
+    assert!(
+        app.status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("semantic search off")
+    );
+    app.rebuild_rows();
+    assert_eq!(shown(&app), vec![2], "substring still works");
+    app.set_text_filter(QUERY.into());
+    assert!(app.begin_semantic_search().is_none(), "no retry storm");
+}
+
+/// Both places that set the text filter go through `set_text_filter`, so both
+/// clear stale hits and both can trigger a search. The ticket named only `/`.
+#[test]
+fn both_text_entry_points_clear_hits_and_can_search() {
+    for kind in [InputKind::Search, InputKind::FilterField(0)] {
+        let mut app = search_app();
+        app.filters.semantic_hits = hits(&["I_1"]);
+        app.apply_filter_input(kind, QUERY);
+        assert_eq!(app.filters.text, QUERY, "{kind:?}");
+        assert!(
+            app.filters.semantic_hits.is_empty(),
+            "{kind:?}: stale hits cleared"
+        );
+        assert!(
+            app.begin_semantic_search().is_some(),
+            "{kind:?}: can search"
+        );
+    }
+}

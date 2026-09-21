@@ -17,6 +17,7 @@ mod pr;
 mod ranks;
 pub mod readiness;
 mod rows;
+pub mod search;
 
 #[cfg(test)]
 mod tests;
@@ -108,6 +109,9 @@ pub struct App {
     /// display-only — nothing here reaches a harness launch. Dropped with the
     /// comment threads they were derived from.
     pub readiness: ReadinessState,
+    /// Semantic search (#158): what has been judged for the current text
+    /// query, and whether asking has failed this session.
+    pub search: SearchState,
     /// Coding-harness sessions (#23) — metadata only; the PTYs themselves
     /// are owned by the event loop. Deliberately *not* reset by
     /// `switch_org`: an agent working a ticket is unaffected by the list
@@ -161,6 +165,7 @@ impl App {
             rate_limit_error: None,
             comment_cache: HashMap::new(),
             readiness: ReadinessState::default(),
+            search: SearchState::default(),
             pr: PrState::default(),
             label_rank: RankState::default(),
             harness: HarnessState::default(),
@@ -256,6 +261,7 @@ impl App {
         self.repos.clear();
         self.comment_cache.clear();
         self.readiness.clear();
+        self.reset_search();
         self.rows.clear();
         self.collapsed.clear();
         self.seen_repos.clear();
@@ -306,5 +312,6 @@ pub(crate) mod prelude {
     pub use super::pr::PrState;
     pub use super::ranks::RankState;
     pub use super::readiness::ReadinessState;
+    pub use super::search::SearchState;
     pub use crate::typesafe::readiness::Readiness;
 }

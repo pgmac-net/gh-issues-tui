@@ -70,6 +70,11 @@ pub struct Filters {
     /// clean view); `App::clear_filters`/`switch_org` restore the config
     /// default rather than this one.
     pub hide_empty: bool,
+    /// Issue ids judged to be *about* `text` by semantic search (#158). The text
+    /// condition is `substring || semantic hit`, so these only ever widen the
+    /// text match — every other filter still applies. Always emptied when `text`
+    /// changes (see `App::set_text_filter`), and by `clear`.
+    pub semantic_hits: HashSet<String>,
 }
 
 impl Default for Filters {
@@ -88,6 +93,7 @@ impl Default for Filters {
             closed_after: None,
             closed_before: None,
             hide_empty: true,
+            semantic_hits: HashSet::new(),
         }
     }
 }
@@ -106,7 +112,8 @@ impl Filters {
             let needle = self.text.to_lowercase();
             let hit = issue.title.to_lowercase().contains(&needle)
                 || issue.body.to_lowercase().contains(&needle)
-                || issue.number.to_string() == needle.trim_start_matches('#');
+                || issue.number.to_string() == needle.trim_start_matches('#')
+                || self.semantic_hits.contains(&issue.id);
             if !hit {
                 return false;
             }
@@ -167,6 +174,16 @@ impl Filters {
 
     pub fn clear(&mut self) {
         *self = Filters::default();
+    }
+
+    /// These filters with the text condition removed: what a semantic search
+    /// judges against. A candidate is any issue every *other* filter admits.
+    pub fn without_text(&self) -> Filters {
+        Filters {
+            text: String::new(),
+            semantic_hits: HashSet::new(),
+            ..self.clone()
+        }
     }
 }
 
