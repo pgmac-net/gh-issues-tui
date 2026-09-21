@@ -101,6 +101,32 @@ pub(crate) fn spawn_readiness(
     });
 }
 
+/// Run a semantic search (#158), if there is anything to ask.
+///
+/// Gated on the `send_issue_text` consent: `None` means `/` stays exactly the
+/// substring match it always was. Beyond that, a no-op unless
+/// `App::begin_semantic_search` finds unjudged candidates for the current query —
+/// so it is safe to call after every key and every event, and it never fires per
+/// keystroke while typing, because the text filter only changes on Enter.
+pub(crate) fn spawn_semantic_search(
+    app: &mut App,
+    reader: Option<&crate::typesafe::Client>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let Some(reader) = reader else { return };
+    let Some((generation, query, candidates)) = app.begin_semantic_search() else {
+        return;
+    };
+    let reader = reader.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = crate::typesafe::search::search(&reader, &query, &candidates)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::SemanticSearch { generation, result });
+    });
+}
+
 pub(crate) fn spawn_form_options(
     client: &Provider,
     org: String,

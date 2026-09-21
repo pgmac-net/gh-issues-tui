@@ -26,6 +26,7 @@
 
 pub mod cache;
 pub mod readiness;
+pub mod search;
 
 use std::collections::HashMap;
 use std::path::Path;

@@ -1,0 +1,479 @@
+{
+  "model": "jev-1.13.0",
+  "request_digest": "3ee86d26d495187b",
+  "search_yes": 0.5,
+  "chunk": 150,
+  "body_chars": 200,
+  "queries": [
+    {
+      "q": "persistent disks becoming unwritable in kubernetes",
+      "full": {
+        "candidates": 141,
+        "must": {
+          "incidents#82": 0.88,
+          "incidents#85": 0.89
+        },
+        "ok": {
+          "incidents#47": 0.11,
+          "incidents#48": 0.16,
+          "incidents#49": 0.24,
+          "incidents#79": 0.23,
+          "incidents#81": 0.56
+        },
+        "top_irrelevant": [
+          [
+            "incidents#67",
+            0.51
+          ],
+          [
+            "incidents#70",
+            0.39
+          ],
+          [
+            "incidents#75",
+            0.31
+          ],
+          [
+            "gh-issues-tui#50",
+            0.19
+          ],
+          [
+            "incidents#86",
+            0.11
+          ]
+        ]
+      },
+      "scoped": {
+        "candidates": 13,
+        "must": {
+          "incidents#82": 0.88,
+          "incidents#85": 0.9
+        },
+        "ok": {
+          "incidents#47": 0.28,
+          "incidents#48": 0.16,
+          "incidents#49": 0.03,
+          "incidents#79": 0.3,
+          "incidents#81": 0.56
+        },
+        "top_irrelevant": [
+          [
+            "incidents#67",
+            0.51
+          ],
+          [
+            "incidents#63",
+            0.42
+          ],
+          [
+            "incidents#75",
+            0.26
+          ],
+          [
+            "incidents#70",
+            0.06
+          ],
+          [
+            "incidents#86",
+            0.04
+          ]
+        ]
+      }
+    },
+    {
+      "q": "traffic blackholed by a leftover routing entry",
+      "full": {
+        "candidates": 141,
+        "must": {
+          "incidents#79": 0.8,
+          "incidents#86": 0.82
+        },
+        "ok": {},
+        "top_irrelevant": [
+          [
+            "incidents#75",
+            0.82
+          ],
+          [
+            "incidents#85",
+            0.42
+          ],
+          [
+            "incidents#49",
+            0.13
+          ],
+          [
+            "incidents#81",
+            0.11
+          ],
+          [
+            "incidents#63",
+            0.11
+          ]
+        ]
+      },
+      "scoped": {
+        "candidates": 13,
+        "must": {
+          "incidents#79": 0.34,
+          "incidents#86": 0.9
+        },
+        "ok": {},
+        "top_irrelevant": [
+          [
+            "incidents#75",
+            0.89
+          ],
+          [
+            "incidents#63",
+            0.06
+          ],
+          [
+            "incidents#70",
+            0.05
+          ],
+          [
+            "incidents#67",
+            0.05
+          ],
+          [
+            "incidents#85",
+            0.04
+          ]
+        ]
+      }
+    },
+    {
+      "q": "keeping secrets out of version control",
+      "full": {
+        "candidates": 141,
+        "must": {
+          "nagios-public-status-page#63": 0.97
+        },
+        "ok": {
+          "nagios-public-status-page#59": 0.13
+        },
+        "top_irrelevant": [
+          [
+            "nagios-public-status-page#56",
+            0.54
+          ],
+          [
+            "nagios-public-status-page#60",
+            0.48
+          ],
+          [
+            "nagios-public-status-page#65",
+            0.23
+          ],
+          [
+            "nagios-public-status-page#71",
+            0.23
+          ],
+          [
+            "Docker-Nagios#1",
+            0.17
+          ]
+        ]
+      },
+      "scoped": {
+        "candidates": 9,
+        "must": {
+          "nagios-public-status-page#63": 0.95
+        },
+        "ok": {
+          "nagios-public-status-page#59": 0.52
+        },
+        "top_irrelevant": [
+          [
+            "nagios-public-status-page#56",
+            0.13
+          ],
+          [
+            "nagios-public-status-page#67",
+            0.04
+          ],
+          [
+            "nagios-public-status-page#60",
+            0.04
+          ],
+          [
+            "nagios-public-status-page#55",
+            0.03
+          ],
+          [
+            "nagios-public-status-page#71",
+            0.03
+          ]
+        ]
+      }
+    },
+    {
+      "q": "opening web addresses by pointing at them",
+      "full": {
+        "candidates": 141,
+        "must": {
+          "gh-issues-tui#80": 0.12
+        },
+        "ok": {
+          "gh-issues-tui#130": 0.08
+        },
+        "top_irrelevant": [
+          [
+            "gh-issues-tui#67",
+            0.91
+          ],
+          [
+            "docker-registry-walk#75",
+            0.21
+          ],
+          [
+            "nagios-public-status-page#65",
+            0.18
+          ],
+          [
+            "gh-issues-tui#129",
+            0.15
+          ],
+          [
+            "gh-issues-tui#122",
+            0.12
+          ]
+        ]
+      },
+      "scoped": {
+        "candidates": 63,
+        "must": {
+          "gh-issues-tui#80": 0.85
+        },
+        "ok": {
+          "gh-issues-tui#130": 0.04
+        },
+        "top_irrelevant": [
+          [
+            "gh-issues-tui#67",
+            0.84
+          ],
+          [
+            "gh-issues-tui#129",
+            0.09
+          ],
+          [
+            "gh-issues-tui#122",
+            0.09
+          ],
+          [
+            "gh-issues-tui#107",
+            0.05
+          ],
+          [
+            "gh-issues-tui#57",
+            0.05
+          ]
+        ]
+      }
+    },
+    {
+      "q": "choosing how urgent a ticket is",
+      "full": {
+        "candidates": 141,
+        "must": {
+          "gh-issues-tui#156": 0.76,
+          "gh-issues-tui#30": 0.9
+        },
+        "ok": {
+          "gh-issues-tui#162": 0.75,
+          "gh-issues-tui#163": 0.6,
+          "gh-issues-tui#164": 0.36,
+          "gh-issues-tui#26": 0.48,
+          "gh-issues-tui#28": 0.58,
+          "gh-issues-tui#34": 0.48
+        },
+        "top_irrelevant": [
+          [
+            "gh-issues-tui#148",
+            0.9
+          ],
+          [
+            "gh-issues-tui#159",
+            0.77
+          ],
+          [
+            "gh-issues-tui#160",
+            0.77
+          ],
+          [
+            "claude-plugins#8",
+            0.36
+          ],
+          [
+            "gh-issues-tui#37",
+            0.34
+          ]
+        ]
+      },
+      "scoped": {
+        "candidates": 63,
+        "must": {
+          "gh-issues-tui#156": 0.83,
+          "gh-issues-tui#30": 0.8
+        },
+        "ok": {
+          "gh-issues-tui#162": 0.54,
+          "gh-issues-tui#163": 0.36,
+          "gh-issues-tui#164": 0.19,
+          "gh-issues-tui#26": 0.35,
+          "gh-issues-tui#28": 0.74,
+          "gh-issues-tui#34": 0.37
+        },
+        "top_irrelevant": [
+          [
+            "gh-issues-tui#148",
+            0.87
+          ],
+          [
+            "gh-issues-tui#160",
+            0.59
+          ],
+          [
+            "gh-issues-tui#25",
+            0.17
+          ],
+          [
+            "gh-issues-tui#37",
+            0.12
+          ],
+          [
+            "gh-issues-tui#157",
+            0.12
+          ]
+        ]
+      }
+    },
+    {
+      "q": "putting text somewhere it can be pasted later",
+      "full": {
+        "candidates": 141,
+        "must": {
+          "docker-registry-walk#40": 0.82,
+          "docker-registry-walk#75": 0.91,
+          "gh-issues-tui#46": 0.91
+        },
+        "ok": {
+          "docker-registry-walk#97": 0.07
+        },
+        "top_irrelevant": [
+          [
+            "docker-registry-walk#74",
+            0.9
+          ],
+          [
+            "docker-registry-walk#39",
+            0.83
+          ],
+          [
+            "docker-registry-walk#59",
+            0.19
+          ],
+          [
+            "gh-issues-tui#45",
+            0.18
+          ],
+          [
+            "gh-issues-tui#43",
+            0.15
+          ]
+        ]
+      },
+      "scoped": {
+        "candidates": 36,
+        "must": {
+          "docker-registry-walk#40": 0.8,
+          "docker-registry-walk#75": 0.66
+        },
+        "ok": {
+          "docker-registry-walk#97": 0.29
+        },
+        "top_irrelevant": [
+          [
+            "docker-registry-walk#74",
+            0.9
+          ],
+          [
+            "docker-registry-walk#39",
+            0.87
+          ],
+          [
+            "docker-registry-walk#95",
+            0.14
+          ],
+          [
+            "docker-registry-walk#59",
+            0.11
+          ],
+          [
+            "docker-registry-walk#96",
+            0.1
+          ]
+        ]
+      }
+    },
+    {
+      "q": "a cooking recipe for sourdough bread",
+      "full": {
+        "candidates": 141,
+        "must": {},
+        "ok": {},
+        "top_irrelevant": [
+          [
+            "gh-issues-tui#171",
+            0.01
+          ],
+          [
+            "incidents#81",
+            0.01
+          ],
+          [
+            "gh-issues-tui#13",
+            0.01
+          ],
+          [
+            "gh-issues-tui#168",
+            0.01
+          ],
+          [
+            "tremendous-cve#10",
+            0.01
+          ]
+        ]
+      },
+      "scoped": {
+        "candidates": 63,
+        "must": {},
+        "ok": {},
+        "top_irrelevant": [
+          [
+            "gh-issues-tui#57",
+            0.01
+          ],
+          [
+            "gh-issues-tui#158",
+            0.01
+          ],
+          [
+            "gh-issues-tui#46",
+            0.01
+          ],
+          [
+            "gh-issues-tui#20",
+            0.01
+          ],
+          [
+            "gh-issues-tui#30",
+            0.01
+          ]
+        ]
+      }
+    }
+  ]
+}

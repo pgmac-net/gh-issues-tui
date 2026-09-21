@@ -29,7 +29,7 @@ mod spawn;
 use keys::{HarnessCtx, handle_key};
 use spawn::{
     CommentRefresh, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks,
-    spawn_readiness,
+    spawn_readiness, spawn_semantic_search,
 };
 
 pub enum AppEvent {
@@ -63,6 +63,12 @@ pub enum AppEvent {
     Readiness {
         issue_id: String,
         result: Result<crate::typesafe::readiness::Readiness, String>,
+    },
+    /// A semantic search's hits (#158), tagged with the generation it was sent
+    /// under so a response overtaken by a newer query is dropped.
+    SemanticSearch {
+        generation: u64,
+        result: Result<std::collections::HashSet<String>, String>,
     },
     /// Inferred ranks for the repo labels the set-priority picker fetched
     /// (#162). Carries `labels` so the picker can be built without a second
@@ -208,6 +214,9 @@ async fn event_loop(
                         // already cached settles it without any event landing,
                         // so the badge is asked for from here too.
                         spawn_readiness(&mut app, typesafe.issue_text.as_ref(), &tx);
+                        // Submitting `/`, the filter editor's text field, or a
+                        // change that exposes unjudged issues all land here.
+                        spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
                     }
                     // Children need the new size too, or their own TUI keeps
                     // drawing to the old one.
@@ -230,6 +239,8 @@ async fn event_loop(
                 // A landed comment thread is what the readiness judgement waits
                 // for; `spawn_readiness` guards the cases where it is not ready.
                 spawn_readiness(&mut app, typesafe.issue_text.as_ref(), &tx);
+                // Fresh data can bring issues not yet judged for an active query.
+                spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
             }
             _ = refresh.tick(), if refresh_enabled => {
                 if app.should_auto_refresh() {
@@ -403,6 +414,9 @@ pub(crate) fn handle_app_event(
         }
         AppEvent::LabelRanks { org, result } => app.apply_label_ranks(&org, result),
         AppEvent::Readiness { issue_id, result } => app.apply_readiness(issue_id, result),
+        AppEvent::SemanticSearch { generation, result } => {
+            app.apply_semantic_search(generation, result)
+        }
         AppEvent::Data(Err(e)) => {
             app.loading = false;
             app.auto_refreshing = false;
@@ -849,6 +863,24 @@ mod tests {
             app.begin_readiness().is_some(),
             "nothing may be marked in flight, or the first consented ask would \
              be skipped"
+        );
+    }
+
+    /// Semantic search is gated on the issue-text consent (#158). Without it
+    /// nothing is sent and nothing is marked judged, so `/` stays the substring
+    /// match it always was.
+    #[test]
+    fn semantic_search_is_inert_without_the_issue_text_consent() {
+        let (mut app, _id) = app_with_issue(&["bug"]);
+        app.set_text_filter("persistent disks becoming unwritable".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        spawn_semantic_search(&mut app, None, &tx);
+
+        assert!(rx.try_recv().is_err(), "no event may be produced");
+        assert!(
+            app.begin_semantic_search().is_some(),
+            "nothing may be marked judged, or the first consented search would be skipped"
         );
     }
 
