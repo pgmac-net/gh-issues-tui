@@ -1288,3 +1288,59 @@ Left alone deliberately: rules both sides get wrong *together* — 4+ spaces of 
 
 - **Renderer:** nested fences and multi-backtick spans now render correctly, and a padded span drops its padding. No regression — escapes already worked.
 - **Scanner:** a reference between escaped backticks is now a candidate; it used to be masked. That is the correct reading of the rendered text, but it does change `parse_pr_links` output.
+
+
+# Development log — semantic `/` search (2026-09-22)
+
+Work driven by [pgmac-net/gh-issues-tui#158](https://github.com/pgmac-net/gh-issues-tui/issues/158), on branch `158-semantic-search`. Feature notes in [`semantic-search.md`](semantic-search.md).
+
+**Shipped, with the threshold set by an explicit override rather than the measurement.** The approved plan's search shape was wrong; this entry records how that was found.
+
+## Requirement
+
+The ticket body said to leave `/` alone and add a second key. The comment of 2026-09-21 reversed that: semantic search becomes the default for `/` when TypeSafe is available. Grilling settled that "available" means the `send_issue_text` consent plus the key (ADR 0004), and that `/` becomes a **union** — substring hits instantly, semantic hits added — so nothing is ever lost.
+
+## The shape: planned one way, shipped another
+
+**Planned:** one shared state holding every candidate, one Noul per candidate, each named by a tag. Phase 2 measured it on 141 public issues and seven pre-registered queries: 11/11 found, no false hits, a +0.17 gap, so `SEARCH_YES = 0.5`.
+
+**That was one lucky ordering.** Porting the probe into the committed harness, in a different candidate order, produced an unrelated issue at 0.90 on a disk query. Diagnosis, one hypothesis at a time:
+
+1. **Numeric tags are read as issue numbers.** The issue tagged `I085` inherited `incidents#85`'s relevance. Confirmed by one controlled request: 0.90 with numeric tags, 0.03 with letter tags, everything else stable.
+2. **Letter tags match inside words.** A tag like `RL` inside "URLs" pointed at the wrong line; a genuine hit fell to 0.12 and irrelevant issues reached 0.91. Skipping tags that are whole words in the chunk didn't help — they matched as substrings.
+3. **Path references (the documented mechanism) move with position.** Median order-spread 0.13–0.16.
+
+The decisive instrument was **order invariance** — the same issues shuffled three ways. It measures whether the mechanism locates candidates correctly, independent of relevance, so it cannot be fitted. By then two inline-tag schemes had "looked fine on one run" and been wrong, so I stopped guessing, reported on the ticket that the plan's measured basis did not hold, and asked.
+
+**Shipped:** one isolated request per candidate — the reranking cookbook's shape. No position exists. Measured noise between two scorings of the same issue: median 0.00–0.01, max 0.09.
+
+## The threshold
+
+A rule was **committed before the measurement** (`c3ce53c`, deliberately red): the midpoint of the gap between the best irrelevant score and the worst genuine hit across all fourteen runs, and an empty gap ships no threshold. **The gap was empty**: `incidents#85` scored 0.84 on "choosing how urgent a ticket is" — an outage report that records "Confirmed P2", so a severity choice — above the worst genuine hit at 0.71.
+
+`SEARCH_YES = 0.70` was then set by the requester as an **override**, with that data: 11/11 genuine hits clear it in both runs, and the only false hit across ~1,250 judgements is that report. Recorded as an override in code, recording, docs and commit, with guards that fail if a re-record changes any of it — including if the gap becomes clean, at which point the rule's value should replace the override.
+
+## Deviations from plan
+
+- **The search shape** — above. The biggest deviation, and the reason the threshold is an override.
+- **Triggers.** The plan fired searches from `/` and the filter editor's text field only. Implementing it showed that relaxing another filter exposes issues never judged. The search is now idempotent: checked after every key and event, re-sent only when the candidate set gains unjudged issues. This supersedes the plan's "auto-refresh sends no new requests" — a refresh that brings new issues re-judges them while a query is active. Posted on the ticket as it happened.
+- **Chunks became a concurrency cap.** With isolated requests there is nothing to chunk; `MAX_IN_FLIGHT = 150` caps parallel requests instead.
+- **The repo filter was missing from candidates.** `Filters::matches` does not apply the repo filter — `rebuild_rows` does, per repo — so the first version would have sent every repo's issues while filtered to one. The tests caught it.
+- **Two stale-response bugs, found by reading my own code:** `clear_filters` didn't invalidate an in-flight search, and resetting on an org switch reset the generation counter, letting a new search reuse a number an old response carried. Generations now only increase.
+
+## Mistakes of my own in the process
+
+- **A mutation harness that corrupted the tree.** Two files are named `search.rs`; backing up by basename let one overwrite the other, and every "restore" copied the wrong file over `app/search.rs`. Caught because the build broke; restored from git, and the mutations re-run with `git checkout` as the restore.
+- **A test that could never fail.** "A semantic hit does not bypass another filter" used the repo filter — which lives outside `matches`, so a bypassing hit would still have been hidden. The mutant survived; the fix tests with author, which lives inside.
+- **A clippy-silenced constant assertion** (`SEARCH_YES < 0.7`) that proved nothing, removed.
+
+## Verification
+
+- `cargo test` — 809 passed, 0 failed. `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- **Eleven mutations, each caught:** union removed, a hit bypassing a filter inside `matches`, candidates ignoring the repo filter, a stale response accepted, generations reused, `clear_filters` not invalidating, stale hits kept across a text change, bare numbers sent, narrowing re-sending, the threshold moved without a re-record, a failure not latching.
+- Live measurement: ~1,250 isolated requests over public issues, no rate limiting, noise ≤ 0.09.
+- **Not driven end-to-end in the running app**, and private repos were not measured, deliberately.
+
+## Cost
+
+About $0.003 and 4–6 seconds per search, ~150 parallel requests. Substring hits remain instant.
