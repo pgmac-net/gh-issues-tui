@@ -5,6 +5,13 @@
 Accepted (#160). Supersedes clause 3 of
 [ADR 0002](0002-inferred-priority-ranks-are-read-only-and-opt-in-twice.md).
 
+**Note, 2026-09-22 (#183).** Of the three follow-ups named below, only #158
+(semantic search) shipped issue text. #157 was rewritten into a renderer fix
+that sends nothing, and #159 was closed as won't do. So today `send_issue_text`
+enables the readiness badge and semantic `/` search. #158 first shipped with a
+`repo#N` reference in each request, contrary to decision 3; #183 removed it. The
+decisions below stand as written.
+
 ## Context
 
 ADR 0002 clause 3 was absolute: **only label names leave the machine** — never

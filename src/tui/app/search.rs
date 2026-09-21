@@ -72,8 +72,6 @@ impl App {
                     .filter(|i| base.matches(i, self.state_filter))
                     .map(move |i| Candidate {
                         id: i.id.clone(),
-                        repo: r.repo.clone(),
-                        number: i.number,
                         title: i.title.clone(),
                         body: i.body.clone(),
                     })

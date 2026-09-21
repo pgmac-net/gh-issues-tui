@@ -39,11 +39,29 @@ of every visible issue — including private repos — to a third party. ADR 000
 named this feature when it chose one consent flag for every feature that ships
 issue text.
 
+## Telling whether it is on
+
+**Nothing on screen says so.** A search that works is silent: extra rows simply
+join the substring matches a few seconds after you type. Two ways to check:
+
+- search for something in *other words* than an issue you know exists — if it
+  appears after a moment, semantic search is on;
+- a failure is never silent — the status bar shows
+  `semantic search off for this session: <reason>`, and `/` is substring-only
+  until the app restarts.
+
+A bare number (`#123`) or an empty query never sends, so it never adds rows.
+
 ## What is sent
 
 For each **candidate** — every issue that every filter *except the text* admits,
-repo filter included — one request containing the query and that issue's
-`repo#N`, title and first 200 characters of body. **Never the org.**
+repo filter included — one request containing the query and that issue's title
+and first 200 characters of body. **Never the org, the repo, or the issue
+number** (ADR 0004 clause 3).
+
+#158 shipped with a `repo#N` reference in each request, which the ADR forbade;
+#183 removed it, and `Candidate` no longer holds a repo or number, so it cannot
+send one.
 
 Nothing is sent for an empty query or a bare issue number (`123`, `#123`):
 substring already answers those exactly.
@@ -101,29 +119,40 @@ empty.
 
 Measured over the nine public `pgmac-net` repos with issues (141 issues), seven
 queries whose expected hits were written and hashed before any request, each run
-over the full corpus and again scoped to one repo:
+over the full corpus and again scoped to one repo. The table is the current
+recording, re-made for #183 when the `repo#N` reference left the request; #158's
+original run is given after it.
 
 | query | run | candidates | worst genuine hit | best irrelevant | noise (median / max) |
 |---|---|---|---|---|---|
-| persistent disks becoming unwritable in kubernetes | full | 141 | 0.71 | 0.66 | 0.01 / 0.09 |
-|  | scoped | 13 | 0.80 | 0.61 |  |
-| traffic blackholed by a leftover routing entry | full | 141 | 0.77 | 0.13 | 0.00 / 0.01 |
-|  | scoped | 13 | 0.77 | 0.08 |  |
-| keeping secrets out of version control | full | 141 | 0.97 | 0.64 | 0.00 / 0.03 |
-|  | scoped | 9 | 0.96 | 0.05 |  |
-| opening web addresses by pointing at them | full | 141 | 0.94 | 0.60 | 0.00 / 0.04 |
-|  | scoped | 63 | 0.94 | 0.14 |  |
-| choosing how urgent a ticket is | full | 141 | 0.80 | **0.84** | 0.00 / 0.08 |
-|  | scoped | 63 | 0.83 | 0.63 |  |
-| putting text somewhere it can be pasted later | full | 141 | 0.92 | 0.48 | 0.00 / 0.07 |
-|  | scoped | 36 | 0.91 | 0.13 |  |
-| a cooking recipe for sourdough bread | full | 141 | — | 0.02 | 0.00 / 0.01 |
-|  | scoped | 63 | — | 0.02 |  |
+| persistent disks becoming unwritable in kubernetes | full | 141 | 0.75 | 0.68 | 0.01 / 0.05 |
+|  | scoped | 13 | 0.72 | 0.68 |  |
+| traffic blackholed by a leftover routing entry | full | 141 | 0.77 | 0.16 | 0.00 / 0.01 |
+|  | scoped | 13 | 0.78 | 0.07 |  |
+| keeping secrets out of version control | full | 141 | 0.97 | 0.63 | 0.00 / 0.01 |
+|  | scoped | 9 | 0.97 | 0.06 |  |
+| opening web addresses by pointing at them | full | 141 | 0.93 | 0.67 | 0.00 / 0.02 |
+|  | scoped | 63 | 0.93 | 0.23 |  |
+| choosing how urgent a ticket is | full | 141 | 0.86 | **0.80** | 0.00 / 0.10 |
+|  | scoped | 63 | 0.85 | 0.55 |  |
+| putting text somewhere it can be pasted later | full | 141 | 0.88 | 0.48 | 0.00 / 0.02 |
+|  | scoped | 36 | 0.86 | 0.14 |  |
+| a cooking recipe for sourdough bread | full | 141 | — | 0.05 | 0.00 / 0.01 |
+|  | scoped | 63 | — | 0.05 |  |
+
+**#158's original run** (with `repo#N` in the request) had the same shape: worst
+genuine hit 0.71, the same single false hit at 0.84, noise max 0.09. Of the 97
+scores both recordings kept (each keeps only expected hits and the top five
+irrelevant), one issue crossed 0.70: `gh-issues-tui#130`, marked acceptable
+either way for "opening web addresses by pointing at them", rose from 0.59 to
+0.74 and is now a hit. No genuine hit fell below the line and no new false hit
+appeared.
 
 "Noise" is the same issue scored twice (full and scoped run): with one issue per
 request nothing else differs, so it is pure model variation — and it is tiny.
 
-The one issue that empties the gap is **`incidents#85` at 0.84** on "choosing how
+The one issue that empties the gap is **`incidents#85`** (0.84 in #158's run,
+0.80 now) on "choosing how
 urgent a ticket is". It is an outage report that opens *"Provisional severity: P2
 … Confirmed P2"* — it records a severity choice. That is ambiguity of meaning,
 not a mechanical fault.
@@ -134,8 +163,8 @@ hit is that report. Semantic search only ever *adds* rows to a union, so a stray
 related row costs little, and a miss costs little too because substring still
 works.
 
-**Fragile at the bottom:** the worst genuine hit, `incidents#82`, scored 0.71 in
-one run and 0.80 in the other, so it can flicker near the line.
+**Fragile at the bottom:** the worst genuine hit, `incidents#82`, has scored
+0.71–0.80 across runs, so it can flicker near the line.
 
 The offline guards pin all of this: that the rule could **not** produce a
 threshold (a future clean gap fails the guard and says to use the rule instead),

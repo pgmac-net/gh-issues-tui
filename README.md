@@ -110,6 +110,7 @@ refresh_interval = 300      # seconds between auto-refreshes, 0 disables (defaul
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
 copy_format = "{owner}/{repo}#{number}"   # `y` clipboard format (default shown)
 infer_priority_ranks = false              # rank non-`priority:` labels (P0, sev1…); needs TYPESAFE_API_KEY (default: false)
+send_issue_text = false                   # send issue text for the readiness badge and semantic `/` search; needs TYPESAFE_API_KEY (default: false)
 
 default_harness = "claude"                # harness `A` launches (unset: `A` asks)
 workspace_roots = ["~/pgmac", "~/projects"]   # searched for a repo's clone

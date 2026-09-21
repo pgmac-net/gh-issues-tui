@@ -3168,7 +3168,6 @@ fn candidates_are_what_every_other_filter_admits() {
         vec!["I_1", "I_2"],
         "repo b is excluded; the text is not applied"
     );
-    assert!(cands.iter().all(|c| c.repo == "a"));
 }
 
 #[test]

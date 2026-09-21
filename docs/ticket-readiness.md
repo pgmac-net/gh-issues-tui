@@ -38,7 +38,9 @@ export TYPESAFE_API_KEY=...   # environment only — never in config
 They authorise different disclosures: a vocabulary of label names, versus the text
 of private issues. See [ADR 0004](adr/0004-issue-text-may-be-sent-behind-a-second-consent.md)
 for why this is one flag covering every feature that sends issue text rather than
-one flag each — turning it on will also enable #157, #158 and #159 as they land.
+one flag each — turning it on also enables [semantic `/` search](semantic-search.md)
+(#158). The other two follow-ups the ADR named, #157 and #159, never sent issue
+text: one became a renderer fix, the other was closed as won't do.
 
 ## What leaves the machine
 

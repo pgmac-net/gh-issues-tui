@@ -55,7 +55,8 @@ pub struct Config {
     pub infer_priority_ranks: bool,
 
     /// Consent to send issue *text* — titles, bodies and comment text — to
-    /// TypeSafe, for the ticket-readiness badge (#160).
+    /// TypeSafe, for the ticket-readiness badge (#160) and semantic `/` search
+    /// (#158).
     ///
     /// Separate from `infer_priority_ranks` because it is a materially larger
     /// disclosure: label names are a vocabulary, a private thread is its

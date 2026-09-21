@@ -1344,3 +1344,20 @@ A rule was **committed before the measurement** (`c3ce53c`, deliberately red): t
 ## Cost
 
 About $0.003 and 4–6 seconds per search, ~150 parallel requests. Substring hits remain instant.
+
+
+# Development log — semantic search stops sending the repo name (2026-09-22)
+
+Work driven by [pgmac-net/gh-issues-tui#183](https://github.com/pgmac-net/gh-issues-tui/issues/183), on branch `183-search-no-repo-name`.
+
+**Found by a docs audit, not by a test.** Checking the TypeSafe docs against the code showed that #158's request carried `"ref": "<repo>#<N>"`. ADR 0004 clause 3 says issue-text state builders take no org or repo argument, and the README said neither consent ever sends the repo name. I wrote that request in #158 and didn't check it against the ADR. The org-exclusion test only looked for the org.
+
+**Fix: structural, not a filter.** `Candidate` no longer has `repo` or `number`, so the request builder cannot send them. The calibration harness filters its scoped runs by id prefix instead. The new test pins the issue object's keys to exactly `{title, body}`. Putting a `ref` back is caught by both that test and the request-digest guard (checked by mutation).
+
+**Re-recorded** (public corpus, ~2 cents), as the digest guard required. The gap is still empty: `incidents#85` at 0.80 (was 0.84) against a worst genuine hit of 0.72 (was 0.71). It is still the only false hit, and all 11 genuine hits still clear 0.70, so the override guards passed unchanged. I first wrote in the docs that no issue crossed 0.70, then checked the two recordings against each other: `gh-issues-tui#130` ("acceptable either way") rose from 0.59 to 0.74. The docs now say so.
+
+**Doc corrections from the same audit:**
+- ADR 0004 and `ticket-readiness.md` said `send_issue_text` would enable #157 and #159. Neither ever sent issue text. The ADR has a dated status note rather than rewritten history.
+- The README config example gains a `send_issue_text` line.
+- The `Config::send_issue_text` comment now names semantic search.
+- `semantic-search.md` gains "Telling whether it is on". Nothing on screen shows it, which the doc now says plainly.
