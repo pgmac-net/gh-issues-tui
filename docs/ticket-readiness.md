@@ -17,7 +17,8 @@ With the feature on, the detail pane carries one extra line:
 readiness: thin — no specifics, criteria
 readiness: blocked — waiting on something unresolved
 readiness: ready — is specific and states an outcome
-readiness: unsure — cannot judge blocked
+readiness: may be blocked — worth checking
+readiness: unclear — cannot judge specifics
 ```
 
 ## Turning it on
@@ -117,16 +118,40 @@ Vetoes are checked first and named individually, because they do not compensate:
 
 ```
 blocked    > 0.7   -> "blocked"
-duplicate  > 0.7   -> "may be a duplicate"
+duplicate  > 0.7   -> "already covered"
 actionable < 0.3   -> "not a work item"
-specifics, criteria, blocked or duplicate undecided -> "unsure — cannot judge <which>"
+blocked undecided      -> "may be blocked — worth checking"
+duplicate undecided    -> "may be a duplicate — worth checking"
+specifics/criteria undecided -> "unclear — cannot judge <which>"
 otherwise, from specifics and criteria:
   both present -> "ready"
   either absent -> "thin — no <which>"
 ```
 
+**Two kinds of hedge, because they mean different things (#175).** A veto hedge
+("may be blocked") is *advice*: the thread mentions something outstanding, so go and
+read it. A quality hedge ("unclear — cannot judge specifics") is the model declining
+to answer. They used to share one `unsure — cannot judge …` line, which undersold
+the first — `docker-registry-walk#96`'s thread really does say "Blocked on Step 0".
+
+- **A veto hedge wins alone.** If a possible blocker and an undecided quality signal
+  occur together, only "may be blocked" is shown, and `blocked` before `duplicate`.
+  That mirrors the decisive checks, keeps a quality hedge from burying a blocker
+  whose miss costs a whole agent run, and keeps the line short. No corpus ticket
+  exercises this, so it is pinned by unit test rather than by measurement.
+- **The decisive duplicate is stated, not hedged.** It used to read "may be a
+  duplicate", which is the natural wording for the hedge. Since #170 the decisive
+  case is two real duplicates at 0.86 and 0.97, each a quoted claim in the thread, so
+  it is now "already covered — said to be done elsewhere".
+- **Hedged vetoes take the warning colour**, like the decisive ones — a possible
+  blocker prompts the same action as a confirmed one. The text carries the certainty;
+  the colour carries "needs your eyes". Quality hedges and `thin` stay dim.
+- **Every line fits a 58-column pane** with its `readiness: ` prefix (the detail pane
+  is 60% of width). The longest used to be 73 characters and wrapped into a second
+  metadata row; a test keeps it from wrapping again.
+
 **The verdict reads every signal one-sidedly, and only the signals a claim rests on
-earn an `unsure`.** `actionable` is consumed only as `< 0.3`, so a middling value
+earn a hedge.** `actionable` is consumed only as `< 0.3`, so a middling value
 just means *not vetoed*; hedging on it makes a well-specified bug report read
 `unsure` for a property nothing depends on (#169).
 
@@ -279,7 +304,7 @@ defensible: it is a quoted sentence I demonstrably did not read, not a re-judgem
 `docker-registry-walk#59` (0.54, asserted `no`) is now the case that sets the no-end,
 and is left alone — its body says "gh-issues-tui already has a mature version of
 this", which is arguable but not factually wrong, and re-marking it would be the
-re-judgement this corpus does not allow. It reads `unsure — cannot judge duplicate`,
+re-judgement this corpus does not allow. It reads `may be a duplicate — worth checking`,
 a false hedge rather than a false veto.
 
 What #168 got right, and stands: the **round-2 rewording** ("has the work already
@@ -298,9 +323,9 @@ cases now score at most 0.43.
 
 ### Consequence for the badge
 
-`unsure` on 7 of 22 cases (14 before #169, 9 before #171, 8 before #170), with 8
+A hedge on 7 of 22 cases (14 before #169, 9 before #171, 8 before #170), with 8
 `ready` (from 1) and the five vetoes unchanged. It is more useful than it was, but it
-still declines to speak on 7 tickets, and `specifics` does not separate. **Treat it as unproven until the follow-ups land:**
+still hedges on 7 tickets, and `specifics` does not separate. The 7 are now two kinds: 2 veto hedges and 5 quality hedges (#175). **Treat it as unproven until the follow-ups land:**
 
 | finding | ticket |
 |---|---|
@@ -340,19 +365,19 @@ number was compared to it.
 | `nagios-public-status-page#69` | 0.88 | 0.85 | 0.63 | 0.04 | 0.23 | ready |
 | `nagios-public-status-page#60` | 0.95 | 0.90 | 0.50 | 0.13 | 0.25 | ready |
 | `nagios-public-status-page#67` | 0.94 | 0.91 | 0.57 | 0.08 | 0.18 | ready |
-| `nagios-public-status-page#71` | 0.94 | 0.94 | 0.55 | 0.03 | 0.97 | may be a duplicate |
+| `nagios-public-status-page#71` | 0.94 | 0.94 | 0.55 | 0.03 | 0.97 | already covered |
 | `incidents#48` | 0.83 | 0.91 | 0.94 | 0.07 | 0.03 | ready |
-| `docker-registry-walk#59` | 0.93 | 0.91 | 0.54 | 0.07 | 0.54 ! | unsure |
-| `docker-registry-walk#96` | 0.81 | 0.88 | 0.46 | 0.43 ! | 0.12 | unsure |
-| `incidents#86` | 0.93 | 0.88 · | 0.46 | 0.04 | 0.86 | may be a duplicate |
+| `docker-registry-walk#59` | 0.93 | 0.91 | 0.54 | 0.07 | 0.54 ! | may be a duplicate |
+| `docker-registry-walk#96` | 0.81 | 0.88 | 0.46 | 0.43 ! | 0.12 | may be blocked |
+| `incidents#86` | 0.93 | 0.88 · | 0.46 | 0.04 | 0.86 | already covered |
 | `incidents#49` | 0.77 | 0.23 | 0.96 | 0.13 | 0.06 | thin |
-| `Docker-Nagios#1` | 0.28 | 0.45 ! | 0.87 | 0.08 | 0.03 | unsure |
-| `incidents#72` | 0.59 ! | 0.60 · | 0.69 | 0.11 | 0.05 | unsure |
+| `Docker-Nagios#1` | 0.28 | 0.45 ! | 0.87 | 0.08 | 0.03 | unclear |
+| `incidents#72` | 0.59 ! | 0.60 · | 0.69 | 0.11 | 0.05 | unclear |
 | `gh-issues-tui#60` | 0.16 | 0.13 | 0.83 · | 0.12 | 0.04 | thin |
 | `Docker-Nagios#3` | 0.12 | 0.06 | 0.16 · | 0.10 | 0.32 · | not a work item |
-| `Docker-Nagios#4` | 0.48 ! | 0.82 | 0.94 | 0.12 | 0.03 | unsure |
-| `metasearch#22` | 0.42 · | 0.60 ! | 0.50 | 0.07 | 0.05 | unsure |
-| `metasearch#19` | 0.67 · | 0.77 · | 0.34 | 0.04 | 0.17 | unsure |
+| `Docker-Nagios#4` | 0.48 ! | 0.82 | 0.94 | 0.12 | 0.03 | unclear |
+| `metasearch#22` | 0.42 · | 0.60 ! | 0.50 | 0.07 | 0.05 | unclear |
+| `metasearch#19` | 0.67 · | 0.77 · | 0.34 | 0.04 | 0.17 | unclear |
 | `gh-issues-tui#129` | 0.86 | 0.85 | 0.64 | 0.07 | 0.04 | ready |
 | `gh-issues-tui#130` | 0.11 | 0.08 | 0.13 | 0.19 | 0.03 | not a work item |
 | `tremendous-cve#10` | 0.80 · | 0.71 · | 0.06 | 0.06 | 0.30 · | not a work item |
