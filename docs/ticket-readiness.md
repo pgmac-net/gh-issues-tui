@@ -198,21 +198,23 @@ For each signal, the worst case a reader marked `no` against the worst marked
 
 | signal | n(yes) | n(no) | worst no | worst yes | separates? |
 |---|---|---|---|---|---|
-| `specifics` | 14 | 5 | 0.58 | 0.49 | **no, by 0.09** — but see below |
-| `criteria` | 13 | 5 | 0.44 | 0.59 | yes |
-| `blocked` | 0 | 22 | 0.49 | — | `yes` side **unmeasured** |
-| `duplicate` | 1 | 19 | 0.97 | 0.87 | **no** |
+| `specifics` | 14 | 5 | 0.59 | 0.48 | **no, by 0.11** — but see below |
+| `criteria` | 13 | 5 | 0.45 | 0.60 | yes |
+| `blocked` | 0 | 22 | 0.43 | — | `yes` side **unmeasured** |
+| `duplicate` | 2 | 18 | 0.54 | 0.86 | **yes** — corrected in #170, see below |
 
 `actionable` is deliberately not in that table. It is read only as `< NO`, so it has
 no yes-side to separate: 18 cases are asserted *not vetoed* and 2 asserted vetoed,
-and `NO` must fall in **(0.13, 0.39]** — above the worst vetoed case and no higher
+and `NO` must fall in **(0.13, 0.34]** — above the worst vetoed case and no higher
 than the worst real work item. `NO = 0.3` does.
 
 Probabilities drift between runs. The same wordings and model, re-recorded for
 #169, moved by up to 0.22; that was all on `gh-issues-tui#168`, a live ticket
 whose thread had grown in between, so it is real input change rather than
 necessarily model noise — but the two cannot be cleanly separated, so treat
-differences of ~0.1–0.2 as within noise.
+differences of ~0.1–0.2 as within noise. Re-recorded again for #170 on unchanged
+wordings, drift was at most 0.06.
+
 ### What that means for each question
 
 **`actionable` works, and #168 wrongly reported that it did not.** The veto fires
@@ -244,13 +246,13 @@ feature spec can both satisfy it. Measured:
 - The three cases where `repro` was the sole reason for `unsure` all resolved:
   `incidents#48` 0.59→0.82 and `#75` 0.36→0.78 read `ready`; `#49` 0.40→0.77 now
   reads `thin — no criteria`, correctly, for an investigation with no definition of done.
-- **It still does not separate**: worst no 0.58, worst yes 0.49, inverted by 0.09
-  (was 0.33).
+- **It still does not separate**: worst no 0.59, worst yes 0.48, inverted by 0.11
+  (was 0.33 for `repro`).
 
 **That inversion rests entirely on two cases**, both flagged as hard before any
 measurement: `incidents#72` (asserted `no`; names concrete wants but says it needs
 brainstorming — the one expectation I hesitated on) and `Docker-Nagios#4` (asserted
-`yes`; the anchor case). Set those two aside and the rest separate at **0.29 .. 0.76**.
+`yes`; the anchor case). Set those two aside and the rest separate at **0.28 .. 0.74**.
 
 Neither was re-marked after the result. Moving `incidents#72` to unasserted would
 make the gap positive, which is exactly why it was not done: the expectations were
@@ -258,31 +260,53 @@ committed before the measurement so that this could not be quietly adjusted.
 `specifics` is therefore a better signal than `repro` that is still not a threshold
 one can defend.
 
-**`duplicate` conflates "covered somewhere else" with "this ticket is finished".**
-A closed thread ends in its own "Work complete", so any wording asking whether the
-work is already done reads as true. A rewording during calibration made this
-worse — six false positives against one true positive — and was reverted. It needs
-redesign, not rewording.
+**`duplicate` works, and #168 wrongly reported that it did not (#170).** The veto
+fires on exactly the two real duplicates — `incidents#86` ("Addressed in #87
+(merged)", still open) and `nagios-public-status-page#71` ("Already fixed by 5e6e6e9
+(PR #70, merged)") — and on nothing else. The gap is 0.54 .. 0.86, and `YES = 0.7`
+sits inside it.
+
+The original finding was mine and it was wrong, in the same way as `actionable`'s but
+for a different reason. #168 marked `nagios-public-status-page#71` as *not* a
+duplicate and reported its 0.97 as a false positive — "a citation is being read as a
+coverage claim". It is not a citation. Its only comment says it was already fixed,
+and `#67`'s merge comment independently says it fixed `#71` along the way. **I judged
+the ticket from its body and never read the thread**; the model read the thread and
+was right. Correcting that one expectation takes the gap from −0.10 to +0.32.
+
+That is a change to an expectation after seeing the result, so it has to be
+defensible: it is a quoted sentence I demonstrably did not read, not a re-judgement.
+`docker-registry-walk#59` (0.54, asserted `no`) is now the case that sets the no-end,
+and is left alone — its body says "gh-issues-tui already has a mature version of
+this", which is arguable but not factually wrong, and re-marking it would be the
+re-judgement this corpus does not allow. It reads `unsure — cannot judge duplicate`,
+a false hedge rather than a false veto.
+
+What #168 got right, and stands: the **round-2 rewording** ("has the work already
+been done … nothing left to do here") really did produce six false positives, because
+a closed thread ends in its own "Work complete" and that wording is true of any
+finished ticket. It was reverted. The claim that the *current* wording has that
+problem is what was wrong.
 
 **`blocked` was fixed during calibration.** As shipped in #167 it fired on seven
 tickets with no blocker at all, up to 0.70, because "waiting on … a decision" is
 true of any vague ticket. It now names an *external* dependency and says outright
 that vague, undesigned, unscheduled or under-investigation is not blocked. All 22
-cases now score at most 0.49.
+cases now score at most 0.43.
 
 **`criteria` is the one signal that works** as intended.
 
 ### Consequence for the badge
 
-`unsure` on 8 of 22 cases (14 before #169, 9 before #171), with 7 `ready` (from 1)
-and the five vetoes unchanged. It is more useful than it was, but it still declines to
-speak on 8 tickets, and `specifics` and `duplicate` do not separate. **Treat it as unproven until the follow-ups land:**
+`unsure` on 7 of 22 cases (14 before #169, 9 before #171, 8 before #170), with 8
+`ready` (from 1) and the five vetoes unchanged. It is more useful than it was, but it
+still declines to speak on 7 tickets, and `specifics` does not separate. **Treat it as unproven until the follow-ups land:**
 
 | finding | ticket |
 |---|---|
 | ~~`actionable` under-reads real work~~ — the veto was right; the undecided check was two-sided. Fixed | [#169](https://github.com/pgmac-net/gh-issues-tui/issues/169) |
-| `duplicate` conflates "covered elsewhere" with "finished" | [#170](https://github.com/pgmac-net/gh-issues-tui/issues/170) |
-| ~~`repro` asks two questions at once~~ — replaced by `specifics`, which improved but is still inverted by 0.09 on two contested cases | [#171](https://github.com/pgmac-net/gh-issues-tui/issues/171) |
+| ~~`duplicate` conflates "covered elsewhere" with "finished"~~ — it works; the expectation was wrong, not the question. Corrected | [#170](https://github.com/pgmac-net/gh-issues-tui/issues/170) |
+| ~~`repro` asks two questions at once~~ — replaced by `specifics`, which improved but is still inverted by 0.11 on two contested cases | [#171](https://github.com/pgmac-net/gh-issues-tui/issues/171) |
 | the corpus cannot measure `blocked=yes` or `duplicate=yes` | [#172](https://github.com/pgmac-net/gh-issues-tui/issues/172) |
 
 ### The corpus, and its limits
@@ -290,13 +314,20 @@ speak on 8 tickets, and `specifics` and `duplicate` do not separate. **Treat it 
 Public repos only, so any reviewer can open any case and disagree with the
 expectation recorded against it. Expectations were written from reading each
 ticket before any request, and are never edited to make a number pass — only
-wordings change, and every change is disclosed.
+wordings change, and every change is disclosed. **One exception, and it is the
+instructive one:** `nagios-public-status-page#71`'s `duplicate` expectation was
+corrected (#170) because I had judged it from the body without reading its comment.
+That is allowed only when the change is a fact you can quote, and never a
+re-judgement. **Judge an expectation against the whole thread, not the body** — the
+error was in reading, and it survived two rounds of measurement because every later
+number was compared to it.
 
 - **`blocked = yes` is unmeasured.** No open issue in any public `pgmac-net` repo
   is waiting on something unresolved as its thread currently stands. None was
   manufactured.
-- **`duplicate = yes` rests on one case** (`incidents#86`: "Addressed in #87
-  (merged)", still open). One case cannot measure a signal.
+- **`duplicate = yes` rests on two cases** (`incidents#86`, still open, and
+  `nagios-public-status-page#71`, closed). Better than one, still thin: a gap of 0.32
+  measured from two positives is a bound, not a calibration.
 - **The corpus is weighted to closed tickets**, which is out of domain — the badge
   exists to be read *before* starting work. `homelabia` has the variety and 194
   issues, but is private, so its tickets cannot carry committed expectations in a
@@ -306,28 +337,28 @@ wordings change, and every change is disclosed.
 
 | ref | specifics | criteria | actionable | blocked | duplicate | verdict |
 |---|---|---|---|---|---|---|
-| `nagios-public-status-page#69` | 0.88 | 0.83 | 0.65 | 0.04 | 0.27 | ready |
-| `nagios-public-status-page#60` | 0.95 | 0.90 | 0.50 | 0.13 | 0.22 | ready |
-| `nagios-public-status-page#67` | 0.94 | 0.91 | 0.59 | 0.07 | 0.20 | ready |
-| `nagios-public-status-page#71` | 0.95 | 0.94 | 0.53 | 0.03 | 0.97 ! | may be a duplicate |
-| `incidents#48` | 0.82 | 0.91 | 0.95 | 0.07 | 0.03 | ready |
-| `docker-registry-walk#59` | 0.93 | 0.91 | 0.56 | 0.07 | 0.55 ! | unsure |
-| `docker-registry-walk#96` | 0.82 | 0.88 | 0.48 | 0.49 ! | 0.13 | unsure |
-| `incidents#86` | 0.94 | 0.88 · | 0.46 | 0.04 | 0.87 | may be a duplicate |
-| `incidents#49` | 0.77 | 0.22 | 0.97 | 0.12 | 0.06 | thin |
-| `Docker-Nagios#1` | 0.29 | 0.44 ! | 0.86 | 0.09 | 0.03 | unsure |
-| `incidents#72` | 0.58 ! | 0.65 · | 0.71 | 0.10 | 0.05 | unsure |
-| `gh-issues-tui#60` | 0.17 | 0.12 | 0.82 · | 0.11 | 0.04 | thin |
-| `Docker-Nagios#3` | 0.12 | 0.06 | 0.14 · | 0.09 | 0.32 · | not a work item |
-| `Docker-Nagios#4` | 0.49 ! | 0.81 | 0.95 | 0.11 | 0.03 | unsure |
-| `metasearch#22` | 0.43 · | 0.59 ! | 0.47 | 0.06 | 0.04 | unsure |
-| `metasearch#19` | 0.68 · | 0.76 · | 0.39 | 0.04 | 0.16 | unsure |
-| `gh-issues-tui#129` | 0.86 | 0.85 | 0.68 | 0.06 | 0.04 | ready |
-| `gh-issues-tui#130` | 0.11 | 0.08 | 0.13 | 0.19 | 0.04 | not a work item |
-| `tremendous-cve#10` | 0.81 · | 0.68 · | 0.06 | 0.06 | 0.25 · | not a work item |
-| `incidents#75` | 0.78 | 0.77 | 0.97 | 0.08 | 0.28 | ready |
+| `nagios-public-status-page#69` | 0.88 | 0.85 | 0.63 | 0.04 | 0.23 | ready |
+| `nagios-public-status-page#60` | 0.95 | 0.90 | 0.50 | 0.13 | 0.25 | ready |
+| `nagios-public-status-page#67` | 0.94 | 0.91 | 0.57 | 0.08 | 0.18 | ready |
+| `nagios-public-status-page#71` | 0.94 | 0.94 | 0.55 | 0.03 | 0.97 | may be a duplicate |
+| `incidents#48` | 0.83 | 0.91 | 0.94 | 0.07 | 0.03 | ready |
+| `docker-registry-walk#59` | 0.93 | 0.91 | 0.54 | 0.07 | 0.54 ! | unsure |
+| `docker-registry-walk#96` | 0.81 | 0.88 | 0.46 | 0.43 ! | 0.12 | unsure |
+| `incidents#86` | 0.93 | 0.88 · | 0.46 | 0.04 | 0.86 | may be a duplicate |
+| `incidents#49` | 0.77 | 0.23 | 0.96 | 0.13 | 0.06 | thin |
+| `Docker-Nagios#1` | 0.28 | 0.45 ! | 0.87 | 0.08 | 0.03 | unsure |
+| `incidents#72` | 0.59 ! | 0.60 · | 0.69 | 0.11 | 0.05 | unsure |
+| `gh-issues-tui#60` | 0.16 | 0.13 | 0.83 · | 0.12 | 0.04 | thin |
+| `Docker-Nagios#3` | 0.12 | 0.06 | 0.16 · | 0.10 | 0.32 · | not a work item |
+| `Docker-Nagios#4` | 0.48 ! | 0.82 | 0.94 | 0.12 | 0.03 | unsure |
+| `metasearch#22` | 0.42 · | 0.60 ! | 0.50 | 0.07 | 0.05 | unsure |
+| `metasearch#19` | 0.67 · | 0.77 · | 0.34 | 0.04 | 0.17 | unsure |
+| `gh-issues-tui#129` | 0.86 | 0.85 | 0.64 | 0.07 | 0.04 | ready |
+| `gh-issues-tui#130` | 0.11 | 0.08 | 0.13 | 0.19 | 0.03 | not a work item |
+| `tremendous-cve#10` | 0.80 · | 0.71 · | 0.06 | 0.06 | 0.30 · | not a work item |
+| `incidents#75` | 0.78 | 0.77 | 0.97 | 0.07 | 0.27 | ready |
 | `gh-issues-tui#160` | 0.83 | 0.91 | 0.86 | 0.09 | 0.08 | ready |
-| `gh-issues-tui#168` | 0.76 | 0.87 | 0.65 | 0.33 ! | 0.11 | unsure |
+| `gh-issues-tui#168` | 0.74 | 0.86 | 0.65 | 0.28 | 0.10 | ready |
 
 `!` disagrees with the expectation · `·` unasserted
 

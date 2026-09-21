@@ -807,8 +807,15 @@ mod calibration {
         Case {
             repo: "nagios-public-status-page",
             number: 71,
-            expect: [Y, Y, V, N, N],
-            note: "names the offending fixtures and files",
+            // duplicate CORRECTED No -> Yes (#170). Its only comment reads
+            // "Already fixed by 5e6e6e9 (PR #70, merged 2026-07-29)", and #67's
+            // merge comment independently says it fixed #71 along the way. I
+            // marked it `No` in #168 from the body alone and never read the
+            // thread; the model read it and was right at 0.97. This is a fact I
+            // can quote, not a re-judgement after seeing a number — which is the
+            // only kind of change to an expectation this corpus allows.
+            expect: [Y, Y, V, N, Y],
+            note: "comment says 'Already fixed by 5e6e6e9 (PR #70, merged)'; body names the offending fixtures",
         },
         Case {
             repo: "incidents",
@@ -1252,22 +1259,47 @@ query($owner: String!, $name: String!, $number: Int!) {
         assert_eq!(rec.no, NO);
     }
 
-    /// **Known-bad, pinned deliberately.** `duplicate` does not separate: the
-    /// worst asserted `no` scores *above* the worst asserted `yes`, so no
-    /// threshold can split it.
+    /// `duplicate` separates, and its veto is right on both real duplicates.
     ///
-    /// It conflates "covered somewhere else" with "this ticket is finished", and
-    /// a closed thread ends in its own completion notice (#170). Needs redesign,
-    /// not rewording. When that lands, this test changes.
+    /// #168 reported the opposite — worst asserted `no` 0.97 above worst asserted
+    /// `yes` 0.87 — and #170 was filed as "needs redesign". Both rested on one
+    /// wrong expectation: `nagios-public-status-page#71` was marked `no` from its
+    /// body, but its only comment says "Already fixed by 5e6e6e9 (PR #70,
+    /// merged)". The model read the comment and was right. Corrected in the commit
+    /// before this one was recorded.
+    ///
+    /// The veto reads `duplicate` as `> YES`, so what has to hold is that it fires
+    /// on the asserted `yes` cases and on none of the asserted `no` ones — not a
+    /// two-sided gap. It also has to hold that `YES` sits inside the measured gap,
+    /// or moving it would change that.
     #[test]
-    fn duplicate_does_not_separate_and_that_is_recorded() {
+    fn duplicate_separates_and_its_veto_is_right() {
         let rec = recording();
         let (worst_no, worst_yes) = gap(&rec, Signal::Duplicate).expect("both sides asserted");
         assert!(
-            worst_no > worst_yes,
-            "`duplicate` now separates ({worst_no:.2} .. {worst_yes:.2}) \u{2014} good news, \
-             but the claims in the docs and this test must be updated"
+            worst_no < worst_yes,
+            "`duplicate` stopped separating ({worst_no:.2} .. {worst_yes:.2}) \u{2014} {RECALIBRATE}"
         );
+        assert!(
+            worst_no < YES && YES <= worst_yes,
+            "YES = {YES} is outside duplicate's gap ({worst_no:.2} .. {worst_yes:.2}]"
+        );
+        for c in &rec.cases {
+            let p = c.probabilities["duplicate"];
+            match c.expect["duplicate"] {
+                Expect::Yes => assert!(
+                    p > YES,
+                    "{} is a real duplicate but scores {p:.2} and escapes the veto",
+                    c.r#ref
+                ),
+                Expect::No => assert!(
+                    p <= YES,
+                    "{} is not a duplicate but scores {p:.2} and would be vetoed",
+                    c.r#ref
+                ),
+                _ => {}
+            }
+        }
     }
 
     /// **Pinned as measured (#171).** `specifics` replaced `repro`, whose gap was
