@@ -78,7 +78,7 @@
         "duplicate": 0.97,
         "specifics": 0.94
       },
-      "verdict": "may be a duplicate — the thread says this is covered elsewhere"
+      "verdict": "already covered — said to be done elsewhere"
     },
     {
       "ref": "pgmac-net/incidents#48",
@@ -116,7 +116,7 @@
         "duplicate": 0.54,
         "specifics": 0.93
       },
-      "verdict": "unsure — cannot judge duplicate"
+      "verdict": "may be a duplicate — worth checking"
     },
     {
       "ref": "pgmac-net/docker-registry-walk#96",
@@ -135,7 +135,7 @@
         "duplicate": 0.12,
         "specifics": 0.81
       },
-      "verdict": "unsure — cannot judge blocked"
+      "verdict": "may be blocked — worth checking"
     },
     {
       "ref": "pgmac-net/incidents#86",
@@ -154,7 +154,7 @@
         "duplicate": 0.86,
         "specifics": 0.93
       },
-      "verdict": "may be a duplicate — the thread says this is covered elsewhere"
+      "verdict": "already covered — said to be done elsewhere"
     },
     {
       "ref": "pgmac-net/incidents#49",
@@ -192,7 +192,7 @@
         "duplicate": 0.03,
         "specifics": 0.28
       },
-      "verdict": "unsure — cannot judge criteria"
+      "verdict": "unclear — cannot judge criteria"
     },
     {
       "ref": "pgmac-net/incidents#72",
@@ -211,7 +211,7 @@
         "duplicate": 0.05,
         "specifics": 0.59
       },
-      "verdict": "unsure — cannot judge specifics, criteria"
+      "verdict": "unclear — cannot judge specifics, criteria"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#60",
@@ -268,7 +268,7 @@
         "duplicate": 0.03,
         "specifics": 0.48
       },
-      "verdict": "unsure — cannot judge specifics"
+      "verdict": "unclear — cannot judge specifics"
     },
     {
       "ref": "pgmac-net/metasearch#22",
@@ -287,7 +287,7 @@
         "duplicate": 0.05,
         "specifics": 0.42
       },
-      "verdict": "unsure — cannot judge specifics, criteria"
+      "verdict": "unclear — cannot judge specifics, criteria"
     },
     {
       "ref": "pgmac-net/metasearch#19",
@@ -306,7 +306,7 @@
         "duplicate": 0.17,
         "specifics": 0.67
       },
-      "verdict": "unsure — cannot judge specifics"
+      "verdict": "unclear — cannot judge specifics"
     },
     {
       "ref": "pgmac-net/gh-issues-tui#129",

@@ -302,8 +302,15 @@ pub(super) fn comment_card_lines_links(
 /// "ready" is the unremarkable case.
 fn verdict_colour(verdict: &Verdict, t: &Theme) -> Color {
     match verdict {
-        Verdict::Blocked | Verdict::MaybeDuplicate | Verdict::NotActionable => t.warning,
-        Verdict::Unsure(_) | Verdict::Thin(_) => t.dim,
+        // A possible blocker or duplicate prompts the same action as a confirmed
+        // one — go and read the thread — so it takes the same colour. The text
+        // carries the certainty; the colour carries "needs your eyes" (#175).
+        Verdict::Blocked
+        | Verdict::AlreadyCovered
+        | Verdict::NotActionable
+        | Verdict::MaybeBlocked
+        | Verdict::MaybeDuplicate => t.warning,
+        Verdict::Unclear(_) | Verdict::Thin(_) => t.dim,
         Verdict::Ready => t.assignee,
     }
 }
@@ -681,7 +688,7 @@ mod tests {
 mod readiness_tests {
     use super::super::testutil::issue;
     use super::*;
-    use crate::typesafe::readiness::Readiness;
+    use crate::typesafe::readiness::{Readiness, Signal};
 
     fn ready() -> Readiness {
         Readiness {
@@ -769,6 +776,31 @@ mod readiness_tests {
         );
     }
 
+    /// A possible blocker or duplicate takes the same colour as a confirmed one,
+    /// because it prompts the same action — go and read the thread — while a
+    /// quality hedge stays dim (#175). Otherwise the split would be text-only and
+    /// "this is advice" would be lost visually.
+    #[test]
+    fn hedged_vetoes_are_warning_coloured_and_quality_hedges_are_dim() {
+        let t = Theme::default();
+        assert_ne!(t.warning, t.dim, "the test needs two distinct colours");
+        for v in [
+            Verdict::Blocked,
+            Verdict::AlreadyCovered,
+            Verdict::NotActionable,
+            Verdict::MaybeBlocked,
+            Verdict::MaybeDuplicate,
+        ] {
+            assert_eq!(verdict_colour(&v, &t), t.warning, "{v:?}");
+        }
+        for v in [
+            Verdict::Unclear(vec![Signal::Specifics]),
+            Verdict::Thin(vec![Signal::Criteria]),
+        ] {
+            assert_eq!(verdict_colour(&v, &t), t.dim, "{v:?}");
+        }
+    }
+
     #[test]
     fn an_undecided_ticket_does_not_claim_a_verdict() {
         let unsure = Readiness {
@@ -776,7 +808,7 @@ mod readiness_tests {
             ..ready()
         };
         let line = badge(&unsure);
-        assert!(line.contains("unsure"), "{line}");
+        assert!(line.contains("unclear"), "{line}");
         assert!(
             !line.contains("ready \u{2014}"),
             "must not claim ready: {line}"

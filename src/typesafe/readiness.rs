@@ -47,7 +47,7 @@ pub const BODY_CHARS: usize = 4000;
 /// one-sidedly —
 ///
 /// ```text
-/// blocked    > YES  ->  Blocked          duplicate  > YES  ->  MaybeDuplicate
+/// blocked    > YES  ->  Blocked          duplicate  > YES  ->  AlreadyCovered
 /// actionable < NO   ->  NotActionable    specifics/criteria < NO  ->  Thin
 /// ```
 ///
@@ -243,7 +243,7 @@ impl Readiness {
             return Verdict::Blocked;
         }
         if self.duplicate > YES {
-            return Verdict::MaybeDuplicate;
+            return Verdict::AlreadyCovered;
         }
         if self.actionable < NO {
             return Verdict::NotActionable;
@@ -256,8 +256,18 @@ impl Readiness {
             .copied()
             .filter(|s| (NO..=YES).contains(&self.get(*s)))
             .collect();
+        // A possible veto is reported alone, and blocked before duplicate — the
+        // decisive checks above run in that order too. Missing a blocker costs a
+        // whole agent run, so a quality hedge must not bury it, and one line is
+        // all the badge has room for.
+        if undecided.contains(&Signal::Blocked) {
+            return Verdict::MaybeBlocked;
+        }
+        if undecided.contains(&Signal::Duplicate) {
+            return Verdict::MaybeDuplicate;
+        }
         if !undecided.is_empty() {
-            return Verdict::Unsure(undecided);
+            return Verdict::Unclear(undecided);
         }
         let missing: Vec<Signal> = [Signal::Specifics, Signal::Criteria]
             .into_iter()
@@ -293,13 +303,23 @@ impl Readiness {
 pub enum Verdict {
     /// Waiting on something unresolved.
     Blocked,
-    /// The thread says this is already covered elsewhere.
-    MaybeDuplicate,
+    /// The thread says this work is already done or covered elsewhere. A quoted
+    /// claim in the thread, so it is stated rather than hedged (#170).
+    AlreadyCovered,
     /// Not a piece of work.
     NotActionable,
-    /// These signals landed between the thresholds.
-    Unsure(Vec<Signal>),
-    /// A specifics and a stated outcome.
+    /// `blocked` landed between the thresholds: possibly waiting on something.
+    ///
+    /// A *possibility*, not a model failure — the reader should go and look. It
+    /// is kept apart from [`Verdict::Unclear`] because missing a blocker costs a
+    /// whole agent run, and both render in the warning colour.
+    MaybeBlocked,
+    /// `duplicate` landed between the thresholds: possibly covered elsewhere.
+    MaybeDuplicate,
+    /// These *quality* signals landed between the thresholds, so the model
+    /// could not tell. Never carries a veto signal: a veto hedge wins alone.
+    Unclear(Vec<Signal>),
+    /// It is specific and states an outcome.
     Ready,
     /// Workable, but these are absent.
     Thin(Vec<Signal>),
@@ -311,13 +331,13 @@ impl Verdict {
         let names = |s: &[Signal]| s.iter().map(|s| s.id()).collect::<Vec<_>>().join(", ");
         match self {
             Verdict::Blocked => "blocked \u{2014} waiting on something unresolved".into(),
-            Verdict::MaybeDuplicate => {
-                "may be a duplicate \u{2014} the thread says this is covered elsewhere".into()
-            }
+            Verdict::AlreadyCovered => "already covered \u{2014} said to be done elsewhere".into(),
+            Verdict::MaybeBlocked => "may be blocked \u{2014} worth checking".into(),
+            Verdict::MaybeDuplicate => "may be a duplicate \u{2014} worth checking".into(),
             Verdict::NotActionable => {
                 "not a work item \u{2014} reads as a question or update".into()
             }
-            Verdict::Unsure(s) => format!("unsure \u{2014} cannot judge {}", names(s)),
+            Verdict::Unclear(s) => format!("unclear \u{2014} cannot judge {}", names(s)),
             Verdict::Ready => "ready \u{2014} is specific and states an outcome".into(),
             Verdict::Thin(s) => format!("thin \u{2014} no {}", names(s)),
         }
@@ -361,7 +381,7 @@ mod tests {
             Verdict::Ready,
             Verdict::Thin(vec![Signal::Specifics]),
             Verdict::Thin(vec![Signal::Specifics, Signal::Criteria]),
-            Verdict::Unsure(vec![Signal::Specifics]),
+            Verdict::Unclear(vec![Signal::Specifics]),
         ] {
             let line = verdict.line();
             assert!(
@@ -387,8 +407,11 @@ mod tests {
                 Verdict::Blocked,
             ),
             (
+                // Decisive, so `AlreadyCovered`. `MaybeDuplicate` still
+                // compiles here but now means the *hedge* — a silent trap
+                // when #175 split the two.
                 |r: &mut Readiness| r.duplicate = 0.88,
-                Verdict::MaybeDuplicate,
+                Verdict::AlreadyCovered,
             ),
             (
                 |r: &mut Readiness| r.actionable = 0.05,
@@ -468,7 +491,7 @@ mod tests {
             };
             assert_eq!(
                 r.verdict(),
-                Verdict::Unsure(vec![Signal::Specifics]),
+                Verdict::Unclear(vec![Signal::Specifics]),
                 "specifics = {p} should not resolve either way"
             );
         }
@@ -516,14 +539,26 @@ mod tests {
     fn every_hedged_signal_still_hedges_when_undecided() {
         for signal in HEDGED {
             let mut r = ready();
-            match signal {
-                Signal::Specifics => r.specifics = 0.5,
-                Signal::Criteria => r.criteria = 0.5,
-                Signal::Blocked => r.blocked = 0.5,
-                Signal::Duplicate => r.duplicate = 0.5,
+            let expected = match signal {
+                Signal::Specifics => {
+                    r.specifics = 0.5;
+                    Verdict::Unclear(vec![Signal::Specifics])
+                }
+                Signal::Criteria => {
+                    r.criteria = 0.5;
+                    Verdict::Unclear(vec![Signal::Criteria])
+                }
+                Signal::Blocked => {
+                    r.blocked = 0.5;
+                    Verdict::MaybeBlocked
+                }
+                Signal::Duplicate => {
+                    r.duplicate = 0.5;
+                    Verdict::MaybeDuplicate
+                }
                 Signal::Actionable => unreachable!("not hedged"),
-            }
-            assert_eq!(r.verdict(), Verdict::Unsure(vec![signal]), "{signal:?}");
+            };
+            assert_eq!(r.verdict(), expected, "{signal:?}");
         }
     }
 
@@ -557,8 +592,93 @@ mod tests {
             blocked: 0.5,
             ..ready()
         };
-        assert_eq!(r.verdict(), Verdict::Unsure(vec![Signal::Blocked]));
-        assert_eq!(r.verdict().line(), "unsure \u{2014} cannot judge blocked");
+        assert_eq!(r.verdict(), Verdict::MaybeBlocked);
+        assert_eq!(r.verdict().line(), "may be blocked \u{2014} worth checking");
+    }
+
+    /// The mixed case, which no corpus ticket exercises (#175): a possible veto
+    /// and an undecided quality signal at once. The veto hedge wins **alone**, so
+    /// a quality hedge cannot bury a possible blocker, and the line stays short.
+    /// Pinned by construction because there is no measured example to rely on.
+    #[test]
+    fn a_veto_hedge_wins_alone_over_a_quality_hedge() {
+        let with_blocked = Readiness {
+            specifics: 0.5,
+            criteria: 0.5,
+            blocked: 0.5,
+            ..ready()
+        };
+        assert_eq!(with_blocked.verdict(), Verdict::MaybeBlocked);
+        assert!(
+            !with_blocked.verdict().line().contains("specifics"),
+            "the quality hedge must not appear: {}",
+            with_blocked.verdict().line()
+        );
+
+        let with_duplicate = Readiness {
+            specifics: 0.5,
+            duplicate: 0.5,
+            ..ready()
+        };
+        assert_eq!(with_duplicate.verdict(), Verdict::MaybeDuplicate);
+        assert!(!with_duplicate.verdict().line().contains("specifics"));
+    }
+
+    /// Both veto signals undecided: blocked first, mirroring the decisive checks,
+    /// which also test `blocked` before `duplicate`.
+    #[test]
+    fn blocked_is_reported_before_duplicate_when_both_are_undecided() {
+        let r = Readiness {
+            blocked: 0.5,
+            duplicate: 0.5,
+            ..ready()
+        };
+        assert_eq!(r.verdict(), Verdict::MaybeBlocked);
+    }
+
+    /// A hedge and its decisive sibling must read differently. The collision
+    /// between the two was the ticket's own mistake: `MaybeDuplicate` rendered the
+    /// *decisive* case until #175, so "may be a duplicate" was under-claiming a
+    /// quoted statement in the thread.
+    #[test]
+    fn a_hedged_veto_never_reads_like_its_decisive_form() {
+        assert_ne!(Verdict::MaybeBlocked.line(), Verdict::Blocked.line());
+        assert_ne!(
+            Verdict::MaybeDuplicate.line(),
+            Verdict::AlreadyCovered.line()
+        );
+        // The decisive duplicate states rather than hedges.
+        assert!(!Verdict::AlreadyCovered.line().contains("may be"));
+        assert!(Verdict::MaybeDuplicate.line().starts_with("may be"));
+        assert!(Verdict::MaybeBlocked.line().starts_with("may be"));
+    }
+
+    /// Every badge line, with its `readiness: ` prefix, fits the detail pane's
+    /// inner width at a 120-column terminal (60% of width, less borders). The
+    /// longest line used to be 73 characters and wrapped into a second metadata
+    /// row that `body_content_height` then had to count; this keeps it from
+    /// silently starting to wrap again.
+    #[test]
+    fn every_badge_line_fits_a_58_column_pane() {
+        const PREFIX: &str = "readiness: ";
+        const INNER_WIDTH: usize = 58;
+        for verdict in [
+            Verdict::Blocked,
+            Verdict::AlreadyCovered,
+            Verdict::NotActionable,
+            Verdict::MaybeBlocked,
+            Verdict::MaybeDuplicate,
+            Verdict::Unclear(vec![Signal::Specifics, Signal::Criteria]),
+            Verdict::Ready,
+            Verdict::Thin(vec![Signal::Specifics, Signal::Criteria]),
+        ] {
+            let width = PREFIX.chars().count() + verdict.line().chars().count();
+            assert!(
+                width <= INNER_WIDTH,
+                "`{PREFIX}{}` is {width} columns and wraps at {INNER_WIDTH}",
+                verdict.line()
+            );
+        }
     }
 
     #[test]
@@ -1220,6 +1340,14 @@ query($owner: String!, $name: String!, $number: Int!) {
         ))
     }
 
+    /// Whether a recorded verdict line is a hedge — the model could not call a
+    /// signal the verdict rests on. Defined once, because #175 split the old
+    /// `unsure` line into `unclear` (quality) and `may be …` (veto), and a filter
+    /// still matching `unsure` would match nothing and pass **vacuously**.
+    fn is_hedge(verdict_line: &str) -> bool {
+        verdict_line.starts_with("unclear") || verdict_line.starts_with("may be ")
+    }
+
     /// The recording and the corpus must describe the same cases, or the
     /// committed numbers are about tickets nobody listed.
     #[test]
@@ -1426,12 +1554,21 @@ query($owner: String!, $name: String!, $number: Int!) {
         }
     }
 
-    /// An in-band `actionable` must not be what makes a ticket `unsure` (#169).
-    /// Every recorded `unsure` has a hedged signal in the band.
+    /// An in-band `actionable` must not be what makes a ticket hedge (#169).
+    ///
+    /// Non-vacuous on purpose: it first asserts that hedges *exist* in the
+    /// recording, because renaming the hedge lines (#175) once left the filter
+    /// matching nothing, and a loop over zero cases proves nothing.
     #[test]
-    fn no_recorded_unsure_rests_on_actionable_alone() {
+    fn no_recorded_hedge_rests_on_actionable() {
         let rec = recording();
-        for c in rec.cases.iter().filter(|c| c.verdict.starts_with("unsure")) {
+        let hedges: Vec<_> = rec.cases.iter().filter(|c| is_hedge(&c.verdict)).collect();
+        assert!(
+            hedges.len() >= 5,
+            "only {} recorded hedges \u{2014} is `is_hedge` matching the verdict lines?",
+            hedges.len()
+        );
+        for c in hedges {
             assert!(
                 !c.verdict.contains("actionable"),
                 "{}: `{}` \u{2014} actionable must not be reported as undecided",
@@ -1562,14 +1699,11 @@ query($owner: String!, $name: String!, $number: Int!) {
                  work item is vetoed"
             );
         }
-        let unsure = cases
-            .iter()
-            .filter(|c| c.verdict.starts_with("unsure"))
-            .count();
+        let hedged = cases.iter().filter(|c| is_hedge(&c.verdict)).count();
         println!(
-            "\nverdict is `unsure` for {unsure}/{} cases{}",
+            "\nverdict is a hedge for {hedged}/{} cases{}",
             cases.len(),
-            if unsure * 2 > cases.len() {
+            if hedged * 2 > cases.len() {
                 " \u{2014} dominant, so a band is wrong or a question is ambiguous"
             } else {
                 ""

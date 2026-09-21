@@ -1153,3 +1153,51 @@ The **round-2 rewording** really did produce six false positives: "has the work 
 ## What this does not fix
 
 `specifics` is still inverted (0.59 vs 0.48), so the threshold intersection stays **empty** and `YES`/`NO` stay unjustified — confirmed by the offline guard, not assumed. `blocked = yes` is still unmeasured (#172), and `duplicate = yes` now rests on two cases rather than one: better, still thin.
+
+
+# Development log — readiness: split veto hedges from quality hedges (2026-09-21)
+
+Work driven by [pgmac-net/gh-issues-tui#175](https://github.com/pgmac-net/gh-issues-tui/issues/175), on branch `175-readiness-hedge-wording`. Feature notes in [`ticket-readiness.md`](ticket-readiness.md#the-verdict).
+
+`Verdict::Unsure` used one line for two situations. "cannot judge blocked" and "cannot judge specifics" read identically, but the first is *advice* — the thread mentions something outstanding — and the second is the model declining to answer. `docker-registry-walk#96` at 0.45 is the case: its thread really does say "Blocked on Step 0".
+
+## Two things the ticket got wrong
+
+- **The wording it proposed for the hedge was already taken.** `MaybeDuplicate` rendered the *decisive* `duplicate > YES` verdict as "may be a duplicate". #175 proposed "may be a duplicate — check whether it is already covered" for the hedge. Since #170 the decisive case is two real duplicates at 0.86 and 0.97, each a quoted claim in the thread, so "may be" was under-claiming it. The decisive verdict is now `AlreadyCovered` and the hedge takes the natural wording.
+- **The badge already wrapped.** The detail pane is 60% of width, so ~58 columns inner at a 120-column terminal; the longest line was 73 characters and spilled into a second metadata row that `wrapped_height` counts. Tightening the duplicate string, which was being rewritten anyway, brings every line under 58.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| The collision | Firm up the decisive verdict; "may be" becomes the hedge | The decisive case is a quoted claim, so hedging it was always under-claiming |
+| Mixed hedges | The veto hedge wins alone, blocked before duplicate | Mirrors the decisive order and what already happened (a hedge suppressed `thin`); a quality hedge must not bury a possible blocker; keeps the line short |
+| Where precedence lives | Explicit variants in `verdict()` | #169 moved policy out of rendering; `Unsure(vec![Blocked])` no longer says what it renders as |
+| Hedged-veto colour | `warning`, same as decisive vetoes | A possible blocker prompts the same action as a confirmed one; text carries certainty, colour carries "needs your eyes" |
+
+## Two hazards the compiler did not flag
+
+Both were found by reading, and both are worth remembering because they look like a clean build:
+
+1. **A test that compiled but meant something else.** `Verdict::MaybeDuplicate` in `each_veto_fires_on_its_own_and_names_itself` still compiled after the split — the variant exists — but now meant the *hedge*. The test would have asserted the wrong variant for the decisive case. Renaming a variant's meaning while keeping its name is the trap; `AlreadyCovered` was introduced precisely so the decisive case has a new name.
+2. **A filter that silently matched nothing.** Two sites selected recorded verdicts with `starts_with("unsure")`. After the rename that matches zero cases, so `no_recorded_unsure_rests_on_actionable_alone` would have **passed vacuously** — a loop over nothing — and the harness would have printed "0 unsure". `is_hedge` is now defined once, and the guard first asserts that hedges *exist* in the recording. A test loop that can silently iterate zero times proves nothing.
+
+## No API call
+
+Nine of 22 recorded `verdict` strings change. They are derived from the recorded probabilities, so the strings were regenerated from those probabilities rather than by re-running the harness. A live round would have moved the probabilities and made a pure rendering change look like a re-measurement. Probabilities, expectations, refs, notes, the digest and the thresholds are **byte-identical** — checked, not assumed. The strings were generated independently of the Rust code and cross-checked by `the_recorded_verdicts_are_what_the_current_code_says`, which passes.
+
+## Diversions from plan
+
+- **The two silent hazards above** were not in the plan, which listed four tests and expected the compiler to find them. The compiler found three; the fourth compiled and the two string filters weren't type errors at all.
+- **Blocked-before-duplicate** when both veto hedges are undecided was not spelled out in the plan, which said only that "the veto wins alone". I chose the decisive order and pinned it with a test.
+- The plan said tests changed "loudly". True of three; not of the two that mattered most.
+
+## Verification
+
+- `cargo test` — 756 passed, 0 failed (5 new). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- **Mutation-checked five**: a quality hedge taking precedence over a veto hedge; the decisive duplicate reverting to the hedge wording (the original collision); hedged vetoes falling back to dim; a badge line lengthening past the pane; and `is_hedge` matching nothing. Each is caught.
+- Not driven end-to-end against the running app. The badge's rendering path is covered by the golden tests, and the width claim rests on the 60% split and 58-column arithmetic rather than a real terminal at that size.
+
+## What this does not fix
+
+`specifics` is still inverted (0.59 vs 0.48), so the threshold intersection stays empty and `YES`/`NO` are untouched; this changes no measurement. **`MaybeBlocked`'s decisive sibling still has no corpus case** — `blocked = yes` is unmeasured (#172) — so only the hedge is exercised by real data, and the mixed case has no measured example at all.
