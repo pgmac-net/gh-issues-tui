@@ -349,7 +349,9 @@ number was compared to it.
 
 - **`blocked = yes` is unmeasured.** No open issue in any public `pgmac-net` repo
   is waiting on something unresolved as its thread currently stands. None was
-  manufactured.
+  manufactured. Reviewed in #172 and judged non-blocking: #170 and #171 both closed
+  without these cases, and a re-sweep of all open public issues found no new one.
+  Re-check if the public pool gains a genuinely blocked ticket.
 - **`duplicate = yes` rests on two cases** (`incidents#86`, still open, and
   `nagios-public-status-page#71`, closed). Better than one, still thin: a gap of 0.32
   measured from two positives is a bound, not a calibration.

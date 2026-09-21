@@ -1201,3 +1201,34 @@ Nine of 22 recorded `verdict` strings change. They are derived from the recorded
 ## What this does not fix
 
 `specifics` is still inverted (0.59 vs 0.48), so the threshold intersection stays empty and `YES`/`NO` are untouched; this changes no measurement. **`MaybeBlocked`'s decisive sibling still has no corpus case** — `blocked = yes` is unmeasured (#172) — so only the hedge is exercised by real data, and the mixed case has no measured example at all.
+
+
+# Development log — readiness corpus gaps accepted (2026-09-21)
+
+Work driven by [pgmac-net/gh-issues-tui#172](https://github.com/pgmac-net/gh-issues-tui/issues/172), on branch `172-corpus-gaps-accepted`.
+
+**Closed as accepted.** The ticket's first step was to decide whether the `blocked = yes` and `duplicate = yes` gaps were blocking #170 and #171, and close it if not. Neither stalled on them: #170 resolved by correcting one expectation (which also took `duplicate = yes` from one case to two), and #171 was about `specifics` and never depended on either.
+
+Both acceptance criteria were already met by `ticket-readiness.md`, which records why `blocked = yes` is unmeasured and why the corpus leans toward closed tickets.
+
+## The pool was re-checked, not assumed
+
+All 19 open issues across the 13 public `pgmac-net` repos with issues enabled were re-read for blocked and duplicate claims. Unchanged since #168: `incidents#86` is still the only live duplicate, and there is no `blocked = yes` case. The one new match was **#172 itself**, whose body *discusses* "waiting on something unresolved" — the same literal-mindedness trap as #168's own thread, not a blocker.
+
+## Deliberately not done
+
+- **A private corpus over `homelabia`**, the ticket's option 2. It would cover both gaps with real target-domain data, but it is a second code path whose results can never be cited in a public PR, for signals that no longer block anything.
+- **Filing a ticket so it sits blocked**, option 4. Written by the person who wrote the question, it mostly shows the wording agreeing with itself.
+- **Re-recording.** Nothing measured changed, so no API calls.
+
+## Change
+
+One line in the corpus-limits section, saying the gaps were reviewed here and judged non-blocking, so the next reader sees a decision rather than an unexamined hole.
+
+## Diversions from plan
+
+- Implemented on Opus 5, not the Haiku the plan recorded, at the requester's choice.
+
+## Still open, and recorded
+
+`blocked = yes` is unmeasured, so `MaybeBlocked`'s decisive sibling has no corpus case; `duplicate = yes` rests on two cases; `specifics` is inverted by 0.11, so `YES`/`NO` stay unjustified. This ticket's job was to decide whether that was acceptable, not to fix it.
