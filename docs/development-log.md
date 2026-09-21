@@ -1081,3 +1081,75 @@ Verdicts: **7 ready / 8 unsure**, from 6 / 9, with every veto unchanged.
 - Mutation-checked the new guards: reverting the question fails the digest test; putting "has a repro" back fails the badge tests; dropping `specifics` from `HEDGED` fails five.
 - One live round, 22 GitHub fetches and 22 TypeSafe calls, about a third of a cent. Numbers in the docs are refreshed from it rather than carried over — `criteria` and `blocked` both moved by ~0.01–0.02 with unchanged wordings.
 - Not driven end-to-end against the running app; badge rendering is covered by the golden tests, updated for the new wording.
+
+
+# Development log — readiness: duplicate never needed redesign (2026-09-21)
+
+Work driven by [pgmac-net/gh-issues-tui#170](https://github.com/pgmac-net/gh-issues-tui/issues/170), on branch `170-duplicate-corpus-correction`. Corrects a claim from #168; see [`ticket-readiness.md`](ticket-readiness.md).
+
+**The ticket's premise was wrong, and the error was mine, again.** #170 said `duplicate` "conflates covered-elsewhere with this-ticket-is-finished" and "needs redesign, not rewording". It does not. It separates, and needed no code change.
+
+## What was wrong
+
+#168 marked `nagios-public-status-page#71` `duplicate = no`, then reported its 0.97 as a false positive: "a citation is being read as a coverage claim". #170 was filed on that basis and cited it as the proof.
+
+It is not a citation. The ticket's only comment reads:
+
+> **Already fixed** by `5e6e6e9` (PR #70, merged 2026-07-29), which converted the window-dependent fixtures to relative dates.
+
+`#67`'s merge comment independently says it fixed `#71` along the way. **I had judged the ticket from its body and never read its thread.** My own corpus note gave it away: "names the offending fixtures and files" describes the body. The model read the comment and was right.
+
+Correcting that one expectation takes the gap from −0.10 to +0.32. `duplicate` now measures worst no 0.54, worst yes 0.86, `YES = 0.7` sits inside, and the veto fires on exactly the two real duplicates and nothing else.
+
+## Process
+
+1. Phase 1 looked at every `duplicate` measurement and read the three cases that decided it, *before* considering a redesign. That is what overturned the ticket, and it is the same step that overturned #169. It is worth making a habit: **read the cases that set the extremes before believing a "does not separate" claim.**
+2. Two decisions put one at a time; both took the recommended option.
+3. Plan approved before implementation. Planning on Opus 5; the plan rated implementation TRIVIAL/Haiku and flagged that the docs retraction was the part worth a stronger model. Implemented on **Sonnet 5**, at the requester's instruction, and noted on the ticket.
+4. No ADR: a corpus correction and a guard inversion inside a feature whose decisions are already in ADRs 0002–0004.
+
+## The uncomfortable part: changing an expectation after seeing the result
+
+#171 declined to re-mark `incidents#72` and #168–#171 all rest on the rule "no expectation is edited to make a number pass". This ticket edits one. The defence has to be a fact, not an outcome:
+
+- **`npsp#71` `no` → `yes`: corrected.** A quoted sentence I demonstrably did not read makes the expectation wrong on the facts.
+- **`docker-registry-walk#59` stays `no`.** It now sets the no-end at 0.54, and re-marking it would widen the gap to +0.59. Its body says "gh-issues-tui already has a mature version of this", which is arguable but not factually wrong. That is a re-judgement with no new fact, which is exactly what #171 declined for `incidents#72`.
+
+I can see that the correction is what makes the signal separate, and it is the reason the corpus rule is now written as *never re-mark on a number; only correct on a quotable fact*. The correction was committed (`ab29b16`) before the re-run (`c57f9dd`), so `git log` shows it did not depend on the new numbers.
+
+## The audit
+
+The error has a shape — "judged from the body, never read the thread" — that is not specific to one signal. Six corpus cases had notes written from the body alone and had comments: `npsp#69`, `#60`, `#67`, `metasearch#22`, `gh-issues-tui#129`, `#168`. **All five signals were re-read against full threads on all six: exactly one error**, the one above.
+
+Two near-misses that are *not* errors, worth recording because they look like errors:
+
+- `gh-issues-tui#129`'s thread says the code "already handled" explicit links. That describes what the code did, not a coverage claim. Scores 0.04.
+- `gh-issues-tui#168`'s thread is full of "already covered", "nothing left to do" and "duplicate" because it is my own prose *about* duplicate detection. Scores 0.11 — the literal-mindedness test, passing.
+
+Two marginal disagreements were left standing because neither thread supplied a new fact: `metasearch#22` criteria 0.59 and `gh-issues-tui#168` blocked 0.33.
+
+## What stands from #168
+
+The **round-2 rewording** really did produce six false positives: "has the work already been done … nothing left to do here" is true of any finished ticket, because a closed thread ends in its own "Work complete". It was reverted, and that diagnosis stands. Only the claim that the *current* wording has that problem was wrong.
+
+## Result
+
+`duplicate`: worst no 0.54, worst yes 0.86, width +0.32 (was −0.10). Verdicts: **8 ready / 7 unsure**, from 7 / 8 — the one change is `gh-issues-tui#168`, a live ticket whose thread had grown. Re-run drift on unchanged wordings was at most 0.06.
+
+## Diversions from plan
+
+- **Implemented on Sonnet 5, not Haiku** — the requester's instruction, noted on the ticket.
+- **The old guard failed first, by design.** `duplicate_does_not_separate_and_that_is_recorded` failed against the new recording, which is exactly what it exists for. It is replaced by `duplicate_separates_and_its_veto_is_right`, which asserts what the verdict *consumes* — the veto fires on every asserted yes and on no asserted no, and `YES` sits inside the gap — rather than a two-sided gap, per the rule from #169.
+- **Two prose updates the plan did not list.** The corpus section's rule "expectations are never edited" needed a qualifier, since this ticket is the counter-example; and a missing blank line before a heading in `ticket-readiness.md` got fixed in passing.
+- **Numbers drifted slightly and were refreshed, not carried over**: `specifics` moved from 0.58/0.49 to 0.59/0.48, and `blocked`'s worst score from 0.49 to 0.43.
+
+## Verification
+
+- `cargo test` — 751 passed, 0 failed. `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- **Mutation-checked the new guard**: putting the original error back in the recording fails it, raising `YES` above the worst true positive fails it, and dropping a real duplicate under the veto fails it.
+- Digest unchanged across the re-run — a regeneration, not a tuning round. 22 GitHub fetches and 22 TypeSafe calls, about a third of a cent.
+- Not driven end-to-end against the running app; nothing in the app changed.
+
+## What this does not fix
+
+`specifics` is still inverted (0.59 vs 0.48), so the threshold intersection stays **empty** and `YES`/`NO` stay unjustified — confirmed by the offline guard, not assumed. `blocked = yes` is still unmeasured (#172), and `duplicate = yes` now rests on two cases rather than one: better, still thin.
