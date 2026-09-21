@@ -3120,6 +3120,27 @@ fn substring_hits_still_show_alongside_semantic_ones() {
     assert_eq!(shown(&app), vec![2, 3], "the substring hit is never lost");
 }
 
+/// A semantic hit must not bypass a filter that lives inside
+/// `Filters::matches`. The repo test below cannot catch that: the repo filter is
+/// applied per repo in `rebuild_rows`, outside `matches`, so a hit that
+/// short-circuited `matches` would still be hidden by it. Author is inside.
+#[test]
+fn a_semantic_hit_does_not_bypass_a_filter_inside_matches() {
+    let mut app = search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().expect("worth searching");
+    app.apply_semantic_search(g, Ok(hits(&["I_1", "I_3"])));
+    assert_eq!(shown(&app), vec![1, 3]);
+    // Now narrow by a filter inside `matches`. (It admits no candidates, so it
+    // would send nothing — the hits are the ones that already landed.)
+    app.filters.author = "someone-else".into();
+    app.rebuild_rows();
+    assert!(
+        shown(&app).is_empty(),
+        "every issue is by pgmac, so none may show"
+    );
+}
+
 /// Semantic hits widen only the text condition — every other filter applies.
 #[test]
 fn a_semantic_hit_does_not_bypass_another_filter() {
