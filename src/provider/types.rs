@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use crate::codespan::{Backticks, backticks, fence_closes, fence_open};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum IssueState {
@@ -357,40 +359,23 @@ fn match_bare(rest: &str, current: Option<(&str, &str)>) -> Option<(PrRef, usize
 /// unclosed run masks nothing. Backticks are ASCII, so byte indices here are
 /// always char boundaries.
 fn inline_code_ranges(line: &str, offset: usize, out: &mut Vec<std::ops::Range<usize>>) {
-    let bytes = line.as_bytes();
+    // The shared rule works over chars; the scanner masks byte ranges, so keep
+    // each char's byte offset and map back. The delimiters are part of the mask.
+    let starts: Vec<usize> = line.char_indices().map(|(b, _)| b).collect();
+    let chars: Vec<char> = line.chars().collect();
+    let byte = |i: usize| starts.get(i).copied().unwrap_or(line.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'`' {
+    while i < chars.len() {
+        if chars[i] != '`' {
             i += 1;
             continue;
         }
-        let open = i;
-        while i < bytes.len() && bytes[i] == b'`' {
-            i += 1;
-        }
-        let n = i - open;
-        let mut j = i;
-        let mut closed = None;
-        while j < bytes.len() {
-            if bytes[j] != b'`' {
-                j += 1;
-                continue;
-            }
-            let run = j;
-            while j < bytes.len() && bytes[j] == b'`' {
-                j += 1;
-            }
-            if j - run == n {
-                closed = Some(j);
-                break;
-            }
-        }
-        match closed {
-            Some(end) => {
-                out.push(offset + open..offset + end);
+        match backticks(&chars, i) {
+            Backticks::Span { end, .. } => {
+                out.push(offset + byte(i)..offset + byte(end));
                 i = end;
             }
-            None => break,
+            Backticks::Literal { end } => i = end,
         }
     }
 }
@@ -406,21 +391,17 @@ fn code_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     for line in text.split_inclusive('\n') {
         let line_start = pos;
         pos += line.len();
-        let trimmed = line.trim_start();
-        let marker = trimmed.chars().next();
-        let run = match marker {
-            Some(c @ ('`' | '~')) => trimmed.chars().take_while(|&x| x == c).count(),
-            _ => 0,
-        };
         match fence {
             Some((start, fc, flen)) => {
-                if marker == Some(fc) && run >= flen {
+                if fence_closes(line, fc, flen) {
                     out.push(start..pos);
                     fence = None;
                 }
             }
-            None if run >= 3 => fence = Some((line_start, marker.expect("run >= 3"), run)),
-            None => inline_code_ranges(line, line_start, &mut out),
+            None => match fence_open(line) {
+                Some((fc, flen)) => fence = Some((line_start, fc, flen)),
+                None => inline_code_ranges(line, line_start, &mut out),
+            },
         }
     }
     if let Some((start, _, _)) = fence {
@@ -445,10 +426,12 @@ fn code_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
 /// False positives are held down by three rules: matches inside fenced code
 /// blocks and inline code spans are skipped, a shorthand must be preceded by a
 /// boundary ([`is_ref_boundary`]), and its digits must be terminated
-/// ([`ends_ref`]). One consequence worth knowing: `github.com/o/r#129` — a repo
-/// URL with a numeric fragment — matches nothing, because the owner is
-/// preceded by `/`. That same rule is what keeps the scanner out of URLs at
-/// large, so the trade is deliberate.
+/// ([`ends_ref`]). `github.com/o/r#129` — a repo URL with a numeric fragment —
+/// matches nothing, because the owner is preceded by `/`, and that is correct: a
+/// fragment on a repo URL is a page anchor, not issue 129.
+///
+/// What counts as code is decided by [`crate::codespan`], shared with the
+/// markdown renderer so the two cannot disagree (#157).
 pub fn parse_pr_links(text: &str, current: Option<(&str, &str)>) -> Vec<PrRef> {
     const MARKER: &str = "github.com/";
     let masks = code_ranges(text);
@@ -846,9 +829,10 @@ mod tests {
         assert!(parse_pr_links("#12abc", HERE).is_empty());
     }
 
-    /// The rule that keeps the scanner out of URLs also costs this case: a
-    /// repo URL with a numeric fragment matches nothing, because the owner is
-    /// preceded by `/`. Pinned so the trade-off is deliberate, not discovered.
+    /// A repo URL with a numeric fragment matches nothing, because the owner is
+    /// preceded by `/`. That is the right answer, not a cost: on GitHub the
+    /// fragment is a page anchor, so `github.com/o/r#129` never reaches issue 129.
+    /// Pinned so it stays a deliberate non-match rather than a rediscovered bug.
     #[test]
     fn parse_pr_links_skips_a_repo_url_with_a_numeric_fragment() {
         assert!(parse_pr_links("https://github.com/o/r#129", HERE).is_empty());
@@ -869,6 +853,66 @@ mod tests {
         // which is exactly why code spans are excluded.
         let text = "use `#123456` for the border, tracked in #5";
         assert_eq!(parse_pr_links(text, HERE), vec![pr("o", "r", 5)]);
+    }
+
+    /// #157: the scanner never checked for `\`, so an escaped backtick opened a
+    /// code span and masked a real reference. In the rendered text that `#123` is
+    /// prose. This is the scanner's one deliberate behaviour change.
+    ///
+    /// The reference needs a valid boundary for the mask to be what decides it:
+    /// `` \`#123\` `` puts a backtick directly before the `#`, which
+    /// [`is_ref_boundary`] never accepted, so that was never a reference whatever
+    /// the masking did.
+    #[test]
+    fn parse_pr_links_does_not_treat_an_escaped_backtick_as_code() {
+        assert_eq!(
+            parse_pr_links("see \\` #123 \\` here", HERE),
+            vec![pr("o", "r", 123)]
+        );
+    }
+
+    /// The boundary rule, not the mask, is what excludes a reference glued to a
+    /// backtick — so an escaped backtick does not change this either way.
+    #[test]
+    fn parse_pr_links_still_needs_a_boundary_before_a_reference_after_a_backtick() {
+        assert!(parse_pr_links("see \\`#123\\` here", HERE).is_empty());
+    }
+
+    /// An unescaped run still masks, and an even number of backslashes is an
+    /// escaped backslash, not an escape.
+    #[test]
+    fn parse_pr_links_still_masks_after_an_escaped_backslash() {
+        assert_eq!(
+            parse_pr_links("\\\\` #123 ` #5", HERE),
+            vec![pr("o", "r", 5)]
+        );
+    }
+
+    #[test]
+    fn parse_pr_links_masks_a_double_backtick_span_holding_a_backtick() {
+        assert_eq!(
+            parse_pr_links("``a ` #5 b`` #6", HERE),
+            vec![pr("o", "r", 6)]
+        );
+    }
+
+    #[test]
+    fn parse_pr_links_finds_the_reference_after_a_nested_fence() {
+        let text = "````\n```\n#77\n````\n#88\n";
+        assert_eq!(parse_pr_links(text, HERE), vec![pr("o", "r", 88)]);
+    }
+
+    /// The scanner maps char indices back to byte offsets. With enough multi-byte
+    /// characters before the span, a wrong mapping puts the mask entirely off it,
+    /// so `#9` would be reported. Two accents were not enough (the wrong range still
+    /// overlapped the span), and neither was `` `#9` ``: a backtick directly before
+    /// the `#` fails the boundary rule, so the mask never decided anything.
+    #[test]
+    fn parse_pr_links_masks_correctly_after_multibyte_characters() {
+        assert_eq!(
+            parse_pr_links("ééééééé ` #9 ` and é #10", HERE),
+            vec![pr("o", "r", 10)]
+        );
     }
 
     #[test]

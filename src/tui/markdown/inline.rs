@@ -10,6 +10,7 @@ use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
 use super::{code_style, link_style};
+use crate::codespan::{Backticks, backticks};
 
 /// A link located within a single parsed span run: display-column range plus URL.
 pub(super) struct Local {
@@ -39,17 +40,20 @@ pub(super) fn parse_inline_links(text: &str, t: &super::Theme) -> (Vec<Span<'sta
                 buf.push(chars[i + 1]);
                 i += 2;
             }
-            '`' => {
-                if let Some(close) = find_char(&chars, i + 1, '`') {
+            '`' => match backticks(&chars, i) {
+                Backticks::Span { content, end } => {
                     flush(&mut spans, &mut buf);
-                    let inner: String = chars[i + 1..close].iter().collect();
+                    let inner: String = chars[content].iter().collect();
                     spans.push(Span::styled(inner, code_style(t)));
-                    i = close + 1;
-                } else {
-                    buf.push(c);
-                    i += 1;
+                    i = end;
                 }
-            }
+                // An unmatched run is emitted whole: skipping one backtick at a
+                // time would let its second retry as a run of one.
+                Backticks::Literal { end } => {
+                    buf.extend(&chars[i..end]);
+                    i = end;
+                }
+            },
             '*' | '_' => {
                 let marker = c;
                 let double = i + 1 < n && chars[i + 1] == marker;

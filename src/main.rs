@@ -1,3 +1,4 @@
+mod codespan;
 mod config;
 mod cwd_repo;
 mod github;
