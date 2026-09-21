@@ -249,6 +249,128 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// Each span's text paired with whether it carries the code background.
+    fn code_flags(line: &Line<'_>, t: &Theme) -> Vec<(String, bool)> {
+        line.spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style.bg == Some(t.code_bg)))
+            .collect()
+    }
+
+    /// (#157) A double-backtick span containing a single backtick is one span.
+    /// The renderer used to close at the next single backtick, emitting an empty
+    /// span, then stray text, then a leftover backtick.
+    #[test]
+    fn a_double_backtick_span_may_contain_a_single_backtick() {
+        let t = Theme::default();
+        let line = &render("x ``a ` b`` y", &t)[0];
+        let spans = code_flags(line, &t);
+        assert!(
+            spans.contains(&("a ` b".to_string(), true)),
+            "one code span holding the backtick: {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .all(|(text, code)| *code || !text.contains('`')),
+            "no stray backtick left in prose: {spans:?}"
+        );
+    }
+
+    /// One padding space each side is stripped, so a span that must quote a
+    /// backtick does not show its padding.
+    #[test]
+    fn a_padded_span_drops_one_space_each_side() {
+        let t = Theme::default();
+        let spans = code_flags(&render("`` `code` ``", &t)[0], &t);
+        assert!(spans.contains(&("`code`".to_string(), true)), "{spans:?}");
+    }
+
+    /// An unmatched run is literal and skipped whole. Skipping one backtick at a
+    /// time would let the second retry as a run of one and pair with a later
+    /// single backtick.
+    #[test]
+    fn an_unmatched_run_is_literal_and_does_not_pair_with_a_later_single() {
+        let t = Theme::default();
+        let spans = code_flags(&render("``a`", &t)[0], &t);
+        assert!(
+            spans.iter().all(|(_, code)| !code),
+            "nothing here is code: {spans:?}"
+        );
+        assert_eq!(
+            spans.iter().map(|(s, _)| s.as_str()).collect::<String>(),
+            "``a`"
+        );
+    }
+
+    /// The renderer already honoured `\``; the shared rule must not regress it.
+    #[test]
+    fn an_escaped_backtick_stays_literal() {
+        let t = Theme::default();
+        let spans = code_flags(&render("x \\`#123\\` y", &t)[0], &t);
+        assert!(spans.iter().all(|(_, code)| !code), "{spans:?}");
+        assert!(
+            spans
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<String>()
+                .contains("`#123`")
+        );
+    }
+
+    /// #157: the renderer and the PR-link scanner must agree on where code is.
+    ///
+    /// Each text has `#111` inside code and `#222` outside it. The scanner must
+    /// report exactly 222, and the renderer must draw 111 on the code
+    /// background and 222 off it. They used to disagree on nested fences and
+    /// multi-backtick spans, and on escapes in the other direction; this pins
+    /// agreement across both sides rather than trusting each side's unit tests.
+    #[test]
+    fn the_renderer_and_the_scanner_agree_on_where_code_is() {
+        use crate::provider::types::parse_pr_links;
+        let t = Theme::default();
+        let corpus = [
+            ("plain fence", "```\n#111\n```\n#222"),
+            ("tilde fence", "~~~\n#111\n~~~\n#222"),
+            ("nested fence", "````\n```\n#111\n````\n#222"),
+            ("longer closer", "```\n#111\n`````\n#222"),
+            ("tilde inside backtick fence", "```\n~~~\n#111\n```\n#222"),
+            ("inline span", "` #111 ` #222"),
+            ("double span with a backtick", "``a ` #111 b`` #222"),
+            ("padded span", "`` ` #111 ` `` #222"),
+            ("escaped backtick is prose", "\\` #222 \\` and ` #111 `"),
+            ("unmatched run then a span", "`` #222 and ` #111 `"),
+            ("unterminated fence runs to the end", "#222\n```\n#111"),
+        ];
+        for (name, text) in corpus {
+            let found: Vec<u64> = parse_pr_links(text, Some(("o", "r")))
+                .iter()
+                .map(|r| r.number)
+                .collect();
+            assert_eq!(found, vec![222], "scanner: {name}: {text:?}");
+
+            let mut code = String::new();
+            let mut prose = String::new();
+            for line in render(text, &t) {
+                for (s, is_code) in code_flags(&line, &t) {
+                    if is_code {
+                        code.push_str(&s)
+                    } else {
+                        prose.push_str(&s)
+                    }
+                }
+            }
+            assert!(
+                code.contains("111") && !code.contains("222"),
+                "renderer code: {name}: {code:?}"
+            );
+            assert!(
+                prose.contains("222") && !prose.contains("111"),
+                "renderer prose: {name}: {prose:?}"
+            );
+        }
+    }
+
     #[test]
     fn line_count_matches_source_for_mixed_body_minus_fence_delimiters() {
         let body = "# Title\n\nSome *text* and __bold__.\n\n- one\n- two\n\n```rust\nfn x() {}\n```\n\n> quoted\n\n1. first\n2. second\n";

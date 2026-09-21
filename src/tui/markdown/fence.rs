@@ -15,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::Theme;
 use super::highlight::{self, LangSpec, State};
+use crate::codespan::{fence_closes, fence_open};
 
 /// Gutter prefix on every code row: a dim bar plus one padding cell, echoing
 /// the blockquote's `▏ ` prefix in `mod.rs`.
@@ -34,9 +35,8 @@ pub(super) struct Fence {
 /// remaining line.
 pub(super) fn parse(src: &[&str]) -> Option<(Fence, usize)> {
     let first = *src.first()?;
-    let trimmed = first.trim_start();
-    let (fence_char, fence_len) = fence_open(trimmed)?;
-    let info = trimmed[fence_len..].trim();
+    let (fence_char, fence_len) = fence_open(first)?;
+    let info = first.trim_start()[fence_len..].trim();
     let lang = if info.is_empty() {
         None
     } else {
@@ -46,7 +46,7 @@ pub(super) fn parse(src: &[&str]) -> Option<(Fence, usize)> {
     let mut content = Vec::new();
     let mut used = 1;
     while let Some(&line) = src.get(used) {
-        if is_closing(line.trim_start(), fence_char) {
+        if fence_closes(line, fence_char, fence_len) {
             used += 1;
             return Some((Fence { lang, content }, used));
         }
@@ -54,18 +54,6 @@ pub(super) fn parse(src: &[&str]) -> Option<(Fence, usize)> {
         used += 1;
     }
     Some((Fence { lang, content }, used))
-}
-
-/// If `trimmed` opens a fence, return its char (`` ` `` or `~`) and run length.
-fn fence_open(trimmed: &str) -> Option<(char, usize)> {
-    ['`', '~'].into_iter().find_map(|c| {
-        let n = trimmed.chars().take_while(|&x| x == c).count();
-        (n >= 3).then_some((c, n))
-    })
-}
-
-fn is_closing(trimmed: &str, fence_char: char) -> bool {
-    fence_open(trimmed).is_some_and(|(c, _)| c == fence_char)
 }
 
 /// Render a fence's content as gutter-prefixed rows on a filled code
@@ -233,6 +221,36 @@ mod tests {
         assert_eq!(used, 3);
         assert_eq!(fence.lang.as_deref(), Some("rust"));
         assert_eq!(fence.content, vec!["fn x() {}".to_string()]);
+    }
+
+    /// #157: a four-backtick fence is how you show a fence *inside* a fence. The
+    /// renderer used to close it at the first three-backtick line, and the real
+    /// closing line then opened a new fence that swallowed the rest of the text.
+    #[test]
+    fn a_shorter_fence_line_does_not_close_a_longer_fence() {
+        let src = ["````", "```", "still code", "````", "after"];
+        let (fence, used) = parse(&src).unwrap();
+        assert_eq!(used, 4, "consumes through the four-backtick closer");
+        assert_eq!(
+            fence.content,
+            vec!["```".to_string(), "still code".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_longer_fence_line_still_closes_a_shorter_fence() {
+        let src = ["```", "code", "`````", "after"];
+        let (fence, used) = parse(&src).unwrap();
+        assert_eq!(used, 3);
+        assert_eq!(fence.content, vec!["code".to_string()]);
+    }
+
+    #[test]
+    fn a_tilde_line_does_not_close_a_backtick_fence() {
+        let src = ["```", "~~~", "code", "```"];
+        let (fence, used) = parse(&src).unwrap();
+        assert_eq!(used, 4);
+        assert_eq!(fence.content, vec!["~~~".to_string(), "code".to_string()]);
     }
 
     #[test]
