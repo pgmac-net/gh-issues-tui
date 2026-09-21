@@ -40,8 +40,12 @@ use super::{Answer, Client, MODEL};
 /// the only false hit is that report. The feature only ever *adds* rows to a
 /// union, so a stray related row costs little.
 ///
-/// Fragile at the bottom: the worst genuine hit, `incidents#82`, scored 0.71 in
-/// one run and 0.80 in the other, so it can flicker near the line. The guards in
+/// Re-recorded for #183, when the `repo#N` reference left the request: the gap
+/// is still empty (that report 0.80, worst genuine hit 0.72), and it is still
+/// the only false hit, so the override stands unchanged.
+///
+/// Fragile at the bottom: the worst genuine hit, `incidents#82`, has scored
+/// 0.71–0.80 across runs, so it can flicker near the line. The guards in
 /// `calibration` pin all of this, so a re-record that changes it fails loudly.
 /// Not the readiness badge's 0.7 by coincidence of value — it answers a
 /// different question and was set separately.
@@ -59,12 +63,13 @@ const TRUE: &str = "The issue is about the subject of the query, even if it uses
 const FALSE: &str = "The issue is about something else, or only shares a word with the query";
 
 /// One issue a search may return.
+///
+/// Deliberately no repo or number: ADR 0004 keeps the org and repo off the
+/// wire, and a candidate that never holds them cannot send them (#183).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// The app's issue id — what a hit is reported as.
+    /// The app's issue id — what a hit is reported as. Never sent.
     pub id: String,
-    pub repo: String,
-    pub number: u64,
     pub title: String,
     pub body: String,
 }
@@ -80,15 +85,16 @@ pub fn worth_searching(query: &str) -> bool {
     !(q.is_empty() || (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())))
 }
 
-/// One candidate's request: the query and that issue alone. The org is never
-/// included — ADR 0004 still keeps it off the wire.
+/// One candidate's request: the query and that issue's title and body alone.
+/// Neither the org nor the repo is included — ADR 0004 keeps both off the wire.
+/// #158 shipped a `repo#N` reference here, which the ADR forbade; #183 removed
+/// it.
 fn request(query: &str, c: &Candidate) -> Value {
     let body: String = c.body.chars().take(BODY_CHARS).collect();
     json!({
         "state": {
             "query": query,
             "issue": {
-                "ref": format!("{}#{}", c.repo, c.number),
                 "title": c.title,
                 "body": body.split_whitespace().collect::<Vec<_>>().join(" "),
             },
@@ -160,8 +166,6 @@ mod tests {
     fn cand(n: u64) -> Candidate {
         Candidate {
             id: format!("id{n}"),
-            repo: "r".into(),
-            number: n,
             title: format!("title {n}"),
             body: format!("body {n}"),
         }
@@ -183,7 +187,6 @@ mod tests {
     fn a_request_holds_exactly_one_issue_and_one_question() {
         let body = request("disk trouble", &cand(85));
         assert_eq!(body["state"]["query"], "disk trouble");
-        assert_eq!(body["state"]["issue"]["ref"], "r#85");
         assert!(body["state"]["issue"].is_object(), "not a list");
         let qs = body["questions"].as_object().unwrap();
         assert_eq!(qs.len(), 1);
@@ -210,11 +213,16 @@ mod tests {
         );
     }
 
+    /// ADR 0004: issue text may leave, the org and repo may not (#183). The
+    /// issue carries exactly its title and body — no ref, number or id.
     #[test]
-    fn the_org_is_never_sent() {
-        let body = request("q", &cand(1)).to_string();
-        assert!(body.contains("r#1"), "repo and number are sent");
-        assert!(!body.contains("pgmac-net"), "the org never is");
+    fn only_the_title_and_body_of_an_issue_are_sent() {
+        let body = request("q", &cand(85));
+        let mut keys: Vec<&String> = body["state"]["issue"].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["body", "title"]);
+        let wire = body.to_string();
+        assert!(!wire.contains("id85"), "the app's issue id is not sent");
     }
 }
 
@@ -333,8 +341,6 @@ mod calibration {
     fn request_digest() -> String {
         let probe = Candidate {
             id: String::new(),
-            repo: "r".into(),
-            number: 1,
             title: "t".into(),
             body: "b".into(),
         };
@@ -410,8 +416,6 @@ mod calibration {
                     let number = i["number"].as_u64().unwrap_or_default();
                     out.push(Candidate {
                         id: format!("{repo}#{number}"),
-                        repo: (*repo).to_string(),
-                        number,
                         title: i["title"].as_str().unwrap_or_default().to_string(),
                         body: i["body"].as_str().unwrap_or_default().to_string(),
                     });
@@ -475,7 +479,7 @@ mod calibration {
             let full = score(&client, q.q, &corpus).await.expect("full run");
             let scoped_corpus: Vec<Candidate> = corpus
                 .iter()
-                .filter(|c| c.repo == q.repo)
+                .filter(|c| c.id.split('#').next() == Some(q.repo))
                 .cloned()
                 .collect();
             let scoped = score(&client, q.q, &scoped_corpus)

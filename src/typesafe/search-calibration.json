@@ -1,6 +1,6 @@
 {
   "model": "jev-1.13.0",
-  "request_digest": "e4bfe12a6cd96cfe",
+  "request_digest": "b78a8e76d0c62f33",
   "search_yes": 0.7,
   "max_in_flight": 150,
   "body_chars": 200,
@@ -10,60 +10,60 @@
       "full": {
         "candidates": 141,
         "must": {
-          "incidents#82": 0.71,
-          "incidents#85": 0.93
+          "incidents#82": 0.75,
+          "incidents#85": 0.94
         },
         "ok": {
-          "incidents#47": 0.52,
-          "incidents#48": 0.1,
-          "incidents#49": 0.08,
-          "incidents#79": 0.23,
-          "incidents#81": 0.3
+          "incidents#47": 0.61,
+          "incidents#48": 0.07,
+          "incidents#49": 0.09,
+          "incidents#79": 0.28,
+          "incidents#81": 0.34
         },
         "top_irrelevant": [
           [
             "incidents#67",
-            0.66
+            0.68
           ],
           [
             "incidents#70",
-            0.55
+            0.61
+          ],
+          [
+            "gh-issues-tui#25",
+            0.12
+          ],
+          [
+            "metasearch#23",
+            0.06
           ],
           [
             "gh-issues-tui#13",
             0.06
-          ],
-          [
-            "incidents#63",
-            0.05
-          ],
-          [
-            "metasearch#23",
-            0.05
           ]
         ]
       },
       "scoped": {
         "candidates": 13,
         "must": {
-          "incidents#82": 0.8,
-          "incidents#85": 0.93
+          "incidents#82": 0.72,
+          "incidents#85": 0.94
         },
         "ok": {
-          "incidents#47": 0.48,
+          "incidents#47": 0.56,
           "incidents#48": 0.08,
           "incidents#49": 0.09,
-          "incidents#79": 0.21,
-          "incidents#81": 0.35
+          "incidents#79": 0.25,
+          "incidents#81": 0.32
         },
         "top_irrelevant": [
           [
             "incidents#67",
-            0.61
+            0.68
           ],
           [
             "incidents#70",
-            0.55
+            0.62
           ],
           [
             "incidents#63",
@@ -74,34 +74,34 @@
             0.02
           ],
           [
-            "incidents#86",
+            "incidents#72",
             0.01
           ]
         ]
       },
-      "noise_max": 0.09000000000000008,
-      "noise_median": 0.010000000000000002
+      "noise_max": 0.04999999999999993,
+      "noise_median": 0.009999999999999995
     },
     {
       "q": "traffic blackholed by a leftover routing entry",
       "full": {
         "candidates": 141,
         "must": {
-          "incidents#79": 0.82,
+          "incidents#79": 0.8,
           "incidents#86": 0.77
         },
         "ok": {},
         "top_irrelevant": [
           [
             "nagios-public-status-page#69",
-            0.13
+            0.16
           ],
           [
             "tremendous-cve#8",
             0.13
           ],
           [
-            "docker-registry-walk#95",
+            "gh-issues-tui#87",
             0.1
           ],
           [
@@ -109,29 +109,29 @@
             0.1
           ],
           [
-            "incidents#47",
-            0.07
+            "gh-issues-tui#158",
+            0.09
           ]
         ]
       },
       "scoped": {
         "candidates": 13,
         "must": {
-          "incidents#79": 0.81,
-          "incidents#86": 0.77
+          "incidents#79": 0.79,
+          "incidents#86": 0.78
         },
         "ok": {},
         "top_irrelevant": [
           [
             "incidents#47",
-            0.08
+            0.07
           ],
           [
             "incidents#67",
-            0.08
+            0.07
           ],
           [
-            "incidents#85",
+            "incidents#81",
             0.05
           ],
           [
@@ -139,12 +139,12 @@
             0.05
           ],
           [
-            "incidents#82",
+            "incidents#63",
             0.05
           ]
         ]
       },
-      "noise_max": 0.009999999999999998,
+      "noise_max": 0.010000000000000009,
       "noise_median": 0.0
     },
     {
@@ -155,47 +155,43 @@
           "nagios-public-status-page#63": 0.97
         },
         "ok": {
-          "nagios-public-status-page#59": 0.78
+          "nagios-public-status-page#59": 0.79
         },
         "top_irrelevant": [
           [
             "pg-actions#20",
-            0.64
-          ],
-          [
-            "gh-issues-tui#163",
-            0.39
+            0.63
           ],
           [
             "docker-registry-walk#90",
-            0.37
+            0.51
           ],
           [
-            "Docker-Nagios#1",
-            0.37
+            "gh-issues-tui#25",
+            0.42
           ],
           [
             "pg-actions#19",
-            0.35
+            0.39
+          ],
+          [
+            "gh-issues-tui#163",
+            0.37
           ]
         ]
       },
       "scoped": {
         "candidates": 9,
         "must": {
-          "nagios-public-status-page#63": 0.96
+          "nagios-public-status-page#63": 0.97
         },
         "ok": {
-          "nagios-public-status-page#59": 0.81
+          "nagios-public-status-page#59": 0.78
         },
         "top_irrelevant": [
           [
             "nagios-public-status-page#67",
-            0.05
-          ],
-          [
-            "nagios-public-status-page#56",
-            0.02
+            0.06
           ],
           [
             "nagios-public-status-page#60",
@@ -206,12 +202,16 @@
             0.02
           ],
           [
+            "nagios-public-status-page#55",
+            0.02
+          ],
+          [
             "nagios-public-status-page#65",
             0.02
           ]
         ]
       },
-      "noise_max": 0.030000000000000027,
+      "noise_max": 0.010000000000000009,
       "noise_median": 0.0
     },
     {
@@ -219,66 +219,66 @@
       "full": {
         "candidates": 141,
         "must": {
-          "gh-issues-tui#80": 0.94
+          "gh-issues-tui#80": 0.93
         },
         "ok": {
-          "gh-issues-tui#130": 0.59
+          "gh-issues-tui#130": 0.74
         },
         "top_irrelevant": [
           [
             "tremendous-cve#8",
-            0.6
+            0.67
           ],
           [
             "nagios-public-status-page#65",
-            0.58
+            0.63
           ],
           [
             "pg-actions#20",
-            0.53
+            0.4
           ],
           [
             "pg-actions#19",
-            0.44
+            0.36
           ],
           [
-            "pg-actions#17",
-            0.34
+            "tremendous-cve#7",
+            0.35
           ]
         ]
       },
       "scoped": {
         "candidates": 63,
         "must": {
-          "gh-issues-tui#80": 0.94
+          "gh-issues-tui#80": 0.93
         },
         "ok": {
-          "gh-issues-tui#130": 0.63
+          "gh-issues-tui#130": 0.73
         },
         "top_irrelevant": [
           [
             "gh-issues-tui#129",
-            0.14
+            0.23
           ],
           [
             "gh-issues-tui#25",
-            0.12
+            0.17
+          ],
+          [
+            "gh-issues-tui#20",
+            0.1
           ],
           [
             "gh-issues-tui#13",
-            0.12
+            0.08
           ],
           [
             "gh-issues-tui#46",
-            0.09
-          ],
-          [
-            "gh-issues-tui#163",
-            0.07
+            0.08
           ]
         ]
       },
-      "noise_max": 0.040000000000000036,
+      "noise_max": 0.01999999999999999,
       "noise_median": 0.0
     },
     {
@@ -286,78 +286,78 @@
       "full": {
         "candidates": 141,
         "must": {
-          "gh-issues-tui#156": 0.8,
-          "gh-issues-tui#30": 0.95
+          "gh-issues-tui#156": 0.86,
+          "gh-issues-tui#30": 0.96
         },
         "ok": {
           "gh-issues-tui#162": 0.9,
-          "gh-issues-tui#163": 0.29,
-          "gh-issues-tui#164": 0.85,
-          "gh-issues-tui#26": 0.32,
-          "gh-issues-tui#28": 0.54,
-          "gh-issues-tui#34": 0.76
+          "gh-issues-tui#163": 0.27,
+          "gh-issues-tui#164": 0.83,
+          "gh-issues-tui#26": 0.44,
+          "gh-issues-tui#28": 0.48,
+          "gh-issues-tui#34": 0.79
         },
         "top_irrelevant": [
           [
             "incidents#85",
-            0.84
-          ],
-          [
-            "gh-issues-tui#168",
-            0.64
+            0.8
           ],
           [
             "incidents#79",
-            0.54
+            0.58
+          ],
+          [
+            "gh-issues-tui#168",
+            0.56
           ],
           [
             "incidents#82",
-            0.48
+            0.52
           ],
           [
-            "incidents#81",
-            0.45
+            "docker-registry-walk#100",
+            0.48
           ]
         ]
       },
       "scoped": {
         "candidates": 63,
         "must": {
-          "gh-issues-tui#156": 0.83,
-          "gh-issues-tui#30": 0.95
+          "gh-issues-tui#156": 0.85,
+          "gh-issues-tui#30": 0.96
         },
         "ok": {
           "gh-issues-tui#162": 0.91,
-          "gh-issues-tui#163": 0.37,
-          "gh-issues-tui#164": 0.86,
-          "gh-issues-tui#26": 0.31,
-          "gh-issues-tui#28": 0.52,
-          "gh-issues-tui#34": 0.77
+          "gh-issues-tui#163": 0.28,
+          "gh-issues-tui#164": 0.82,
+          "gh-issues-tui#26": 0.43,
+          "gh-issues-tui#28": 0.58,
+          "gh-issues-tui#34": 0.79
         },
         "top_irrelevant": [
           [
             "gh-issues-tui#168",
-            0.63
+            0.55
           ],
           [
-            "gh-issues-tui#169",
-            0.35
+            "gh-issues-tui#25",
+            0.37
           ],
           [
             "gh-issues-tui#84",
-            0.28
+            0.33
           ],
           [
-            "gh-issues-tui#159",
+            "gh-issues-tui#169",
+            0.3
+          ],
+          [
+            "gh-issues-tui#157",
             0.26
-          ],
-          [
-            "gh-issues-tui#171",
-            0.22
           ]
         ]
       },
-      "noise_max": 0.08000000000000002,
+      "noise_max": 0.09999999999999998,
       "noise_median": 0.0
     },
     {
@@ -366,11 +366,11 @@
         "candidates": 141,
         "must": {
           "docker-registry-walk#40": 0.96,
-          "docker-registry-walk#75": 0.92,
-          "gh-issues-tui#46": 0.92
+          "docker-registry-walk#75": 0.88,
+          "gh-issues-tui#46": 0.88
         },
         "ok": {
-          "docker-registry-walk#97": 0.34
+          "docker-registry-walk#97": 0.25
         },
         "top_irrelevant": [
           [
@@ -379,18 +379,18 @@
           ],
           [
             "Docker-Nagios#4",
-            0.35
-          ],
-          [
-            "gh-issues-tui#23",
-            0.32
+            0.33
           ],
           [
             "incidents#67",
-            0.29
+            0.32
           ],
           [
-            "incidents#70",
+            "gh-issues-tui#25",
+            0.26
+          ],
+          [
+            "gh-issues-tui#23",
             0.25
           ]
         ]
@@ -399,23 +399,23 @@
         "candidates": 36,
         "must": {
           "docker-registry-walk#40": 0.96,
-          "docker-registry-walk#75": 0.91
+          "docker-registry-walk#75": 0.86
         },
         "ok": {
-          "docker-registry-walk#97": 0.27
+          "docker-registry-walk#97": 0.26
         },
         "top_irrelevant": [
           [
-            "docker-registry-walk#38",
-            0.13
-          ],
-          [
             "docker-registry-walk#33",
-            0.11
+            0.14
           ],
           [
             "docker-registry-walk#112",
-            0.1
+            0.12
+          ],
+          [
+            "docker-registry-walk#45",
+            0.09
           ],
           [
             "docker-registry-walk#41",
@@ -423,11 +423,11 @@
           ],
           [
             "docker-registry-walk#32",
-            0.09
+            0.08
           ]
         ]
       },
-      "noise_max": 0.07,
+      "noise_max": 0.020000000000000018,
       "noise_median": 0.0
     },
     {
@@ -439,6 +439,14 @@
         "top_irrelevant": [
           [
             "gh-issues-tui#13",
+            0.05
+          ],
+          [
+            "gh-issues-tui#25",
+            0.02
+          ],
+          [
+            "gh-issues-tui#99",
             0.02
           ],
           [
@@ -446,16 +454,8 @@
             0.02
           ],
           [
-            "gh-issues-tui#169",
-            0.01
-          ],
-          [
-            "gh-issues-tui#160",
-            0.01
-          ],
-          [
-            "docker-registry-walk#91",
-            0.01
+            "gh-issues-tui#80",
+            0.02
           ]
         ]
       },
@@ -466,22 +466,22 @@
         "top_irrelevant": [
           [
             "gh-issues-tui#13",
+            0.05
+          ],
+          [
+            "gh-issues-tui#25",
             0.02
           ],
           [
-            "gh-issues-tui#130",
-            0.01
+            "gh-issues-tui#99",
+            0.02
           ],
           [
-            "gh-issues-tui#59",
-            0.01
+            "gh-issues-tui#80",
+            0.02
           ],
           [
-            "gh-issues-tui#34",
-            0.01
-          ],
-          [
-            "gh-issues-tui#51",
+            "gh-issues-tui#20",
             0.01
           ]
         ]
