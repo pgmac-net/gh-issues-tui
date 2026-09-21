@@ -807,8 +807,15 @@ mod calibration {
         Case {
             repo: "nagios-public-status-page",
             number: 71,
-            expect: [Y, Y, V, N, N],
-            note: "names the offending fixtures and files",
+            // duplicate CORRECTED No -> Yes (#170). Its only comment reads
+            // "Already fixed by 5e6e6e9 (PR #70, merged 2026-07-29)", and #67's
+            // merge comment independently says it fixed #71 along the way. I
+            // marked it `No` in #168 from the body alone and never read the
+            // thread; the model read it and was right at 0.97. This is a fact I
+            // can quote, not a re-judgement after seeing a number — which is the
+            // only kind of change to an expectation this corpus allows.
+            expect: [Y, Y, V, N, Y],
+            note: "comment says 'Already fixed by 5e6e6e9 (PR #70, merged)'; body names the offending fixtures",
         },
         Case {
             repo: "incidents",
