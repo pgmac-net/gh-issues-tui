@@ -207,7 +207,10 @@ mod tests {
             assert!(text.contains(key.trim()), "{key}");
             assert!(text.contains(what), "{what}");
         }
-        assert!(text.contains("F1"));
+        assert!(
+            LIST_HELP.iter().any(|(k, _)| k.contains("F1")),
+            "the key table itself documents F1"
+        );
     }
 
     /// The clamp the key handler uses and the rows the renderer draws come from
@@ -234,6 +237,13 @@ mod tests {
 
             let max = help_max_scroll(&app, topic, cols, rows);
             assert!(max > 0, "{topic:?} should overflow 80x24");
+            // Exactly the overflow: one more and the handler would scroll past
+            // the last row into blank space.
+            assert_eq!(
+                max as usize + help_inner_height(rows) as usize,
+                lines.len(),
+                "{topic:?}"
+            );
 
             app.help.scroll = 0;
             assert!(
