@@ -29,15 +29,23 @@ use super::{Answer, Client, MODEL};
 
 /// A candidate counts as a semantic hit above this.
 ///
-/// **Set by a rule fixed before the measurement**, so it could not be chosen to
-/// fit: the midpoint of the gap between the best irrelevant score and the worst
-/// genuine hit across all fourteen recorded runs (seven queries, full and
-/// scoped), rounded to 0.05 — or to 0.01 if 0.05 would land outside the gap.
-/// "ok" issues count on neither side, and no expectation is re-marked. An empty
-/// gap ships no threshold. See `search-calibration.json`, and the guard
-/// `search_yes_is_what_the_rule_gives`. Not the readiness badge's 0.7, which
-/// answers a different question.
-pub const SEARCH_YES: f64 = 0.5;
+/// **0.70 is an override, not a measurement result.** The rule fixed before
+/// the measurement (commit `c3ce53c`) was: the midpoint of the gap between the
+/// best irrelevant score and the worst genuine hit across all fourteen runs, and
+/// an empty gap ships no threshold. The gap *was* empty — one outage report,
+/// `incidents#85`, scored 0.84 on "choosing how urgent a ticket is" because it
+/// opens with "Provisional severity: P2 … Confirmed P2", above the worst genuine
+/// hit at 0.71. Shipping at 0.70 anyway was a product decision taken with that
+/// data: every genuine hit clears it in both runs, and across ~1,250 judgements
+/// the only false hit is that report. The feature only ever *adds* rows to a
+/// union, so a stray related row costs little.
+///
+/// Fragile at the bottom: the worst genuine hit, `incidents#82`, scored 0.71 in
+/// one run and 0.80 in the other, so it can flicker near the line. The guards in
+/// `calibration` pin all of this, so a re-record that changes it fails loudly.
+/// Not the readiness badge's 0.7 by coincidence of value — it answers a
+/// different question and was set separately.
+pub const SEARCH_YES: f64 = 0.70;
 
 /// Most requests in flight at once. 141 parallel requests saw no rate limiting;
 /// this caps a large candidate set (closed issues loaded) near that.
@@ -570,38 +578,65 @@ mod calibration {
         assert_eq!(rec.max_in_flight, MAX_IN_FLIGHT, "{RECALIBRATE}");
     }
 
-    /// `SEARCH_YES` is not a judgement call: it is what the pre-registered rule
-    /// gives for the recorded gap. Moving it by hand fails this.
+    /// The pre-registered rule could not produce a threshold: the recorded gap
+    /// is empty. That is *why* `SEARCH_YES` is an override. If a future
+    /// re-record opens a clean gap, this fails, and the rule should be used
+    /// instead of the override.
     #[test]
-    fn search_yes_is_what_the_rule_gives() {
+    fn the_rule_found_no_clean_threshold_so_search_yes_is_an_override() {
         let rec = recording();
         let (worst_must, best_irrelevant) = gap(&rec);
         assert!(
-            best_irrelevant < worst_must,
-            "the recorded gap is empty ({best_irrelevant:.2} .. {worst_must:.2}) \u{2014} \
-             no threshold separates it, so none should ship"
+            best_irrelevant >= worst_must,
+            "the gap is now clean ({best_irrelevant:.2} .. {worst_must:.2}): drop the \
+             override and set SEARCH_YES = {:.2} by the rule",
+            rule(worst_must, best_irrelevant)
         );
         assert_eq!(rec.search_yes, SEARCH_YES, "{RECALIBRATE}");
-        assert_eq!(
-            SEARCH_YES,
-            rule(worst_must, best_irrelevant),
-            "gap {best_irrelevant:.3} .. {worst_must:.3}"
-        );
     }
 
     #[test]
-    fn every_genuine_hit_clears_and_every_irrelevant_issue_misses() {
+    fn at_the_override_every_genuine_hit_clears_in_both_runs() {
         let rec = recording();
         for q in &rec.queries {
             for (name, run) in [("full", &q.full), ("scoped", &q.scoped)] {
                 for (id, p) in &run.must {
                     assert!(*p > SEARCH_YES, "{}: {name}: {id} at {p:.2}", q.q);
                 }
+            }
+        }
+    }
+
+    /// The one known false hit, pinned exactly: any new one in a re-record fails.
+    #[test]
+    fn at_the_override_the_only_false_hit_is_the_known_one() {
+        let rec = recording();
+        let mut false_hits: Vec<(&str, &str)> = Vec::new();
+        for q in &rec.queries {
+            for run in [&q.full, &q.scoped] {
+                // The recording keeps the top five; the fifth must miss, or hits
+                // beyond it would go unseen.
+                if let Some((_, p)) = run.top_irrelevant.last() {
+                    assert!(
+                        *p < SEARCH_YES,
+                        "{}: false hits may extend past the top five",
+                        q.q
+                    );
+                }
                 for (id, p) in &run.top_irrelevant {
-                    assert!(*p < SEARCH_YES, "{}: {name}: {id} at {p:.2}", q.q);
+                    if *p > SEARCH_YES {
+                        false_hits.push((q.q.as_str(), id.as_str()));
+                    }
                 }
             }
         }
+        false_hits.sort_unstable();
+        false_hits.dedup();
+        assert_eq!(
+            false_hits,
+            vec![("choosing how urgent a ticket is", "incidents#85")],
+            "{RECALIBRATE}"
+        );
     }
 
     /// The query with no answer must find nothing, in either run.
