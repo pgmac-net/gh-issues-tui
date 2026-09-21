@@ -159,6 +159,7 @@ async fn event_loop(
         copy_format,
     );
     app.set_hide_empty_default(hide_empty_repos);
+    app.typesafe = typesafe.status;
     // Adopt any background sessions still running from a previous run — the
     // fix for a session otherwise being lost the moment gh-issues-tui quits.
     // Best-effort: no `claude` on PATH, or the call failing, just means

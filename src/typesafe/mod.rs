@@ -70,7 +70,7 @@ pub const PROMPT_VERSION: u32 = 1;
 /// `calibration.json` — they fail if this drifts out of the gap, or if the
 /// wording, levels or model change without a re-recording. Not a config knob:
 /// nothing suggests the right value varies by org.
-const MIN_CONFIDENCE: f64 = 0.7;
+pub(crate) const MIN_CONFIDENCE: f64 = 0.7;
 
 /// Labels per request. Every question repeats the level descriptions, so this
 /// keeps a request comfortably inside the 64k-token budget.
@@ -207,6 +207,8 @@ pub struct Consents {
     pub ranks: Option<Client>,
     /// `send_issue_text` + key: issue titles, bodies and comments may be sent.
     pub issue_text: Option<Client>,
+    /// What was configured, for the UI to report (#184). Never holds the key.
+    pub status: Status,
 }
 
 impl Consents {
@@ -215,7 +217,47 @@ impl Consents {
         Self {
             ranks: Client::from_settings(infer_priority_ranks),
             issue_text: Client::from_settings(send_issue_text),
+            status: Status::from_env(infer_priority_ranks, send_issue_text),
         }
+    }
+}
+
+/// What the user configured, kept so the app can *say* what is on and why a
+/// feature is off (#184). Read-only display data: the clients in [`Consents`]
+/// stay the only thing that can send, and this records whether a key exists,
+/// never the key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Status {
+    /// `TYPESAFE_API_KEY` is set and non-empty.
+    pub key_present: bool,
+    /// `infer_priority_ranks` in config.
+    pub infer_priority_ranks: bool,
+    /// `send_issue_text` in config.
+    pub send_issue_text: bool,
+}
+
+impl Status {
+    pub fn from_env(infer_priority_ranks: bool, send_issue_text: bool) -> Self {
+        Self::new(
+            infer_priority_ranks,
+            send_issue_text,
+            std::env::var(API_KEY_ENV).ok().as_deref(),
+        )
+    }
+
+    /// Same trimming rule as [`Client::new`], so the two cannot disagree about
+    /// whether a key counts as set.
+    pub fn new(infer_priority_ranks: bool, send_issue_text: bool, key: Option<&str>) -> Self {
+        Self {
+            key_present: key.is_some_and(|k| !k.trim().is_empty()),
+            infer_priority_ranks,
+            send_issue_text,
+        }
+    }
+
+    /// Issue text may be sent (readiness badge, semantic search): flag and key.
+    pub fn issue_text_on(&self) -> bool {
+        self.key_present && self.send_issue_text
     }
 }
 
@@ -329,6 +371,31 @@ mod tests {
 
     fn probs(pairs: &[(&str, f64)]) -> HashMap<String, f64> {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    /// `Status` must agree with `Client::new` about what counts as "on", or
+    /// the help pages would say a feature is on when it cannot send.
+    #[test]
+    fn status_agrees_with_the_clients_about_what_is_on() {
+        for (flag, key) in [
+            (false, None),
+            (false, Some("k")),
+            (true, None),
+            (true, Some("  ")),
+            (true, Some("k")),
+        ] {
+            let status = Status::new(flag, flag, key);
+            let client = Client::new(flag, key.map(str::to_string));
+            assert_eq!(status.issue_text_on(), client.is_some(), "{flag} {key:?}");
+        }
+    }
+
+    #[test]
+    fn the_two_flags_are_reported_independently() {
+        let s = Status::new(true, false, Some("k"));
+        assert!(s.infer_priority_ranks && !s.issue_text_on());
+        let s = Status::new(false, true, Some("k"));
+        assert!(!s.infer_priority_ranks && s.issue_text_on());
     }
 
     #[test]

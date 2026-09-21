@@ -21,13 +21,46 @@ pub struct SearchState {
     /// Asking failed. Off for the rest of the session: no retry storm on a dead
     /// endpoint. Reset only by switching org.
     failed: bool,
+    /// Why, in a few words — what the info bar shows beside `off` (#184).
+    failure: Option<String>,
+    /// A request for the current query is out.
+    in_flight: bool,
+    /// An answer for the current query has landed. Cleared when a new search
+    /// starts or the query changes, so the info bar never reports a count that
+    /// belongs to an earlier query.
+    answered: bool,
 }
 
 impl SearchState {
-    #[cfg(test)]
     pub fn has_failed(&self) -> bool {
         self.failed
     }
+}
+
+/// What the info bar says about semantic search (#184). Only ever produced
+/// while a query that would be sent is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticIndicator {
+    /// A request is out.
+    Searching,
+    /// The answer has landed and added this many issues the substring match did
+    /// not already show. Zero is a real answer: "nothing else is about this".
+    Added(usize),
+    /// Asking failed; the short reason may be empty.
+    Off(String),
+}
+
+/// Longest reason the info bar shows beside `off`.
+const REASON_CHARS: usize = 30;
+
+/// First line of `error`, cut to fit the info bar.
+fn short_reason(error: &str) -> String {
+    let line = error.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= REASON_CHARS {
+        return line.to_string();
+    }
+    let cut: String = line.chars().take(REASON_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 impl App {
@@ -52,6 +85,44 @@ impl App {
         self.search.query.clear();
         self.search.judged.clear();
         self.search.generation += 1;
+        self.search.in_flight = false;
+        self.search.answered = false;
+    }
+
+    /// What the info bar should say about semantic search, if anything.
+    ///
+    /// `None` without the consent and key, and for a query that is never sent
+    /// (empty, or a bare number): a user who has not opted in sees nothing new,
+    /// and a query semantic search does not handle does not claim it did.
+    pub fn semantic_indicator(&self) -> Option<SemanticIndicator> {
+        if !self.typesafe.issue_text_on() || !worth_searching(&self.filters.text) {
+            return None;
+        }
+        if self.search.failed {
+            return Some(SemanticIndicator::Off(
+                self.search.failure.clone().unwrap_or_default(),
+            ));
+        }
+        if self.search.in_flight {
+            return Some(SemanticIndicator::Searching);
+        }
+        self.search
+            .answered
+            .then(|| SemanticIndicator::Added(self.semantic_added()))
+    }
+
+    /// Issues shown only because semantic search added them: everything the
+    /// filters admit that the substring match alone would not.
+    fn semantic_added(&self) -> usize {
+        let exact = self.repo_filter_exact();
+        self.repos
+            .iter()
+            .filter(|r| self.filters.repo_matches(&r.repo, exact))
+            .flat_map(|r| r.issues.iter())
+            .filter(|i| {
+                self.filters.matches(i, self.state_filter) && !self.filters.substring_match(i)
+            })
+            .count()
     }
 
     /// Issues every filter except the text admits: what a search judges.
@@ -97,6 +168,8 @@ impl App {
             return None;
         }
         self.search.generation += 1;
+        self.search.in_flight = true;
+        self.search.answered = false;
         self.search.query = self.filters.text.clone();
         self.search.judged = candidates.iter().map(|c| c.id.clone()).collect();
         Some((
@@ -119,14 +192,17 @@ impl App {
         if generation != self.search.generation {
             return;
         }
+        self.search.in_flight = false;
         match result {
             Ok(hits) => {
+                self.search.answered = true;
                 self.filters.semantic_hits = hits;
                 self.rebuild_rows();
                 self.expand_single_visible();
             }
             Err(e) => {
                 self.search.failed = true;
+                self.search.failure = Some(short_reason(&e));
                 self.search.judged.clear();
                 self.status = Some(format!("semantic search off for this session: {e}"));
             }
@@ -138,5 +214,6 @@ impl App {
     pub fn reset_search(&mut self) {
         self.invalidate_search();
         self.search.failed = false;
+        self.search.failure = None;
     }
 }

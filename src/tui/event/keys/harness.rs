@@ -221,7 +221,7 @@ fn handle_chord(app: &mut App, key: KeyEvent, id: SessionId, hx: &mut HarnessCtx
             }
         }
         KeyCode::Char('n') => open_harness_picker(app, hx.settings.names()),
-        KeyCode::Char('?') => app.mode = Mode::Help,
+        KeyCode::Char('?') => app.open_session_help(),
         // F12 F12: the child gets the key the prefix ate.
         KeyCode::F(12) => {
             if let Some(bytes) = encode(key) {

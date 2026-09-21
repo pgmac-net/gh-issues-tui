@@ -8,6 +8,7 @@ pub(crate) mod detail;
 pub(crate) mod filter;
 pub(crate) mod form;
 pub(crate) mod harness;
+pub(crate) mod help;
 pub(crate) mod input;
 pub(crate) mod move_issue;
 pub(crate) mod normal;
@@ -29,6 +30,7 @@ use harness::{
     handle_confirm_harness_key, handle_harness_key, handle_harness_picker_key,
     handle_session_picker_key,
 };
+use help::handle_help_key;
 use input::handle_input_key;
 use move_issue::{handle_confirm_move_key, handle_move_picker_key};
 use normal::handle_normal_key;
@@ -42,6 +44,13 @@ pub(super) fn handle_key(
     tx: &mpsc::UnboundedSender<AppEvent>,
     hx: &mut HarnessCtx,
 ) {
+    // F1 opens help for the current context from every mode but a session,
+    // where it belongs to the agent — including the text inputs and popups
+    // where `?` is a typed character (#184).
+    if key.code == KeyCode::F(1) && app.mode != Mode::Harness {
+        app.toggle_help();
+        return;
+    }
     match app.mode {
         Mode::Normal => handle_normal_key(app, key, client, tx, hx),
         Mode::Harness => handle_harness_key(app, key, hx),
@@ -65,14 +74,6 @@ pub(super) fn handle_key(
         Mode::MovePicker => handle_move_picker_key(app, key),
         Mode::ConfirmMove => handle_confirm_move_key(app, key, client, tx),
         Mode::ConfirmPriority => handle_confirm_priority_key(app, key, client, tx),
-        // Dismissing help returns where it was opened from — `F12 ?` inside a
-        // session must not drop you back on the issue list.
-        Mode::Help => {
-            app.mode = if app.harness.active.is_some() {
-                Mode::Harness
-            } else {
-                Mode::Normal
-            };
-        }
+        Mode::Help(_) => handle_help_key(app, key),
     }
 }

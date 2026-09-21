@@ -2065,8 +2065,16 @@ fn auto_refresh_gated_by_loading_rate_limit_and_mode() {
     assert!(!app.should_auto_refresh());
     app.mode = Mode::ConfirmState;
     assert!(!app.should_auto_refresh());
-    app.mode = Mode::Help;
+    // Help opened from the list is passive, like the list. Opened over a popup
+    // or an input, a refresh would replace the data under it (#184).
+    app.mode = Mode::Normal;
+    app.open_help(HelpTopic::Keys);
     assert!(app.should_auto_refresh());
+    app.close_help();
+    app.mode = Mode::Input(InputKind::Search);
+    app.open_help(HelpTopic::Search);
+    assert!(!app.should_auto_refresh());
+    app.close_help();
     app.mode = Mode::Normal;
     assert!(app.should_auto_refresh());
 }
@@ -3335,4 +3343,429 @@ fn both_text_entry_points_clear_hits_and_can_search() {
             "{kind:?}: can search"
         );
     }
+}
+
+// ---- semantic-search indicator (#184) ----
+
+use crate::tui::app::search::SemanticIndicator;
+use crate::typesafe::Status;
+
+/// `search_app` with the issue-text consent and key both present.
+fn consenting_search_app() -> App {
+    let mut app = search_app();
+    app.typesafe = Status::new(false, true, Some("key"));
+    app
+}
+
+#[test]
+fn the_indicator_says_nothing_without_the_consent_and_key() {
+    for status in [
+        Status::default(),
+        Status::new(false, true, None),       // flag, no key
+        Status::new(false, false, Some("k")), // key, no flag
+        Status::new(true, false, Some("k")),  // the *other* flag
+    ] {
+        let mut app = search_app();
+        app.typesafe = status;
+        app.set_text_filter(QUERY.into());
+        let (g, _, _) = app.begin_semantic_search().expect("worth searching");
+        app.apply_semantic_search(g, Ok(hits(&["I_1"])));
+        assert_eq!(app.semantic_indicator(), None, "{status:?}");
+    }
+}
+
+#[test]
+fn the_indicator_says_nothing_for_a_query_that_is_never_sent() {
+    for q in ["", "#123", "123", "  "] {
+        let mut app = consenting_search_app();
+        app.set_text_filter(q.into());
+        assert_eq!(app.semantic_indicator(), None, "{q:?}");
+    }
+}
+
+#[test]
+fn the_indicator_follows_a_search_from_asking_to_answered() {
+    let mut app = consenting_search_app();
+    app.set_text_filter(QUERY.into());
+    assert_eq!(
+        app.semantic_indicator(),
+        None,
+        "typed, nothing asked yet — no claim"
+    );
+
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    assert_eq!(app.semantic_indicator(), Some(SemanticIndicator::Searching));
+
+    app.apply_semantic_search(g, Ok(hits(&["I_1", "I_3"])));
+    assert_eq!(app.semantic_indicator(), Some(SemanticIndicator::Added(2)));
+}
+
+#[test]
+fn zero_added_is_reported_not_hidden() {
+    let mut app = consenting_search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(HashSet::new()));
+    assert_eq!(app.semantic_indicator(), Some(SemanticIndicator::Added(0)));
+}
+
+/// "+N" is what semantic search added — not every hit. A hit the substring
+/// match already showed adds nothing.
+#[test]
+fn added_counts_only_what_the_substring_match_did_not_show() {
+    let mut app = consenting_search_app();
+    app.set_text_filter("help".into()); // substring-matches #2
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(hits(&["I_1", "I_2"])));
+    assert_eq!(app.semantic_indicator(), Some(SemanticIndicator::Added(1)));
+    let mut on_screen = shown(&app);
+    on_screen.sort_unstable(); // list order follows the sort key
+    assert_eq!(on_screen, vec![1, 2]);
+}
+
+/// A hit hidden by another filter is not "added" — it is not on screen.
+#[test]
+fn added_does_not_count_a_hit_another_filter_hides() {
+    let mut app = consenting_search_app();
+    app.filters.repo = "a".into();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(hits(&["I_1", "I_3"])));
+    assert_eq!(
+        app.semantic_indicator(),
+        Some(SemanticIndicator::Added(1)),
+        "I_3 is in repo b, outside the repo filter"
+    );
+}
+
+#[test]
+fn a_new_query_drops_the_previous_count() {
+    let mut app = consenting_search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Ok(hits(&["I_1"])));
+    assert!(app.semantic_indicator().is_some());
+
+    app.set_text_filter("something else entirely".into());
+    assert_eq!(
+        app.semantic_indicator(),
+        None,
+        "the +N belonged to the old query"
+    );
+}
+
+/// An overtaken response must not turn "searching…" into a count that belongs
+/// to an earlier query.
+#[test]
+fn a_stale_response_leaves_the_indicator_searching() {
+    let mut app = consenting_search_app();
+    app.set_text_filter(QUERY.into());
+    let (old, _, _) = app.begin_semantic_search().unwrap();
+    app.set_text_filter("a different question".into());
+    let (_new, _, _) = app.begin_semantic_search().unwrap();
+
+    app.apply_semantic_search(old, Ok(hits(&["I_1"])));
+    assert_eq!(app.semantic_indicator(), Some(SemanticIndicator::Searching));
+}
+
+#[test]
+fn a_failure_shows_off_with_a_short_first_line_reason() {
+    let mut app = consenting_search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(
+        g,
+        Err(
+            "TypeSafe returned 429 Too Many Requests — slow down and try again later\nsecond line"
+                .into(),
+        ),
+    );
+    let Some(SemanticIndicator::Off(why)) = app.semantic_indicator() else {
+        panic!("expected off, got {:?}", app.semantic_indicator());
+    };
+    assert!(why.starts_with("TypeSafe returned 429"), "{why}");
+    assert!(why.ends_with('…'), "cut to fit: {why}");
+    assert!(why.chars().count() <= 30, "{why}");
+    assert!(!why.contains("second line"));
+}
+
+#[test]
+fn switching_org_clears_the_failure_and_the_indicator() {
+    let mut app = consenting_search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Err("boom".into()));
+    assert!(matches!(
+        app.semantic_indicator(),
+        Some(SemanticIndicator::Off(_))
+    ));
+
+    app.switch_org("other".into());
+    app.set_text_filter(QUERY.into());
+    assert_eq!(
+        app.semantic_indicator(),
+        None,
+        "a fresh attempt, nothing said"
+    );
+}
+
+// ---- help (#184) ----
+
+/// One issue, selected, in the detail pane with a readiness verdict landed.
+fn help_app_with_badge() -> App {
+    let (mut app, id) = readiness_app();
+    app.detail.open = true;
+    app.focus = Focus::Detail;
+    app.apply_readiness(id, Ok(some_readiness()));
+    app
+}
+
+#[test]
+fn f1_context_picks_the_page_for_where_you_are() {
+    let mut app = help_app_with_badge();
+    let at = |app: &mut App, mode: Mode| {
+        app.mode = mode;
+        app.context_topic()
+    };
+
+    // The list, and the detail pane with a badge.
+    app.focus = Focus::List;
+    assert_eq!(at(&mut app, Mode::Normal), HelpTopic::Keys);
+    app.focus = Focus::Detail;
+    assert_eq!(at(&mut app, Mode::Normal), HelpTopic::Readiness);
+
+    // Detail focused but nothing judged yet: no badge, so the keys.
+    let (mut bare, _) = readiness_app();
+    bare.detail.open = true;
+    bare.focus = Focus::Detail;
+    assert_eq!(bare.context_topic(), HelpTopic::Keys);
+
+    // Searching and the filter editor's text field.
+    assert_eq!(
+        at(&mut app, Mode::Input(InputKind::Search)),
+        HelpTopic::Search
+    );
+    assert_eq!(
+        at(&mut app, Mode::Input(InputKind::FilterField(0))),
+        HelpTopic::Search
+    );
+    app.filter_menu_idx = 0;
+    assert_eq!(at(&mut app, Mode::FilterMenu), HelpTopic::Search);
+
+    // The filter editor's priority field and the priority pickers.
+    app.filter_menu_idx = 4;
+    assert_eq!(at(&mut app, Mode::FilterMenu), HelpTopic::Priority);
+    assert_eq!(at(&mut app, Mode::SelectFieldMulti(4)), HelpTopic::Priority);
+    assert_eq!(at(&mut app, Mode::PrioritySet), HelpTopic::Priority);
+    assert_eq!(at(&mut app, Mode::ConfirmPriority), HelpTopic::Priority);
+
+    // Everything else falls back to the keys.
+    app.filter_menu_idx = 2;
+    assert_eq!(at(&mut app, Mode::FilterMenu), HelpTopic::Keys);
+    assert_eq!(at(&mut app, Mode::SelectFieldMulti(2)), HelpTopic::Keys);
+    assert_eq!(at(&mut app, Mode::Input(InputKind::Title)), HelpTopic::Keys);
+    assert_eq!(at(&mut app, Mode::ConfirmState), HelpTopic::Keys);
+    assert_eq!(at(&mut app, Mode::CommentEditor), HelpTopic::Keys);
+}
+
+/// The context table names filter rows by index; this fails if the editor's
+/// rows are reordered, rather than help silently opening the wrong page.
+#[test]
+fn the_context_table_still_points_at_the_right_filter_rows() {
+    assert_eq!(FILTER_FIELDS[0], "text");
+    assert_eq!(FILTER_FIELDS[4], "priority");
+}
+
+/// Closing returns to the exact mode help was opened from, so `F1` in the
+/// middle of typing a search does not lose the search.
+#[test]
+fn closing_help_returns_to_a_half_typed_search() {
+    let mut app = search_app();
+    app.mode = Mode::Input(InputKind::Search);
+    app.input.buffer = "half typed".into();
+    app.input.cursor = 4;
+
+    app.toggle_help();
+    assert_eq!(app.mode, Mode::Help(HelpTopic::Search));
+    app.close_help();
+
+    assert_eq!(app.mode, Mode::Input(InputKind::Search));
+    assert_eq!(app.input.buffer, "half typed");
+    assert_eq!(app.input.cursor, 4);
+}
+
+#[test]
+fn f1_toggles_and_a_second_open_never_makes_help_its_own_return_point() {
+    let mut app = search_app();
+    app.toggle_help();
+    assert!(matches!(app.mode, Mode::Help(_)));
+    app.toggle_help();
+    assert_eq!(app.mode, Mode::Normal);
+
+    app.mode = Mode::ConfirmState;
+    app.open_help(HelpTopic::Keys);
+    app.open_help(HelpTopic::TypeSafe); // e.g. switching page
+    app.close_help();
+    assert_eq!(app.mode, Mode::ConfirmState);
+}
+
+#[test]
+fn session_help_returns_to_the_session() {
+    let mut app = search_app();
+    app.mode = Mode::Harness;
+    app.open_session_help();
+    assert!(app.help_is_session());
+    app.close_help();
+    assert_eq!(app.mode, Mode::Harness);
+
+    app.mode = Mode::Normal;
+    app.open_help(HelpTopic::Keys);
+    assert!(!app.help_is_session(), "list help is not the session table");
+}
+
+#[test]
+fn pages_cycle_both_ways_and_start_at_the_top() {
+    let mut app = search_app();
+    app.open_help(HelpTopic::TypeSafe);
+    app.help.scroll = 9;
+    app.help_switch(1);
+    assert_eq!(app.mode, Mode::Help(HelpTopic::Keys), "wraps forward");
+    assert_eq!(app.help.scroll, 0, "a new page starts at the top");
+    app.help_switch(-1);
+    assert_eq!(app.mode, Mode::Help(HelpTopic::TypeSafe), "wraps back");
+
+    let mut seen = Vec::new();
+    app.open_help(HelpTopic::Keys);
+    for _ in 0..HelpTopic::ALL.len() {
+        if let Mode::Help(t) = app.mode {
+            seen.push(t);
+        }
+        app.help_switch(1);
+    }
+    assert_eq!(seen, HelpTopic::ALL, "every page is on the strip, in order");
+}
+
+#[test]
+fn help_scroll_is_clamped_to_the_page() {
+    let mut s = HelpState::default();
+    s.scroll_by(-5, 10);
+    assert_eq!(s.scroll, 0);
+    s.scroll_by(7, 10);
+    s.scroll_by(7, 10);
+    assert_eq!(s.scroll, 10);
+    s.scroll_by(-3, 10);
+    assert_eq!(s.scroll, 7);
+}
+
+fn status_of(app: &App, topic: HelpTopic) -> Vec<(&'static str, String, Tone)> {
+    app.help_status(topic)
+        .into_iter()
+        .map(|l| (l.label, l.value, l.tone))
+        .collect()
+}
+
+#[test]
+fn every_feature_page_opens_with_its_own_status_line_and_keys_with_none() {
+    let app = search_app();
+    assert!(app.help_status(HelpTopic::Keys).is_empty());
+    for (topic, label) in [
+        (HelpTopic::Search, "semantic search"),
+        (HelpTopic::Readiness, "readiness badge"),
+        (HelpTopic::Priority, "priority ranks"),
+    ] {
+        let rows = status_of(&app, topic);
+        assert_eq!(rows.len(), 1, "{topic:?}");
+        assert_eq!(rows[0].0, label);
+    }
+    let all = status_of(&app, HelpTopic::TypeSafe);
+    let labels: Vec<&str> = all.iter().map(|r| r.0).collect();
+    assert_eq!(
+        labels,
+        [
+            "TYPESAFE_API_KEY",
+            "send_issue_text",
+            "infer_priority_ranks",
+            "semantic search",
+            "readiness badge",
+            "priority ranks"
+        ]
+    );
+}
+
+#[test]
+fn status_names_the_setting_that_is_missing() {
+    let mut app = search_app();
+
+    // Nothing configured: the flag is named, not the key — the flag is the
+    // choice the user makes.
+    app.typesafe = Status::new(false, false, None);
+    let rows = status_of(&app, HelpTopic::TypeSafe);
+    assert_eq!(rows[0], ("TYPESAFE_API_KEY", "not set".into(), Tone::Off));
+    assert_eq!(rows[1], ("send_issue_text", "false".into(), Tone::Off));
+    assert_eq!(
+        rows[3],
+        (
+            "semantic search",
+            "off — send_issue_text is false".into(),
+            Tone::Off
+        )
+    );
+    assert_eq!(
+        rows[5],
+        (
+            "priority ranks",
+            "off — infer_priority_ranks is false".into(),
+            Tone::Off
+        )
+    );
+
+    // Flag set, key missing.
+    app.typesafe = Status::new(true, true, None);
+    let rows = status_of(&app, HelpTopic::TypeSafe);
+    assert_eq!(rows[3].1, "off — TYPESAFE_API_KEY is not set");
+    assert_eq!(rows[5].1, "off — TYPESAFE_API_KEY is not set");
+
+    // Both.
+    app.typesafe = Status::new(true, true, Some("k"));
+    let rows = status_of(&app, HelpTopic::TypeSafe);
+    assert_eq!(rows[0], ("TYPESAFE_API_KEY", "set".into(), Tone::On));
+    for row in &rows[3..] {
+        assert_eq!(row.1, "on", "{}", row.0);
+        assert_eq!(row.2, Tone::On, "{}", row.0);
+    }
+}
+
+/// The two flags are independent: one on must not read as the other on.
+#[test]
+fn status_keeps_the_two_flags_independent() {
+    let mut app = search_app();
+    app.typesafe = Status::new(false, true, Some("k"));
+    let rows = status_of(&app, HelpTopic::TypeSafe);
+    assert_eq!(rows[3].1, "on", "semantic search");
+    assert_eq!(rows[4].1, "on", "readiness");
+    assert!(
+        rows[5].1.starts_with("off"),
+        "priority ranks: {}",
+        rows[5].1
+    );
+}
+
+#[test]
+fn status_reports_a_failure_and_how_it_recovers() {
+    let mut app = consenting_search_app();
+    app.set_text_filter(QUERY.into());
+    let (g, _, _) = app.begin_semantic_search().unwrap();
+    app.apply_semantic_search(g, Err("boom".into()));
+
+    let rows = status_of(&app, HelpTopic::Search);
+    assert_eq!(rows[0].2, Tone::Failed);
+    assert!(rows[0].1.contains("switching org"), "{}", rows[0].1);
+
+    // The badge fails independently, and recovers on the next refresh.
+    let (mut r, id) = readiness_app();
+    r.typesafe = Status::new(false, true, Some("k"));
+    r.apply_readiness(id, Err("x".into()));
+    let rows = status_of(&r, HelpTopic::Readiness);
+    assert_eq!(rows[0].2, Tone::Failed);
+    assert!(rows[0].1.contains("next refresh"), "{}", rows[0].1);
 }

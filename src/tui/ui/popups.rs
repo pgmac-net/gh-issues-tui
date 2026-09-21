@@ -441,7 +441,10 @@ pub(super) fn draw_input_popup(f: &mut Frame, app: &App, t: &Theme, kind: InputK
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(t.accent))
-            .title(format!(" {} ", input_prompt(kind))),
+            .title(format!(" {} ", input_prompt(kind)))
+            .title_bottom(
+                Line::from(Span::styled(" F1 help ", Style::default().fg(t.dim))).right_aligned(),
+            ),
     );
     f.render_widget(para, area);
 }
@@ -552,29 +555,45 @@ const HARNESS_HELP: &[(&str, &str)] = &[
     ("q", "back to the list"),
 ];
 
-/// Which key table `?` should show. Help is reachable from exactly two places
-/// — `?` in the list and `F12 ?` in a session — and showing the list's keys to
-/// someone inside a session is the gap #132 closes.
-pub(super) fn draw_help(f: &mut Frame, t: &Theme, in_session: bool) {
-    if in_session {
-        draw_key_table(
-            f,
-            t,
-            " session keys ",
-            HARNESS_HELP,
-            Some("every key goes to the agent, except:"),
-            52,
-        );
-    } else {
-        draw_key_table(f, t, " keys ", LIST_HELP, None, 52);
-    }
+/// The `F12 ?` help, over a session. Showing the list's keys to someone inside
+/// a session is the gap #132 closed: a session forwards almost every key to the
+/// agent, so the app's own keys would be actively wrong there. Everywhere else
+/// help is the topic viewer (`ui::help`, #184).
+pub(super) fn draw_session_help(f: &mut Frame, t: &Theme) {
+    draw_key_table(
+        f,
+        t,
+        " session keys ",
+        HARNESS_HELP,
+        Some("every key goes to the agent, except:"),
+        52,
+    );
+}
+
+/// One row per key: the key in accent, then what it does. A blank pair is a
+/// spacer between groups, not a key.
+pub(super) fn key_table_lines(
+    rows: &[(&'static str, &'static str)],
+    t: &Theme,
+) -> Vec<Line<'static>> {
+    rows.iter()
+        .map(|(k, v)| {
+            if k.is_empty() && v.is_empty() {
+                return Line::raw("");
+            }
+            Line::from(vec![
+                Span::styled(format!(" {k:<10}"), Style::default().fg(t.accent).bold()),
+                Span::raw(*v),
+            ])
+        })
+        .collect()
 }
 
 fn draw_key_table(
     f: &mut Frame,
     t: &Theme,
     title: &str,
-    rows: &[(&str, &str)],
+    rows: &[(&'static str, &'static str)],
     preamble: Option<&str>,
     width: u16,
 ) {
@@ -586,16 +605,7 @@ fn draw_key_table(
         )));
         lines.push(Line::raw(""));
     }
-    lines.extend(rows.iter().map(|(k, v)| {
-        // A blank pair is a spacer between groups, not a key.
-        if k.is_empty() && v.is_empty() {
-            return Line::raw("");
-        }
-        Line::from(vec![
-            Span::styled(format!(" {k:<10}"), Style::default().fg(t.accent).bold()),
-            Span::raw(*v),
-        ])
-    }));
+    lines.extend(key_table_lines(rows, t));
 
     let area = centered(f.area(), width, lines.len() as u16 + 2);
     f.render_widget(Clear, area);
@@ -613,7 +623,7 @@ fn draw_key_table(
 }
 
 /// Keys available from the issue list and detail pane.
-const LIST_HELP: &[(&str, &str)] = &[
+pub(super) const LIST_HELP: &[(&str, &str)] = &[
     ("j/k ↑/↓", "move list / scroll detail region"),
     ("Space", "collapse/expand repo group"),
     ("←", "collapse repo group / back to list"),
@@ -631,6 +641,7 @@ const LIST_HELP: &[(&str, &str)] = &[
     ("#", "jump to issue number"),
     ("f", "cycle state filter (open/closed/all)"),
     ("F", "filter editor (pickers + calendar)"),
+    ("? / F1", "help for where you are (F1 works while typing)"),
     ("s / S", "cycle sort key / toggle direction"),
     ("w", "switch org/owner"),
     ("c", "add comment (inline, Tab to buttons, Ctrl+S save)"),
@@ -769,15 +780,30 @@ mod tests {
         assert!(!text.contains("Adopted"), "got: {text}");
     }
 
-    /// The help popup's text, for whichever table `in_session` selects.
+    /// The help popup's text: the session table over a session, otherwise the
+    /// viewer's keys page (#184).
     fn rendered_help(in_session: bool) -> String {
+        use crate::tui::app::HelpTopic;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let backend = TestBackend::new(60, 40);
+        // Tall enough that the viewer's 80% height holds the whole key table.
+        let backend = TestBackend::new(60, 80);
         let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app();
+        if in_session {
+            app.open_session_help();
+        } else {
+            app.open_help(HelpTopic::Keys);
+        }
         terminal
-            .draw(|f| draw_help(f, &Theme::default(), in_session))
+            .draw(|f| {
+                if in_session {
+                    draw_session_help(f, &Theme::default());
+                } else {
+                    super::super::help::draw_help(f, &app, &Theme::default(), HelpTopic::Keys);
+                }
+            })
             .unwrap();
         terminal
             .backend()

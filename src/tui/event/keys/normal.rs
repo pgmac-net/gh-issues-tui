@@ -59,7 +59,7 @@ pub(crate) fn handle_normal_key(
                 app.cycle_focus();
             }
         }
-        KeyCode::Char('?') => app.mode = Mode::Help,
+        KeyCode::Char('?') => app.open_help(app.context_topic()),
         KeyCode::Char('r') => {
             app.loading = true;
             app.status = Some("reloading…".into());
