@@ -15,10 +15,10 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.65,
+        "actionable": 0.63,
         "blocked": 0.04,
-        "criteria": 0.83,
-        "duplicate": 0.27,
+        "criteria": 0.85,
+        "duplicate": 0.23,
         "specifics": 0.88
       },
       "verdict": "ready — is specific and states an outcome"
@@ -37,7 +37,7 @@
         "actionable": 0.5,
         "blocked": 0.13,
         "criteria": 0.9,
-        "duplicate": 0.22,
+        "duplicate": 0.25,
         "specifics": 0.95
       },
       "verdict": "ready — is specific and states an outcome"
@@ -53,30 +53,30 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.59,
-        "blocked": 0.07,
+        "actionable": 0.57,
+        "blocked": 0.08,
         "criteria": 0.91,
-        "duplicate": 0.2,
+        "duplicate": 0.18,
         "specifics": 0.94
       },
       "verdict": "ready — is specific and states an outcome"
     },
     {
       "ref": "pgmac-net/nagios-public-status-page#71",
-      "note": "names the offending fixtures and files",
+      "note": "comment says 'Already fixed by 5e6e6e9 (PR #70, merged)'; body names the offending fixtures",
       "expect": {
         "actionable": "notvetoed",
         "blocked": "no",
         "criteria": "yes",
-        "duplicate": "no",
+        "duplicate": "yes",
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.53,
+        "actionable": 0.55,
         "blocked": 0.03,
         "criteria": 0.94,
         "duplicate": 0.97,
-        "specifics": 0.95
+        "specifics": 0.94
       },
       "verdict": "may be a duplicate — the thread says this is covered elsewhere"
     },
@@ -91,11 +91,11 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.95,
+        "actionable": 0.94,
         "blocked": 0.07,
         "criteria": 0.91,
         "duplicate": 0.03,
-        "specifics": 0.82
+        "specifics": 0.83
       },
       "verdict": "ready — is specific and states an outcome"
     },
@@ -110,10 +110,10 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.56,
+        "actionable": 0.54,
         "blocked": 0.07,
         "criteria": 0.91,
-        "duplicate": 0.55,
+        "duplicate": 0.54,
         "specifics": 0.93
       },
       "verdict": "unsure — cannot judge duplicate"
@@ -129,11 +129,11 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.48,
-        "blocked": 0.49,
+        "actionable": 0.46,
+        "blocked": 0.43,
         "criteria": 0.88,
-        "duplicate": 0.13,
-        "specifics": 0.82
+        "duplicate": 0.12,
+        "specifics": 0.81
       },
       "verdict": "unsure — cannot judge blocked"
     },
@@ -151,8 +151,8 @@
         "actionable": 0.46,
         "blocked": 0.04,
         "criteria": 0.88,
-        "duplicate": 0.87,
-        "specifics": 0.94
+        "duplicate": 0.86,
+        "specifics": 0.93
       },
       "verdict": "may be a duplicate — the thread says this is covered elsewhere"
     },
@@ -167,9 +167,9 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.97,
-        "blocked": 0.12,
-        "criteria": 0.22,
+        "actionable": 0.96,
+        "blocked": 0.13,
+        "criteria": 0.23,
         "duplicate": 0.06,
         "specifics": 0.77
       },
@@ -186,11 +186,11 @@
         "specifics": "no"
       },
       "probabilities": {
-        "actionable": 0.86,
-        "blocked": 0.09,
-        "criteria": 0.44,
+        "actionable": 0.87,
+        "blocked": 0.08,
+        "criteria": 0.45,
         "duplicate": 0.03,
-        "specifics": 0.29
+        "specifics": 0.28
       },
       "verdict": "unsure — cannot judge criteria"
     },
@@ -205,11 +205,11 @@
         "specifics": "no"
       },
       "probabilities": {
-        "actionable": 0.71,
-        "blocked": 0.1,
-        "criteria": 0.65,
+        "actionable": 0.69,
+        "blocked": 0.11,
+        "criteria": 0.6,
         "duplicate": 0.05,
-        "specifics": 0.58
+        "specifics": 0.59
       },
       "verdict": "unsure — cannot judge specifics, criteria"
     },
@@ -224,11 +224,11 @@
         "specifics": "no"
       },
       "probabilities": {
-        "actionable": 0.82,
-        "blocked": 0.11,
-        "criteria": 0.12,
+        "actionable": 0.83,
+        "blocked": 0.12,
+        "criteria": 0.13,
         "duplicate": 0.04,
-        "specifics": 0.17
+        "specifics": 0.16
       },
       "verdict": "thin — no specifics, criteria"
     },
@@ -243,8 +243,8 @@
         "specifics": "no"
       },
       "probabilities": {
-        "actionable": 0.14,
-        "blocked": 0.09,
+        "actionable": 0.16,
+        "blocked": 0.1,
         "criteria": 0.06,
         "duplicate": 0.32,
         "specifics": 0.12
@@ -262,11 +262,11 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.95,
-        "blocked": 0.11,
-        "criteria": 0.81,
+        "actionable": 0.94,
+        "blocked": 0.12,
+        "criteria": 0.82,
         "duplicate": 0.03,
-        "specifics": 0.49
+        "specifics": 0.48
       },
       "verdict": "unsure — cannot judge specifics"
     },
@@ -281,11 +281,11 @@
         "specifics": "unasserted"
       },
       "probabilities": {
-        "actionable": 0.47,
-        "blocked": 0.06,
-        "criteria": 0.59,
-        "duplicate": 0.04,
-        "specifics": 0.43
+        "actionable": 0.5,
+        "blocked": 0.07,
+        "criteria": 0.6,
+        "duplicate": 0.05,
+        "specifics": 0.42
       },
       "verdict": "unsure — cannot judge specifics, criteria"
     },
@@ -300,11 +300,11 @@
         "specifics": "unasserted"
       },
       "probabilities": {
-        "actionable": 0.39,
+        "actionable": 0.34,
         "blocked": 0.04,
-        "criteria": 0.76,
-        "duplicate": 0.16,
-        "specifics": 0.68
+        "criteria": 0.77,
+        "duplicate": 0.17,
+        "specifics": 0.67
       },
       "verdict": "unsure — cannot judge specifics"
     },
@@ -319,8 +319,8 @@
         "specifics": "yes"
       },
       "probabilities": {
-        "actionable": 0.68,
-        "blocked": 0.06,
+        "actionable": 0.64,
+        "blocked": 0.07,
         "criteria": 0.85,
         "duplicate": 0.04,
         "specifics": 0.86
@@ -341,7 +341,7 @@
         "actionable": 0.13,
         "blocked": 0.19,
         "criteria": 0.08,
-        "duplicate": 0.04,
+        "duplicate": 0.03,
         "specifics": 0.11
       },
       "verdict": "not a work item — reads as a question or update"
@@ -359,9 +359,9 @@
       "probabilities": {
         "actionable": 0.06,
         "blocked": 0.06,
-        "criteria": 0.68,
-        "duplicate": 0.25,
-        "specifics": 0.81
+        "criteria": 0.71,
+        "duplicate": 0.3,
+        "specifics": 0.8
       },
       "verdict": "not a work item — reads as a question or update"
     },
@@ -377,9 +377,9 @@
       },
       "probabilities": {
         "actionable": 0.97,
-        "blocked": 0.08,
+        "blocked": 0.07,
         "criteria": 0.77,
-        "duplicate": 0.28,
+        "duplicate": 0.27,
         "specifics": 0.78
       },
       "verdict": "ready — is specific and states an outcome"
@@ -415,12 +415,12 @@
       },
       "probabilities": {
         "actionable": 0.65,
-        "blocked": 0.33,
-        "criteria": 0.87,
-        "duplicate": 0.11,
-        "specifics": 0.76
+        "blocked": 0.28,
+        "criteria": 0.86,
+        "duplicate": 0.1,
+        "specifics": 0.74
       },
-      "verdict": "unsure — cannot judge blocked"
+      "verdict": "ready — is specific and states an outcome"
     }
   ]
 }

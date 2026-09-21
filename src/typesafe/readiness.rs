@@ -1259,22 +1259,47 @@ query($owner: String!, $name: String!, $number: Int!) {
         assert_eq!(rec.no, NO);
     }
 
-    /// **Known-bad, pinned deliberately.** `duplicate` does not separate: the
-    /// worst asserted `no` scores *above* the worst asserted `yes`, so no
-    /// threshold can split it.
+    /// `duplicate` separates, and its veto is right on both real duplicates.
     ///
-    /// It conflates "covered somewhere else" with "this ticket is finished", and
-    /// a closed thread ends in its own completion notice (#170). Needs redesign,
-    /// not rewording. When that lands, this test changes.
+    /// #168 reported the opposite — worst asserted `no` 0.97 above worst asserted
+    /// `yes` 0.87 — and #170 was filed as "needs redesign". Both rested on one
+    /// wrong expectation: `nagios-public-status-page#71` was marked `no` from its
+    /// body, but its only comment says "Already fixed by 5e6e6e9 (PR #70,
+    /// merged)". The model read the comment and was right. Corrected in the commit
+    /// before this one was recorded.
+    ///
+    /// The veto reads `duplicate` as `> YES`, so what has to hold is that it fires
+    /// on the asserted `yes` cases and on none of the asserted `no` ones — not a
+    /// two-sided gap. It also has to hold that `YES` sits inside the measured gap,
+    /// or moving it would change that.
     #[test]
-    fn duplicate_does_not_separate_and_that_is_recorded() {
+    fn duplicate_separates_and_its_veto_is_right() {
         let rec = recording();
         let (worst_no, worst_yes) = gap(&rec, Signal::Duplicate).expect("both sides asserted");
         assert!(
-            worst_no > worst_yes,
-            "`duplicate` now separates ({worst_no:.2} .. {worst_yes:.2}) \u{2014} good news, \
-             but the claims in the docs and this test must be updated"
+            worst_no < worst_yes,
+            "`duplicate` stopped separating ({worst_no:.2} .. {worst_yes:.2}) \u{2014} {RECALIBRATE}"
         );
+        assert!(
+            worst_no < YES && YES <= worst_yes,
+            "YES = {YES} is outside duplicate's gap ({worst_no:.2} .. {worst_yes:.2}]"
+        );
+        for c in &rec.cases {
+            let p = c.probabilities["duplicate"];
+            match c.expect["duplicate"] {
+                Expect::Yes => assert!(
+                    p > YES,
+                    "{} is a real duplicate but scores {p:.2} and escapes the veto",
+                    c.r#ref
+                ),
+                Expect::No => assert!(
+                    p <= YES,
+                    "{} is not a duplicate but scores {p:.2} and would be vetoed",
+                    c.r#ref
+                ),
+                _ => {}
+            }
+        }
     }
 
     /// **Pinned as measured (#171).** `specifics` replaced `repro`, whose gap was
