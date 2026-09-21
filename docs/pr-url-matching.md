@@ -126,17 +126,37 @@ rules:
    alone. An unterminated fence masks to the end of the text, which is the safe
    direction to err in.
 
+   **The rules for what counts as code are not this module's.** They live in
+   `src/codespan.rs` and are shared with the markdown renderer (#157), so the two
+   cannot disagree about where code is: a fence closes on the same character and a
+   run at least as long as its opener, a span closes on a run of exactly the same
+   length, a backtick preceded by an odd number of backslashes is literal, and an
+   unmatched run is skipped whole. Each side keeps its own output shape — the
+   scanner masks byte ranges, the renderer draws lines.
+
+   Two consequences for reading references: a reference *between* escaped backticks
+   (`` \` #123 \` ``) is a candidate, because the backticks are prose; and one
+   glued to a backtick (`` `#123` ``) is not, because a backtick is not a valid
+   boundary (rule 1) whatever the masking does.
+
 No cap is placed on the number of digits. It would kill 6-digit hex colours
 outright, but at the cost of correctness on any repo whose issue numbers exceed
 99999 — and rule 3 already handles the realistic cases.
 
-### The known cost
+### `github.com/o/r#129` is not a reference
 
-`github.com/o/r#129` — a repo URL with a numeric fragment — matches **nothing**,
-because the owner is preceded by `/`. Rule 1 is what keeps the scanner out of
-URLs generally, so this case is the price of that. It is pinned by
-`parse_pr_links_skips_a_repo_url_with_a_numeric_fragment` so it stays a
-deliberate trade rather than something rediscovered as a bug.
+A repo URL with a numeric fragment matches **nothing**, because the owner is
+preceded by `/` — and that is the *right* answer. On GitHub a fragment on a repo
+URL is a page anchor, not an issue number: `github.com/o/r#129` opens the repo page,
+scrolled to an anchor called `129` that does not exist, and never reaches issue 129.
+Rule 1 keeps the scanner out of URLs generally, and this is a case where staying out
+is correct.
+
+It was described here as "the known cost" of rule 1, and briefly proposed as the
+motivation for replacing the scanner's masking with a model judgement (#157). Neither
+was right: there is no false negative to fix. It is pinned by
+`parse_pr_links_skips_a_repo_url_with_a_numeric_fragment` so it stays a deliberate
+non-match rather than something rediscovered as a bug.
 
 ## The behaviour change to watch
 

@@ -1232,3 +1232,59 @@ One line in the corpus-limits section, saying the gaps were reviewed here and ju
 ## Still open, and recorded
 
 `blocked = yes` is unmeasured, so `MaybeBlocked`'s decisive sibling has no corpus case; `duplicate = yes` rests on two cases; `specifics` is inverted by 0.11, so `YES`/`NO` stay unjustified. This ticket's job was to decide whether that was acceptable, not to fix it.
+
+
+# Development log — share fence and code-span rules between renderer and scanner (2026-09-21)
+
+Work driven by [pgmac-net/gh-issues-tui#157](https://github.com/pgmac-net/gh-issues-tui/issues/157), on branch `157-shared-code-span-rules`.
+
+#157 was rewritten before it was picked up. Its original form proposed replacing the PR-link scanner's code masking with a TypeSafe judgement, and contradicted itself: it deleted the scanner while also requiring a fallback to it. Checking its claims found that its headline false negative (`github.com/o/r#129`) is correct behaviour, that the false positive it defended against had never occurred, and that the real complaint — two parsers to keep in sync — is a layering problem, not a model problem. What remained is a bug with a fix.
+
+## What was actually wrong
+
+The renderer and the scanner each parsed fences and inline spans, and disagreed. **Each was right where the other was wrong**, so the ticket's "the scanner is the basis" was only half true:
+
+| input | renderer | scanner | correct |
+|---|---|---|---|
+| a ```` fence holding a ``` line | closes early; the real closer opens a fence to end of text | correct | scanner |
+| ``` ``a ` b`` ``` | empty span, stray text, leftover backtick | correct | scanner |
+| `` \`#123\` `` (escapes) | correct | treats `\`` as a span opener | renderer |
+
+All three were reproduced with throwaway probes before the plan, then reverted.
+
+## The change
+
+New `src/codespan.rs`, importing nothing from `tui` or `provider`. It shares the **rules**, not a return type: the renderer wants line-oriented fences and char-indexed spans, the scanner wants byte ranges, and each keeps its own shape. Fence close needs the same character and a run at least as long as the opener; a span closes on a run of equal length; a backtick after an odd number of backslashes is literal; one padding space each side is stripped; an unmatched run is skipped **whole**.
+
+Left alone deliberately: rules both sides get wrong *together* — 4+ spaces of indent, info strings on a closing fence, backticks in a backtick fence's info string. Not divergences, and unreported.
+
+## Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Escapes | The shared rule honours them | Sharing the scanner's rule as written would have regressed the renderer, which handles `\`` correctly today |
+| Scope | Divergences, escapes, and one-space stripping | Without stripping, a working `` `` `code` `` `` would render with stray padding and look broken |
+| Return type | None shared | The two consumers genuinely need different shapes |
+
+## Where my plan was wrong
+
+- **The plan's example for the scanner's behaviour change was wrong.** It said `` \`#123\` `` becomes a candidate. It never could: a backtick directly before the `#` fails `is_ref_boundary`, so that was not a reference whatever the masking did. The real case needs a boundary — `` \` #123 \` `` — and the plan's stated behaviour change stands, with a corrected example. A test now pins the boundary case separately.
+- **That boundary rule then caught my own tests three times.** Any test with `` `#9` `` puts a backtick before the `#`, so the mask decided nothing and the test passed vacuously. It surfaced as a *surviving mutant*: replacing the scanner's char-to-byte mapping with the char index left every test green. Fixing the multibyte test exposed the same flaw in the escaped-backslash test and four entries of the parity corpus, all of which had a scanner half that proved nothing. The lesson is in `CLAUDE.md` because it will recur: **give a scanner test's reference a valid boundary.**
+- **The unmatched-run behaviour was not in the plan.** Skipping one backtick at a time would let the second backtick of an unmatched `` `` `` retry as a run of one and pair with a later single. Found while designing `Backticks::Literal { end }`; pinned by a test on each side.
+
+## Diversions from plan
+
+- The three vacuous tests and the surviving mutant, above.
+- A `Backticks` enum with a `Literal { end }` case rather than the plan's `Option<(Range, usize)>`, so callers learn how far to skip — the mechanism behind whole-run skipping.
+- `find_char` stays in `inline.rs`: the link arms still use it, as the plan noted.
+
+## Verification
+
+- `cargo test` — 780 passed, 0 failed (24 new). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean. Every existing `parse_pr_links_*` test passes **unchanged**.
+- **Mutation-checked eight ways**, each failing a test: the renderer's old fence rule, its old span rule, the scanner's old escape rule, one-at-a-time run skipping, padding never stripped, a wrong char-to-byte mapping, the renderer re-inlining a looser fence closer (the drift the parity test guards), and an escape that ignores backslash parity. Two of those eight only failed after the tests were strengthened.
+- Not driven visually against the running app; rendering is covered by golden-style span assertions.
+
+## Behaviour changes
+
+- **Renderer:** nested fences and multi-backtick spans now render correctly, and a padded span drops its padding. No regression — escapes already worked.
+- **Scanner:** a reference between escaped backticks is now a candidate; it used to be masked. That is the correct reading of the rendered text, but it does change `parse_pr_links` output.

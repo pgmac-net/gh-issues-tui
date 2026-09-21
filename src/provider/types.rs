@@ -426,10 +426,12 @@ fn code_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
 /// False positives are held down by three rules: matches inside fenced code
 /// blocks and inline code spans are skipped, a shorthand must be preceded by a
 /// boundary ([`is_ref_boundary`]), and its digits must be terminated
-/// ([`ends_ref`]). One consequence worth knowing: `github.com/o/r#129` — a repo
-/// URL with a numeric fragment — matches nothing, because the owner is
-/// preceded by `/`. That same rule is what keeps the scanner out of URLs at
-/// large, so the trade is deliberate.
+/// ([`ends_ref`]). `github.com/o/r#129` — a repo URL with a numeric fragment —
+/// matches nothing, because the owner is preceded by `/`, and that is correct: a
+/// fragment on a repo URL is a page anchor, not issue 129.
+///
+/// What counts as code is decided by [`crate::codespan`], shared with the
+/// markdown renderer so the two cannot disagree (#157).
 pub fn parse_pr_links(text: &str, current: Option<(&str, &str)>) -> Vec<PrRef> {
     const MARKER: &str = "github.com/";
     let masks = code_ranges(text);
@@ -827,9 +829,10 @@ mod tests {
         assert!(parse_pr_links("#12abc", HERE).is_empty());
     }
 
-    /// The rule that keeps the scanner out of URLs also costs this case: a
-    /// repo URL with a numeric fragment matches nothing, because the owner is
-    /// preceded by `/`. Pinned so the trade-off is deliberate, not discovered.
+    /// A repo URL with a numeric fragment matches nothing, because the owner is
+    /// preceded by `/`. That is the right answer, not a cost: on GitHub the
+    /// fragment is a page anchor, so `github.com/o/r#129` never reaches issue 129.
+    /// Pinned so it stays a deliberate non-match rather than a rediscovered bug.
     #[test]
     fn parse_pr_links_skips_a_repo_url_with_a_numeric_fragment() {
         assert!(parse_pr_links("https://github.com/o/r#129", HERE).is_empty());
