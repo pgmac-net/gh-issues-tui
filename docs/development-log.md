@@ -1361,3 +1361,35 @@ Work driven by [pgmac-net/gh-issues-tui#183](https://github.com/pgmac-net/gh-iss
 - The README config example gains a `send_issue_text` line.
 - The `Config::send_issue_text` comment now names semantic search.
 - `semantic-search.md` gains "Telling whether it is on". Nothing on screen shows it, which the doc now says plainly.
+
+
+# Development log — in-app contextual help, and a semantic-search indicator (2026-09-22)
+
+Work driven by [pgmac-net/gh-issues-tui#184](https://github.com/pgmac-net/gh-issues-tui/issues/184), on branch `184-in-app-help`. Design notes in [`in-app-help.md`](in-app-help.md); the four content pages are `docs/help/*.md`.
+
+Scope grew during pickup: the completion of #183 named a possible follow-up — an on-screen indicator that semantic search is on — and the requester folded it into this ticket at pickup time rather than leaving it a loose thread.
+
+## What shipped
+
+Five help pages (`keys`, `search`, `readiness`, `priority`, `typesafe`), reached by `?` from the list or `F1` from anywhere else including mid-typed input, opening on the page that fits where you are. Each feature page opens with a generated status line built from `typesafe::Status`, never a value that could leak the key. Separately, the info bar now shows `semantic: searching…` / `+N` / `off (reason)` while a query that would be sent is typed.
+
+## Two things this needed that weren't obvious from the ticket
+
+**`Filters::matches` had no notion of "matched by substring alone".** The "+N" count needed to distinguish issues semantic search added from issues the plain text match already showed, and the existing `matches` folds both into one boolean. Pulled the substring check out into its own `Filters::substring_match`, used by both `matches` and the indicator — one extra public method, no behaviour change to `/`.
+
+**`Mode::Help` could not carry a topic without becoming a genuine state machine.** The old help was one popup that any key dismissed. Five pages you might want to scroll needed a topic, a return point that survives switching pages, and a scroll position — `Mode::Help(HelpTopic)` plus a small `HelpState`, on the same footing as `PrState`/`ReadinessState` rather than bolted onto `Mode` as a tuple of primitives.
+
+## Design decisions from grilling, and why
+
+- **`F1`, not a chord, and not `?` everywhere.** `?` is a typed character in every text input this app has; making it also open help there would break typing a literal `?` into a search. `F1` is unclaimed and conventional. It is intercepted ahead of every mode's key handler except `Harness`, where every key already belongs to the agent.
+- **Closing returns to the exact mode, not always `Normal`.** Help opened mid-search must hand back a half-typed buffer, not drop it. `return_to` is set only on the transition *into* help, never on a page switch — the bug this avoids (help becoming its own return point) is exactly the kind that stays invisible in a demo and breaks the first time someone switches pages before closing.
+- **The keys page is generated, the other four are files.** The key table already existed and already gets edited when a key changes; writing a second markdown copy of it would drift within a release or two. The four feature pages have no code equivalent to generate from, so they are `docs/help/*.md`, embedded with `include_str!`, and held to the code by tests rather than by generation.
+- **A live status block, not static prose.** A page that says "works when X is set" without saying whether X *is* set answers a different question than the one someone opens help to ask. The block is assembled from `typesafe::Status`, which is display data (never the key's value) and — pinned by a test — cannot disagree with `Client::from_settings` about what "on" means.
+- **The indicator lives in the info bar, in help nowhere.** "Is this working" while typing a search wants to be visible without a keypress; a help page opened deliberately is the wrong place for something that changes every few seconds.
+
+## Verification
+
+- `cargo test`: 859 pass. clippy `-D warnings` and fmt clean.
+- Sixteen hand mutations, each caught — two only after strengthening the test that first let them through (see `in-app-help.md`).
+- Driven manually in `tmux`: `?`/`F1` from the list, a popup, and mid-typed search (buffer survives close); every page in turn against the real dev config (`infer_priority_ranks = true`, no `send_issue_text`, key present) — correctly showed priority ranks on and the two text features off; scrolling to both ends; `F12 ?` inside a session; clean quit, no panic in the session log.
+- **Not driven live:** a real semantic-search or readiness request reaching the indicator or a feature page's status through an actual TypeSafe call — `#158`/`#160` cover that request path; this ticket verified the display around it.

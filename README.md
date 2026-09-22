@@ -255,7 +255,7 @@ code_number  = "#dcdcdc"
 | `Z` | switch between harness sessions |
 | `n` | create a new issue in the selected repo (opens the form) |
 | `r` | reload all data |
-| `?` | help |
+| `?` / `F1` | contextual help for where you are — `?` in the list, `F1` from anywhere else, even mid-typed input (see [In-app help](#in-app-help)) |
 | `q` | quit |
 
 Sort keys: updated, created, closed, state, assignee, author, priority.
@@ -311,6 +311,12 @@ With the detail pane open, `P` scans the issue's body and its loaded comment thr
 
 The shorthands cannot say whether a number is a PR or an issue — GitHub draws both from one per-repo sequence — so a candidate is only resolved when you open it. If it turns out to be an issue, the popup says so and `o`/Enter jumps the selector to it, falling back to opening it in a browser when it isn't in the loaded data. References inside code fences and inline code spans are ignored. See `docs/pr-url-matching.md`.
 
+### In-app help
+
+`?` (from the list) or `F1` (from anywhere else, including while typing a search or inside a popup) opens a help viewer with five pages: **keys** (this table), **search**, **readiness**, **priority** and **typesafe** (setup for all three TypeSafe features). `←`/`→` or `Tab`/`Shift+Tab` switch page, `j`/`k`/`↑`/`↓`/`PageUp`/`PageDown` scroll, `Esc`/`q`/`?`/`F1` close it and return to exactly where you were — a half-typed search included. `?` opens the page for the current context: the filter editor's `text` and `priority` rows open **search** and **priority**; the detail pane, once a readiness badge has landed, opens **readiness**; everywhere else opens **keys**.
+
+The **search**, **readiness** and **priority** pages open with a line reporting whether that feature is on, and why not if it isn't; **typesafe** opens with all three plus whether the key is present (never its value). See `docs/help/*.md` for the pages themselves and `docs/in-app-help.md` for how they are kept honest.
+
 ### Harness sessions
 
 `A` starts the configured coding agent for the selected issue, in that repo's clone, on a real PTY drawn full-frame inside the TUI. Several sessions run at once, one per issue.
@@ -326,7 +332,7 @@ Inside a session **every key goes to the agent** — arrows, `Esc`, `Ctrl+C` and
 | `F12 ?` | help |
 | `F12 F12` | send a literal `F12` to the agent |
 
-`F12 ?` shows that table in-app. Help opened from inside a session lists these chords; `?` from the issue list keeps the list's own keys. The two tables are disjoint on purpose — a session forwards `n` and `/` to the agent, so offering them as app keys there would be actively wrong.
+`F12 ?` shows that table in-app; it is the one place `?`/`F1` keeps its old meaning rather than opening the topic viewer below — a session forwards `n` and `/` to the agent, so the app's own keys would be actively wrong there.
 
 Detaching is not killing: the agent keeps working and `Z` returns to it. When an agent exits, its session stays with the final screen frozen so the closing summary is still readable — `k`/`j` scroll, `G` jumps to the end, `q` leaves it in place, `x` dismisses it. The bottom status line shows `n running, m exited (Z)` whenever any session exists, and `q` with agents still running asks first, naming them.
 
