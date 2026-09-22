@@ -1,4 +1,5 @@
 use super::harness::SessionId;
+use super::help::HelpTopic;
 
 /// A visible row in the main list: repo header or issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +81,8 @@ pub enum Mode {
     SessionPicker,
     /// Confirmation popup whose `Yes` performs a harness action.
     ConfirmHarness(HarnessConfirm),
-    Help,
+    /// The help viewer (#184). Where it returns to is `App::help.return_to`.
+    Help(HelpTopic),
 }
 
 /// What a `Mode::ConfirmHarness` popup will do if confirmed. Each carries

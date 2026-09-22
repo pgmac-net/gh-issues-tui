@@ -1,6 +1,7 @@
 use super::prelude::*;
 use super::widgets::label_color;
 use crate::tui::app::FILTER_FIELDS;
+use crate::tui::app::search::SemanticIndicator;
 use crate::tui::app::{Focus, InputKind, Row};
 use ratatui::widgets::ListState;
 
@@ -159,6 +160,22 @@ pub(super) fn draw_info_bar(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         spans.push(Span::styled(
             "  [filters active — F to edit, F→c to clear]",
             Style::default().fg(t.warning),
+        ));
+    }
+    // Semantic search (#184): nothing on screen said it was on, or working, or
+    // had failed. Only while a query that would be sent is typed.
+    if let Some(s) = app.semantic_indicator() {
+        let (text, colour) = match s {
+            SemanticIndicator::Searching => ("semantic: searching…".to_string(), t.dim),
+            SemanticIndicator::Added(n) => (format!("semantic: +{n}"), t.accent),
+            SemanticIndicator::Off(why) if why.is_empty() => {
+                ("semantic: off".to_string(), t.warning)
+            }
+            SemanticIndicator::Off(why) => (format!("semantic: off ({why})"), t.warning),
+        };
+        spans.push(Span::styled(
+            format!("  {text}"),
+            Style::default().fg(colour),
         ));
     }
     spans.push(Span::styled("  ?:help", Style::default().fg(t.dim)));

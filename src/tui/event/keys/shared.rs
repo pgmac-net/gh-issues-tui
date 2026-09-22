@@ -140,6 +140,23 @@ pub(crate) fn pr_page_rows() -> i16 {
     ui::pr_summary_inner_height(rows) as i16
 }
 
+/// The help viewer's `PageUp`/`PageDown` step at the live terminal size — one
+/// viewport height.
+pub(crate) fn help_page_rows() -> i16 {
+    let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    ui::help_inner_height(rows) as i16
+}
+
+/// The furthest the open help page can usefully scroll at the live terminal
+/// size, measured off the same rows the viewer draws.
+pub(crate) fn help_scroll_max(app: &App) -> u16 {
+    let Mode::Help(topic) = app.mode else {
+        return 0;
+    };
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    ui::help_max_scroll(app, topic, cols, rows)
+}
+
 /// The furthest the PR summary popup can usefully scroll at the live terminal
 /// size — measured off the same row model the popup draws, so the clamp can't
 /// drift from the rows on screen.

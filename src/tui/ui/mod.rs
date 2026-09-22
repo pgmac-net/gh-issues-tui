@@ -7,6 +7,7 @@
 mod detail;
 mod form;
 mod harness;
+mod help;
 mod list;
 mod popups;
 mod pr;
@@ -16,6 +17,7 @@ mod widgets;
 mod testutil;
 
 pub use detail::{body_content_height, comment_height, comment_offset};
+pub use help::{help_inner_height, help_max_scroll};
 pub use pr::{pr_max_scroll, pr_summary_inner_height, pr_summary_inner_width, pr_targets};
 
 /// Items every rendering submodule needs. Kept in one place so the split
@@ -110,10 +112,7 @@ fn draw_popup(f: &mut Frame, app: &App, t: &Theme) {
         Mode::MovePicker => popups::draw_picker(f, app, t, popups::PickerSpec::move_target()),
         Mode::ConfirmMove => popups::draw_confirm_move_popup(f, app, t),
         Mode::ConfirmPriority => popups::draw_confirm_priority_popup(f, app, t),
-        // `active` is the same flag the dismiss path uses to decide where help
-        // returns to (`keys/mod.rs`), and `detach()` clears it — so it is a
-        // sound stand-in for "help was opened from inside a session".
-        Mode::Help => popups::draw_help(f, t, app.harness.active.is_some()),
+        Mode::Help(topic) => help::draw_help(f, app, t, topic),
         _ => {}
     }
 }

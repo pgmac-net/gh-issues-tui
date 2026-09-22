@@ -99,6 +99,17 @@ impl Default for Filters {
 }
 
 impl Filters {
+    /// The text as a literal: a lowercase substring of the title or body, or
+    /// the issue's number. Semantic hits are *not* consulted here — this is what
+    /// `/` matched before semantic search, and what the info bar's "+N added"
+    /// is measured against (#184).
+    pub fn substring_match(&self, issue: &Issue) -> bool {
+        let needle = self.text.to_lowercase();
+        issue.title.to_lowercase().contains(&needle)
+            || issue.body.to_lowercase().contains(&needle)
+            || issue.number.to_string() == needle.trim_start_matches('#')
+    }
+
     pub fn matches(&self, issue: &Issue, state: StateFilter) -> bool {
         let state_ok = match state {
             StateFilter::All => true,
@@ -108,15 +119,10 @@ impl Filters {
         if !state_ok {
             return false;
         }
-        if !self.text.is_empty() {
-            let needle = self.text.to_lowercase();
-            let hit = issue.title.to_lowercase().contains(&needle)
-                || issue.body.to_lowercase().contains(&needle)
-                || issue.number.to_string() == needle.trim_start_matches('#')
-                || self.semantic_hits.contains(&issue.id);
-            if !hit {
-                return false;
-            }
+        if !self.text.is_empty()
+            && !(self.substring_match(issue) || self.semantic_hits.contains(&issue.id))
+        {
+            return false;
         }
         if !self.assignee.is_empty()
             && !issue

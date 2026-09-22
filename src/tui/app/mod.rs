@@ -11,6 +11,7 @@ mod filter_input;
 mod filters;
 mod form;
 mod harness;
+pub mod help;
 mod mode;
 mod picker;
 mod pr;
@@ -27,6 +28,7 @@ pub use editor::*;
 pub use filters::*;
 pub use form::*;
 pub use harness::{HarnessState, LaunchAction, SessionId, SessionMeta, SessionStatus};
+pub use help::{HelpState, HelpTopic, StatusLine, Tone};
 pub use mode::*;
 pub use picker::PickerState;
 pub use pr::PrState;
@@ -112,6 +114,11 @@ pub struct App {
     /// Semantic search (#158): what has been judged for the current text
     /// query, and whether asking has failed this session.
     pub search: SearchState,
+    /// What TypeSafe features are configured, for the help pages and info bar
+    /// to report (#184). Display only — the clients live in the event loop.
+    pub typesafe: crate::typesafe::Status,
+    /// The help viewer's return point and scroll (#184).
+    pub help: HelpState,
     /// Coding-harness sessions (#23) — metadata only; the PTYs themselves
     /// are owned by the event loop. Deliberately *not* reset by
     /// `switch_org`: an agent working a ticket is unaffected by the list
@@ -166,6 +173,8 @@ impl App {
             comment_cache: HashMap::new(),
             readiness: ReadinessState::default(),
             search: SearchState::default(),
+            typesafe: Default::default(),
+            help: HelpState::default(),
             pr: PrState::default(),
             label_rank: RankState::default(),
             harness: HarnessState::default(),
@@ -179,7 +188,13 @@ impl App {
     pub fn should_auto_refresh(&self) -> bool {
         !self.loading
             && self.rate_limit_error.is_none()
-            && matches!(self.mode, Mode::Normal | Mode::Help)
+            && match self.mode {
+                Mode::Normal => true,
+                // Help opened over anything else is over a popup or an input,
+                // and a refresh replaces the data under it.
+                Mode::Help(_) => self.help.return_to == Mode::Normal,
+                _ => false,
+            }
     }
 
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {

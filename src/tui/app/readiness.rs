@@ -45,7 +45,6 @@ impl ReadinessState {
     }
 
     /// Asking has failed this session, so nothing will ask again.
-    #[cfg(test)]
     pub fn has_failed(&self) -> bool {
         self.failed
     }

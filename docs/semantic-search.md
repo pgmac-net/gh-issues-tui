@@ -41,16 +41,20 @@ issue text.
 
 ## Telling whether it is on
 
-**Nothing on screen says so.** A search that works is silent: extra rows simply
-join the substring matches a few seconds after you type. Two ways to check:
+Since #184, the info bar says so while a query that would be sent is typed:
 
-- search for something in *other words* than an issue you know exists — if it
-  appears after a moment, semantic search is on;
-- a failure is never silent — the status bar shows
-  `semantic search off for this session: <reason>`, and `/` is substring-only
-  until the app restarts.
+- `semantic: searching…` — a request is out.
+- `semantic: +3` — it landed and added 3 issues the substring match did not
+  already show. `+0` is a real answer: nothing else scored above
+  `SEARCH_YES`.
+- `semantic: off (<reason>)` — asking failed. `/` is substring-only until you
+  switch org (`w`), which retries. Before #184 this needed the status bar's
+  one-off message, which used the same wording but has since been folded into
+  the indicator.
 
-A bare number (`#123`) or an empty query never sends, so it never adds rows.
+Nothing is shown without the consent and key, or for a query that is never
+sent (empty, or a bare `#123`) — a user who has not opted in sees nothing new.
+See `docs/help/search.md` for the in-app version of this section.
 
 ## What is sent
 
