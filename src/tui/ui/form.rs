@@ -125,7 +125,14 @@ pub(super) fn form_description_lines(
         form.body.lines[form.body.line].cursor,
     );
     let top = if focused {
-        cur_row.saturating_sub(ISSUE_FORM_DESC_HEIGHT.saturating_sub(1))
+        let top = layout::scroll_top(
+            form.body.top.get(),
+            cur_row,
+            ISSUE_FORM_DESC_HEIGHT,
+            rows.len(),
+        );
+        form.body.top.set(top);
+        top
     } else {
         0
     };
@@ -201,7 +208,8 @@ pub(super) fn draw_comment_section(f: &mut Frame, app: &App, t: &Theme, area: Re
     let body = &app.editor.body;
     let rows = wrap_lines(&body.lines, width);
     let (cur_row, cur_col) = cursor_row(&rows, body.line, body.lines[body.line].cursor);
-    let top = cur_row.saturating_sub(text_height.saturating_sub(1));
+    let top = layout::scroll_top(body.top.get(), cur_row, text_height, rows.len());
+    body.top.set(top);
     let mut lines: Vec<Line> = rows
         .iter()
         .enumerate()

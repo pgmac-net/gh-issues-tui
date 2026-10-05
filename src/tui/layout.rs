@@ -154,6 +154,21 @@ pub fn harness_areas(area: Rect) -> HarnessAreas {
 }
 
 /// The text width inside a bordered area — its width less both border columns.
+/// Minimal-scroll viewport top: keep `prev` while `cursor` is inside
+/// `[prev, prev + height)`, otherwise move just far enough to reveal it.
+/// Clamped so a viewport never extends past `len` rows.
+pub fn scroll_top(prev: usize, cursor: usize, height: usize, len: usize) -> usize {
+    let height = height.max(1);
+    let top = if cursor < prev {
+        cursor
+    } else if cursor >= prev + height {
+        cursor + 1 - height
+    } else {
+        prev
+    };
+    top.min(len.saturating_sub(height))
+}
+
 pub fn inner_width(area: Rect) -> u16 {
     area.width.saturating_sub(2)
 }
@@ -184,6 +199,22 @@ pub fn from_terminal_size() -> Rect {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scroll_top_moves_only_when_cursor_leaves_viewport() {
+        use super::scroll_top;
+        // inside window: unchanged, both directions
+        assert_eq!(scroll_top(5, 9, 5, 50), 5);
+        assert_eq!(scroll_top(5, 6, 5, 50), 5);
+        // below: cursor lands on last row
+        assert_eq!(scroll_top(5, 10, 5, 50), 6);
+        // above: cursor lands on first row
+        assert_eq!(scroll_top(5, 4, 5, 50), 4);
+        // short content and shrink clamp
+        assert_eq!(scroll_top(7, 2, 5, 3), 0);
+        assert_eq!(scroll_top(40, 45, 5, 46), 41);
+        assert_eq!(scroll_top(0, 0, 0, 0), 0);
+    }
+
     use super::*;
 
     #[test]

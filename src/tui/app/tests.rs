@@ -3769,3 +3769,18 @@ fn status_reports_a_failure_and_how_it_recovers() {
     assert_eq!(rows[0].2, Tone::Failed);
     assert!(rows[0].1.contains("next refresh"), "{}", rows[0].1);
 }
+
+#[test]
+fn editor_viewport_top_is_stable_when_cursor_moves_up_inside_it() {
+    use crate::tui::layout::scroll_top;
+    // Cursor walks down a 20-row buffer through a 5-row viewport, then up.
+    let mut top = 0;
+    for cur in 0..20 {
+        top = scroll_top(top, cur, 5, 20);
+    }
+    assert_eq!(top, 15);
+    for cur in (15..19).rev() {
+        assert_eq!(scroll_top(top, cur, 5, 20), 15, "cursor at {cur}");
+    }
+    assert_eq!(scroll_top(top, 14, 5, 20), 14);
+}

@@ -121,6 +121,9 @@ pub struct BodyEditor {
     pub lines: Vec<InputState>,
     /// Index of the line the cursor is on.
     pub line: usize,
+    /// First visible visual row, remembered between frames so the viewport
+    /// only moves when the cursor leaves it. Written by the renderer.
+    pub top: std::cell::Cell<usize>,
 }
 
 impl Default for BodyEditor {
@@ -128,6 +131,7 @@ impl Default for BodyEditor {
         Self {
             lines: vec![InputState::default()],
             line: 0,
+            top: Default::default(),
         }
     }
 }
@@ -148,7 +152,11 @@ impl BodyEditor {
             })
             .collect();
         let line = lines.len() - 1;
-        Self { lines, line }
+        Self {
+            lines,
+            line,
+            top: Default::default(),
+        }
     }
 
     pub fn insert(&mut self, c: char) {
