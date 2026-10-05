@@ -56,6 +56,8 @@ pub struct App {
     /// Visible rows derived from repos + filters + sort + collapsed.
     pub rows: Vec<Row>,
     pub selected: usize,
+    /// First visible list row, remembered between frames (see `layout::scroll_top`).
+    pub list_top: std::cell::Cell<usize>,
     pub state_filter: StateFilter,
     pub filters: Filters,
     pub sort_key: SortKey,
@@ -145,6 +147,7 @@ impl App {
             copy_format,
             rows: Vec::new(),
             selected: 0,
+            list_top: Default::default(),
             state_filter: StateFilter::Open,
             filters: Filters {
                 repo: initial_repo.unwrap_or_default(),

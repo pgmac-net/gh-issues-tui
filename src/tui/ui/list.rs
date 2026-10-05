@@ -52,7 +52,10 @@ pub(super) fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         .highlight_style(Style::default().bg(t.selected_bg))
         .highlight_symbol("> ");
 
-    let mut state = ListState::default();
+    let height = layout::inner_height(area) as usize;
+    let top = layout::scroll_top(app.list_top.get(), app.selected, height, app.rows.len());
+    app.list_top.set(top);
+    let mut state = ListState::default().with_offset(top);
     if !app.rows.is_empty() {
         state.select(Some(app.selected));
     }
@@ -240,5 +243,38 @@ mod tests {
             ..Default::default()
         }]);
         assert_eq!(title_style(&i, &Theme::default()).fg, None);
+    }
+
+    #[test]
+    fn moving_up_inside_the_viewport_does_not_scroll_it() {
+        use crate::provider::types::RepoIssues;
+        let issues: Vec<Issue> = (1..=40)
+            .map(|n| {
+                let mut i = issue(vec![]);
+                i.number = n;
+                i
+            })
+            .collect();
+        let mut app = test_app();
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues,
+        }]);
+        // Scroll down past the first page, one frame per step.
+        for sel in 1..=30 {
+            app.selected = sel;
+            render_app(&app, 80, 14);
+        }
+        let top = app.list_top.get();
+        assert!(top > 0, "list should have scrolled");
+        // Moving up within the window must leave the viewport where it is.
+        app.selected -= 1;
+        render_app(&app, 80, 14);
+        assert_eq!(app.list_top.get(), top);
+        // Moving above the window scrolls it just far enough.
+        app.selected = top - 1;
+        render_app(&app, 80, 14);
+        assert_eq!(app.list_top.get(), top - 1);
     }
 }
