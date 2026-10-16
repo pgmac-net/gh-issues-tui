@@ -266,8 +266,9 @@ Every text input (search, filters, assignees, title, org, and the comment/descri
 
 | Key | Action |
 |-----|--------|
-| `←`/`→`, `Home`/`End` | move by char / to line start / to line end |
-| `Ctrl+←` / `Ctrl+→` | move left / right by word (whitespace-delimited) |
+| `←`/`→` | move by char; at a line's start / end, wrap to the previous line's end / next line's start |
+| `Home`/`End` | to line start / to line end |
+| `Ctrl+←` / `Ctrl+→` | move left / right by word (whitespace-delimited); at a line edge, wrap to the adjacent line |
 | `Ctrl+A` / `Ctrl+E` | line start / line end |
 | `Ctrl+W` | delete the word before the cursor |
 | `Ctrl+U` / `Ctrl+K` | delete to line start / to line end |

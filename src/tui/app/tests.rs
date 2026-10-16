@@ -1881,6 +1881,113 @@ fn body_editor_handles_multibyte() {
     assert_eq!(b.text(), "héllo");
 }
 
+/// Put the cursor at `(line, col)` for the arrow-motion tests.
+fn body_at(text: &str, line: usize, col: usize) -> BodyEditor {
+    let mut b = BodyEditor::from_text(text);
+    b.line = line;
+    b.lines[line].cursor = col;
+    b
+}
+
+#[test]
+fn body_left_at_col_zero_wraps_to_previous_line_end() {
+    let mut b = body_at("ab\ncd", 1, 0);
+    b.left();
+    assert_eq!((b.line, b.lines[b.line].cursor), (0, 2));
+}
+
+#[test]
+fn body_left_on_first_line_col_zero_stays_put() {
+    let mut b = body_at("ab\ncd", 0, 0);
+    b.left();
+    assert_eq!((b.line, b.lines[0].cursor), (0, 0));
+}
+
+#[test]
+fn body_left_mid_line_moves_within_line() {
+    let mut b = body_at("ab\ncd", 1, 1);
+    b.left();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 0));
+}
+
+#[test]
+fn body_left_onto_empty_previous_line() {
+    let mut b = body_at("\nx", 1, 0);
+    b.left();
+    assert_eq!((b.line, b.lines[0].cursor), (0, 0));
+}
+
+#[test]
+fn body_right_at_end_wraps_to_next_line_start() {
+    let mut b = body_at("ab\ncd", 0, 2);
+    b.right();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 0));
+}
+
+#[test]
+fn body_right_on_last_line_end_stays_put() {
+    let mut b = body_at("ab\ncd", 1, 2);
+    b.right();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 2));
+}
+
+#[test]
+fn body_right_mid_line_moves_within_line() {
+    let mut b = body_at("ab\ncd", 0, 0);
+    b.right();
+    assert_eq!((b.line, b.lines[0].cursor), (0, 1));
+}
+
+#[test]
+fn body_right_across_empty_line() {
+    let mut b = body_at("ab\n\ncd", 0, 2);
+    b.right();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 0));
+    b.right(); // empty line: its end is also its start, so this crosses
+    assert_eq!((b.line, b.lines[2].cursor), (2, 0));
+}
+
+#[test]
+fn body_word_left_at_col_zero_wraps_then_steps_by_word() {
+    let mut b = body_at("one two\nthree", 1, 0);
+    b.word_left();
+    assert_eq!((b.line, b.lines[0].cursor), (0, 7));
+    b.word_left();
+    assert_eq!((b.line, b.lines[0].cursor), (0, 4));
+}
+
+#[test]
+fn body_word_left_on_first_line_col_zero_stays_put() {
+    let mut b = body_at("one\ntwo", 0, 0);
+    b.word_left();
+    assert_eq!((b.line, b.lines[0].cursor), (0, 0));
+}
+
+#[test]
+fn body_word_right_at_end_wraps_then_steps_by_word() {
+    let mut b = body_at("one\ntwo three", 0, 3);
+    b.word_right();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 0));
+    b.word_right();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 3));
+}
+
+#[test]
+fn body_word_right_on_last_line_end_stays_put() {
+    let mut b = body_at("one\ntwo", 1, 3);
+    b.word_right();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 3));
+}
+
+#[test]
+fn body_arrows_handle_multibyte_line_edges() {
+    let mut b = body_at("héé\nü", 1, 0);
+    b.left();
+    assert_eq!((b.line, b.lines[0].cursor), (0, 3));
+    b.right();
+    assert_eq!((b.line, b.lines[1].cursor), (1, 0));
+}
+
 fn picker_app(options: &[&str]) -> App {
     let mut app = two_repo_app();
     app.picker
