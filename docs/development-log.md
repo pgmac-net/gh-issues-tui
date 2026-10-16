@@ -1393,3 +1393,22 @@ Five help pages (`keys`, `search`, `readiness`, `priority`, `typesafe`), reached
 - Sixteen hand mutations, each caught — two only after strengthening the test that first let them through (see `in-app-help.md`).
 - Driven manually in `tmux`: `?`/`F1` from the list, a popup, and mid-typed search (buffer survives close); every page in turn against the real dev config (`infer_priority_ranks = true`, no `send_issue_text`, key present) — correctly showed priority ranks on and the two text features off; scrolling to both ends; `F12 ?` inside a session; clean quit, no panic in the session log.
 - **Not driven live:** a real semantic-search or readiness request reaching the indicator or a feature page's status through an actual TypeSafe call — `#158`/`#160` cover that request path; this ticket verified the display around it.
+
+---
+
+# Development log — new issue in an empty repo (2026-10-16)
+
+Work driven by [pgmac-net/gh-issues-tui#198](https://github.com/pgmac-net/gh-issues-tui/issues/198), branch `198-new-issue-in-empty-repo`.
+
+**Cause.** Starting the app in a repo's checkout sets the repo filter to that repo. With `hide_empty_repos = true`, `rebuild_rows` dropped the zero-issue group, leaving no rows; `n` needs `selected_repo()`, so it silently did nothing. The only way out was flipping the filter-editor toggle.
+
+## Decisions (from grilling)
+
+- **An exact repo filter beats hide-empty.** The filter already has an exact-when-exact rule; reuse it. The named repo's header always shows, so `n` works through ordinary selection. Rejected: an invisible fallback target for `n` (you would create into a repo you cannot see) and a repo picker (already rejected in #20).
+- **Whatever the other filters do.** A repo whose issues are all filtered out by text/state/assignee also keeps its header under an exact filter — one rule, rather than "zero fetched issues only", which would leave a closed-only repo under `state=open` with the same bug.
+- **`n` with nothing selected sets a status message** (`no repo selected — filter to a repo or set "hide empty repos" to no`) instead of failing silently.
+
+## Verification
+
+- New tests: exact filter keeps an empty repo; exact filter keeps an all-filtered-out repo; a substring filter still hides empties; `n` with no rows sets the status and stays in Normal mode.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (all pass).

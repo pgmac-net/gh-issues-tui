@@ -2096,6 +2096,39 @@ fn hide_empty_off_also_reveals_filtered_to_zero_groups() {
 }
 
 #[test]
+fn exact_repo_filter_keeps_an_empty_repo_despite_hide_empty() {
+    let mut app = app_with_empty_repo();
+    assert!(app.filters.hide_empty);
+    app.filters.repo = "empty-repo".into();
+    app.rebuild_rows();
+    assert_eq!(app.rows.len(), 1);
+    assert!(matches!(app.rows[0], Row::RepoHeader { repo_idx: 1 }));
+    assert_eq!(
+        app.selected_repo().map(|r| r.repo.as_str()),
+        Some("empty-repo")
+    );
+}
+
+#[test]
+fn exact_repo_filter_keeps_a_repo_whose_issues_are_all_filtered_out() {
+    let mut app = two_repo_app();
+    app.filters.repo = "alpha".into();
+    app.filters.text = "no-such-text".into();
+    app.rebuild_rows();
+    assert_eq!(app.rows.len(), 1);
+    assert!(matches!(app.rows[0], Row::RepoHeader { repo_idx: 0 }));
+    assert_eq!(app.repo_visible_count(0), 0);
+}
+
+#[test]
+fn partial_repo_filter_still_hides_empty_repos() {
+    let mut app = app_with_empty_repo();
+    app.filters.repo = "empty".into(); // substring, not exact
+    app.rebuild_rows();
+    assert!(app.rows.is_empty());
+}
+
+#[test]
 fn clear_filters_restores_config_default_not_false() {
     let mut app = app_with_empty_repo();
     app.set_hide_empty_default(false); // config says show empties
