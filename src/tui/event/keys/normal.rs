@@ -267,6 +267,10 @@ pub(crate) fn handle_normal_key(
             if let Some(repo) = app.selected_repo().map(|r| r.repo.clone()) {
                 app.open_issue_form(repo.clone());
                 spawn_form_options(client, app.org.clone(), repo, tx);
+            } else {
+                app.status = Some(
+                    "no repo selected — filter to a repo or set \"hide empty repos\" to no".into(),
+                );
             }
         }
         // move the selected issue to another repo (#135)

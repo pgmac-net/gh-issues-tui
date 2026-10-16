@@ -869,6 +869,34 @@ mod tests {
     }
 
     #[test]
+    fn n_with_no_repo_selected_says_why_instead_of_doing_nothing() {
+        let mut app = App::new(
+            "org".into(),
+            None,
+            false,
+            false,
+            "{owner}/{repo}#{number}".into(),
+        );
+        assert!(app.rows.is_empty());
+        let mut h = fixture(None);
+        let client = test_client();
+        let tx = h.tx.clone();
+        handle_normal_key(
+            &mut app,
+            key(KeyCode::Char('n')),
+            &client,
+            &tx,
+            &mut h.ctx(),
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|s| s.contains("no repo selected"))
+        );
+    }
+
+    #[test]
     fn q_with_only_exited_sessions_quits_straight_away() {
         let (mut app, _) = app_with_issue(&[]);
         let id = app

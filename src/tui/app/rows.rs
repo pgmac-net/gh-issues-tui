@@ -22,7 +22,9 @@ impl App {
                 .filter(|(_, i)| self.filters.matches(i, self.state_filter))
                 .map(|(idx, _)| idx)
                 .collect();
-            if visible.is_empty() && self.filters.hide_empty {
+            // An exact repo filter names the repo outright: keep its header
+            // even when empty, or `n` has nothing to attach to (#198).
+            if visible.is_empty() && self.filters.hide_empty && !repo_exact {
                 continue;
             }
             self.rows.push(Row::RepoHeader { repo_idx: ri });
