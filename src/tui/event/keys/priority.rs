@@ -59,12 +59,11 @@ fn confirm_priority(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender
         None => return,
     };
     let names = pending.names;
-    with_issue(
+    with_issue_patch(
         app,
         client,
         tx,
         "priority updated",
-        CommentRefresh::Skip,
         move |c, id| async move { c.set_labels(&id, &repo, &org, &names).await },
     );
 }

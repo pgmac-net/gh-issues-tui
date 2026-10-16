@@ -164,7 +164,8 @@ pub(crate) fn submit_issue_form(
         let msg = match client.create_issue(&params).await {
             Ok((number, _url)) => AppEvent::MutationDone {
                 msg: format!("created #{number} in {repo}"),
-                comments: CommentRefresh::Skip,
+                issue_id: None,
+                after: AfterMutation::RefetchOrg,
             },
             Err(e) => AppEvent::MutationFailed(e.to_string()),
         };

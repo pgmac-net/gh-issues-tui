@@ -42,12 +42,11 @@ pub(crate) fn submit_input(
         }
         InputKind::Assignees => {
             let logins = split_csv(&value);
-            with_issue(
+            with_issue_patch(
                 app,
                 client,
                 tx,
                 "assignees updated",
-                CommentRefresh::Skip,
                 move |c, id| async move { c.set_assignees(&id, &logins).await },
             );
         }
@@ -56,14 +55,9 @@ pub(crate) fn submit_input(
                 app.status = Some("empty title discarded".into());
                 return;
             }
-            with_issue(
-                app,
-                client,
-                tx,
-                "title updated",
-                CommentRefresh::Skip,
-                move |c, id| async move { c.update_title(&id, &value).await },
-            );
+            with_issue_patch(app, client, tx, "title updated", move |c, id| async move {
+                c.update_title(&id, &value).await
+            });
         }
         InputKind::Org => {
             let org = value.trim().to_string();

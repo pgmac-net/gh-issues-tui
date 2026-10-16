@@ -349,42 +349,37 @@ impl Client {
         .map(drop)
     }
 
-    pub async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
-        let q = match state {
-            IssueState::Closed => {
-                "mutation($id: ID!) { closeIssue(input: {issueId: $id}) { clientMutationId } }"
-            }
-            IssueState::Open => {
-                "mutation($id: ID!) { reopenIssue(input: {issueId: $id}) { clientMutationId } }"
-            }
+    pub async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<Issue> {
+        let (q, field) = match state {
+            IssueState::Closed => (CLOSE_ISSUE_MUTATION, "closeIssue"),
+            IssueState::Open => (REOPEN_ISSUE_MUTATION, "reopenIssue"),
         };
-        self.graphql(q, json!({ "id": issue_id })).await.map(drop)
+        let data = self.graphql(q, json!({ "id": issue_id })).await?;
+        issue_from_payload(&data, field)
     }
 
-    pub async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
-        self.graphql(
-            "mutation($id: ID!, $title: String!) {
-               updateIssue(input: {id: $id, title: $title}) { clientMutationId }
-             }",
-            json!({ "id": issue_id, "title": title }),
-        )
-        .await
-        .map(drop)
+    pub async fn update_title(&self, issue_id: &str, title: &str) -> Result<Issue> {
+        self.update_issue(json!({ "id": issue_id, "title": title }))
+            .await
     }
 
-    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
-        self.graphql(
-            "mutation($id: ID!, $body: String!) {
-               updateIssue(input: {id: $id, body: $body}) { clientMutationId }
-             }",
-            json!({ "id": issue_id, "body": body }),
-        )
-        .await
-        .map(drop)
+    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<Issue> {
+        self.update_issue(json!({ "id": issue_id, "body": body }))
+            .await
+    }
+
+    /// Run `updateIssue` with `input` and return the issue it reports. One
+    /// mutation document serves every field: GitHub leaves an `UpdateIssueInput`
+    /// field untouched when it is absent from `input`.
+    async fn update_issue(&self, input: Value) -> Result<Issue> {
+        let data = self
+            .graphql(UPDATE_ISSUE_MUTATION, json!({ "input": input }))
+            .await?;
+        issue_from_payload(&data, "updateIssue")
     }
 
     /// Replace the full assignee set. Logins are resolved to user ids.
-    pub async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
+    pub async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<Issue> {
         let mut ids = Vec::with_capacity(logins.len());
         for login in logins {
             let data = self
@@ -400,14 +395,8 @@ impl Client {
                 .to_string();
             ids.push(id);
         }
-        self.graphql(
-            "mutation($id: ID!, $assigneeIds: [ID!]) {
-               updateIssue(input: {id: $id, assigneeIds: $assigneeIds}) { clientMutationId }
-             }",
-            json!({ "id": issue_id, "assigneeIds": ids }),
-        )
-        .await
-        .map(drop)
+        self.update_issue(json!({ "id": issue_id, "assigneeIds": ids }))
+            .await
     }
 
     /// Replace the full label set with labels named in `names` (must exist on the repo).
@@ -417,7 +406,7 @@ impl Client {
         repo: &str,
         org: &str,
         names: &[String],
-    ) -> Result<()> {
+    ) -> Result<Issue> {
         let all = self.repo_labels(org, repo).await?;
         let mut ids = Vec::new();
         for name in names {
@@ -427,14 +416,8 @@ impl Client {
                 .ok_or_else(|| ProviderError::Shape(format!("no label named {name} in {repo}")))?;
             ids.push(label.id.clone());
         }
-        self.graphql(
-            "mutation($id: ID!, $labelIds: [ID!]) {
-               updateIssue(input: {id: $id, labelIds: $labelIds}) { clientMutationId }
-             }",
-            json!({ "id": issue_id, "labelIds": ids }),
-        )
-        .await
-        .map(drop)
+        self.update_issue(json!({ "id": issue_id, "labelIds": ids }))
+            .await
     }
 
     /// Move the issue to another repo in the same org. Missing labels are
@@ -789,6 +772,40 @@ struct LabelNodes {
     nodes: Vec<Label>,
 }
 
+/// The issue a mutation payload reports: scalars plus the two connections
+/// the bulk query hydrates separately. On a single node they cost nothing
+/// extra, so a mutation can hand back the complete issue (#196).
+#[derive(Debug, Deserialize)]
+struct MutatedIssue {
+    #[serde(flatten)]
+    node: IssueNode,
+    #[serde(default)]
+    assignees: NamedNodes,
+    #[serde(default)]
+    labels: LabelNodes,
+}
+
+impl MutatedIssue {
+    fn into_issue(self) -> Issue {
+        let mut issue = self.node.to_issue();
+        issue.assignees = self.assignees.nodes.into_iter().map(|n| n.login).collect();
+        issue.labels = self.labels.nodes;
+        issue
+    }
+}
+
+/// Parse `data.<field>.issue` from a mutation response into an [`Issue`].
+fn issue_from_payload(data: &Value, field: &str) -> Result<Issue> {
+    let node = data
+        .get(field)
+        .and_then(|payload| payload.get("issue"))
+        .filter(|issue| !issue.is_null())
+        .ok_or_else(|| ProviderError::Shape(format!("{field} returned no issue")))?;
+    serde_json::from_value::<MutatedIssue>(node.clone())
+        .map(MutatedIssue::into_issue)
+        .map_err(|e| ProviderError::Shape(e.to_string()))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CountNode {
@@ -812,6 +829,38 @@ macro_rules! issue_fields {
          createdAt updatedAt closedAt"
     };
 }
+
+/// Everything [`Issue`] holds, for the single issue a mutation reports back.
+/// The connection page sizes match [`ISSUE_HYDRATE_QUERY`], so a patched
+/// issue carries the same label/assignee window as a fetched one.
+macro_rules! mutated_issue_fields {
+    () => {
+        concat!(
+            "issue { ",
+            issue_fields!(),
+            " assignees(first: 10) { nodes { login } }
+              labels(first: 20) { nodes { name color } } }"
+        )
+    };
+}
+
+const CLOSE_ISSUE_MUTATION: &str = concat!(
+    "mutation($id: ID!) { closeIssue(input: {issueId: $id}) { ",
+    mutated_issue_fields!(),
+    " } }"
+);
+
+const REOPEN_ISSUE_MUTATION: &str = concat!(
+    "mutation($id: ID!) { reopenIssue(input: {issueId: $id}) { ",
+    mutated_issue_fields!(),
+    " } }"
+);
+
+const UPDATE_ISSUE_MUTATION: &str = concat!(
+    "mutation($input: UpdateIssueInput!) { updateIssue(input: $input) { ",
+    mutated_issue_fields!(),
+    " } }"
+);
 
 const ORG_ISSUES_QUERY: &str = concat!(
     "query($org: String!, $reposFirst: Int!, $issuesFirst: Int!, $repoCursor: String, $states: [IssueState!]) {
@@ -1288,19 +1337,19 @@ impl crate::provider::IssueProvider for Client {
         self.update_comment(comment_id, body).await
     }
 
-    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
+    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<Issue> {
         self.set_state(issue_id, state).await
     }
 
-    async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
+    async fn update_title(&self, issue_id: &str, title: &str) -> Result<Issue> {
         self.update_title(issue_id, title).await
     }
 
-    async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+    async fn update_body(&self, issue_id: &str, body: &str) -> Result<Issue> {
         self.update_body(issue_id, body).await
     }
 
-    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
+    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<Issue> {
         self.set_assignees(issue_id, logins).await
     }
 
@@ -1310,7 +1359,7 @@ impl crate::provider::IssueProvider for Client {
         repo: &str,
         org: &str,
         names: &[String],
-    ) -> Result<()> {
+    ) -> Result<Issue> {
         self.set_labels(issue_id, repo, org, names).await
     }
 
@@ -1547,6 +1596,65 @@ mod tests {
             !fields.contains("first:"),
             "no connection may be paginated inside `issues` — see docs/graphql-api-cost.md"
         );
+    }
+
+    /// #196: every issue-level mutation reports the full issue back —
+    /// labels and assignees included, since on a single node they cost
+    /// nothing extra — so the list can be patched without a refetch.
+    #[test]
+    fn issue_mutations_report_the_full_issue() {
+        for m in [
+            CLOSE_ISSUE_MUTATION,
+            REOPEN_ISSUE_MUTATION,
+            UPDATE_ISSUE_MUTATION,
+        ] {
+            for field in [
+                "issue {",
+                "updatedAt",
+                "closedAt",
+                "assignees(first: 10)",
+                "labels(first: 20)",
+            ] {
+                assert!(m.contains(field), "{field} missing from {m}");
+            }
+            assert!(!m.contains("clientMutationId"));
+        }
+    }
+
+    #[test]
+    fn mutation_payload_maps_to_the_updated_issue() {
+        let data = json!({ "closeIssue": { "issue": {
+            "id": "I_1", "number": 196, "title": "Tree view updates",
+            "body": "b", "state": "CLOSED", "url": "u",
+            "author": { "login": "pgmac" },
+            "comments": { "totalCount": 3 },
+            "createdAt": "2026-10-01T00:00:00Z",
+            "updatedAt": "2026-10-16T10:00:00Z",
+            "closedAt": "2026-10-16T10:00:00Z",
+            "assignees": { "nodes": [{ "login": "pgmac" }] },
+            "labels": { "nodes": [{ "name": "bug", "color": "d73a4a" }] }
+        }}});
+        let issue = issue_from_payload(&data, "closeIssue").unwrap();
+        assert_eq!(issue.id, "I_1");
+        assert_eq!(issue.state, IssueState::Closed);
+        assert_eq!(issue.comment_count, 3);
+        assert_eq!(issue.assignees, vec!["pgmac".to_string()]);
+        assert_eq!(issue.labels[0].name, "bug");
+        assert!(issue.closed_at.is_some());
+    }
+
+    #[test]
+    fn mutation_payload_without_an_issue_is_a_shape_error() {
+        for data in [
+            json!({ "updateIssue": { "issue": null } }),
+            json!({ "updateIssue": {} }),
+            json!({}),
+        ] {
+            assert!(matches!(
+                issue_from_payload(&data, "updateIssue"),
+                Err(ProviderError::Shape(_))
+            ));
+        }
     }
 
     #[test]

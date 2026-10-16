@@ -68,12 +68,11 @@ pub(crate) fn handle_priority_set_key(
                 Some(r) => (app.org.clone(), r.repo.clone()),
                 None => return,
             };
-            with_issue(
+            with_issue_patch(
                 app,
                 client,
                 tx,
                 "priority updated",
-                CommentRefresh::Skip,
                 move |c, id| async move { c.set_labels(&id, &repo, &org, &names).await },
             );
         }
@@ -123,14 +122,9 @@ pub(crate) fn handle_labels_set_key(
                 Some(r) => (app.org.clone(), r.repo.clone()),
                 None => return,
             };
-            with_issue(
-                app,
-                client,
-                tx,
-                "labels updated",
-                CommentRefresh::Skip,
-                move |c, id| async move { c.set_labels(&id, &repo, &org, &names).await },
-            );
+            with_issue_patch(app, client, tx, "labels updated", move |c, id| async move {
+                c.set_labels(&id, &repo, &org, &names).await
+            });
         }
         _ => {}
     }
@@ -204,7 +198,7 @@ pub(crate) fn submit_comment(
                 client,
                 tx,
                 "comment added",
-                CommentRefresh::Refetch,
+                AfterMutation::CommentAdded,
                 move |c, id| async move { c.add_comment(&id, &value).await },
             );
         }
@@ -214,17 +208,16 @@ pub(crate) fn submit_comment(
                 client,
                 tx,
                 "comment updated",
-                CommentRefresh::Refetch,
+                AfterMutation::CommentEdited,
                 move |c, id| async move { c.update_comment(&id, &comment_id, &value).await },
             );
         }
         EditorTarget::EditBody => {
-            with_issue(
+            with_issue_patch(
                 app,
                 client,
                 tx,
                 "description updated",
-                CommentRefresh::Skip,
                 move |c, id| async move { c.update_body(&id, &value).await },
             );
         }

@@ -3891,3 +3891,156 @@ fn editor_viewport_top_is_stable_when_cursor_moves_up_inside_it() {
     }
     assert_eq!(scroll_top(top, 14, 5, 20), 14);
 }
+
+// ---- In-place patches after a mutation (#196) ----
+
+fn later(issue: &Issue, mins: i64) -> Issue {
+    let mut i = issue.clone();
+    i.updated_at = issue.updated_at + chrono::Duration::minutes(mins);
+    i
+}
+
+#[test]
+fn patch_replaces_only_the_matching_issue() {
+    let mut app = two_repo_app();
+    select_issue(&mut app, "I_1");
+    let mut patched = later(&labelled(1, &["wontfix"]), 1);
+    patched.title = "first bug".into();
+
+    assert!(app.patch_issue(patched));
+
+    let one = &app.repos[0].issues.iter().find(|i| i.id == "I_1").unwrap();
+    assert_eq!(one.labels[0].name, "wontfix");
+    let two = &app.repos[0].issues.iter().find(|i| i.id == "I_2").unwrap();
+    assert!(two.labels.is_empty(), "other issues are untouched");
+    assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some("I_1"));
+}
+
+#[test]
+fn patch_of_an_unlisted_issue_is_a_no_op() {
+    let mut app = two_repo_app();
+    let rows = app.rows.len();
+    assert!(!app.patch_issue(issue(99, "gone", IssueState::Closed)));
+    assert_eq!(app.rows.len(), rows);
+}
+
+#[test]
+fn patch_closing_under_the_open_filter_drops_the_row_and_clamps() {
+    let mut app = two_repo_app();
+    select_issue(&mut app, "I_1");
+    let closed = later(&issue(1, "first bug", IssueState::Closed), 1);
+
+    assert!(app.patch_issue(closed));
+
+    assert!(
+        app.rows.iter().all(|row| match row {
+            Row::Issue {
+                repo_idx,
+                issue_idx,
+            } => app.repos[*repo_idx].issues[*issue_idx].id != "I_1",
+            Row::RepoHeader { .. } => true,
+        }),
+        "a closed issue leaves the `open` view at once"
+    );
+    assert!(app.selected < app.rows.len(), "selection stays in bounds");
+}
+
+#[test]
+fn patch_closing_under_the_all_filter_keeps_the_row_with_its_new_state() {
+    let mut app = two_repo_app();
+    app.state_filter = StateFilter::All;
+    app.rebuild_rows();
+    select_issue(&mut app, "I_1");
+
+    assert!(app.patch_issue(later(&issue(1, "first bug", IssueState::Closed), 1)));
+
+    let selected = app.selected_issue().expect("still listed");
+    assert_eq!(selected.id, "I_1");
+    assert_eq!(selected.state, IssueState::Closed);
+}
+
+#[test]
+fn patch_removing_a_filtered_label_drops_the_row() {
+    let mut app = app_with(one_repo(vec![
+        labelled(1, &["status:blocked"]),
+        labelled(2, &["status:blocked"]),
+    ]));
+    app.filters.status = vec!["blocked".into()];
+    app.rebuild_rows();
+    select_issue(&mut app, "I_1");
+
+    assert!(app.patch_issue(later(&labelled(1, &[]), 1)));
+
+    assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some("I_2"));
+}
+
+#[test]
+fn patch_invalidates_the_issues_readiness() {
+    let (mut app, id) = readiness_app();
+    app.apply_readiness(id.clone(), Ok(some_readiness()));
+    let patched = later(app.selected_issue().unwrap(), 1);
+
+    assert!(app.patch_issue(patched));
+
+    assert!(app.readiness.get(&id).is_none());
+}
+
+#[test]
+fn bump_comment_count_touches_only_that_issue() {
+    let mut app = two_repo_app();
+    app.bump_comment_count("I_2");
+    let counts: Vec<u64> = app.repos[0]
+        .issues
+        .iter()
+        .map(|i| i.comment_count)
+        .collect();
+    assert!(counts.contains(&1) && counts.contains(&0));
+}
+
+/// A refetch that read a replica from before the patch must not roll it back.
+#[test]
+fn set_data_keeps_a_loaded_copy_newer_than_the_refetch() {
+    let mut app = two_repo_app();
+    app.state_filter = StateFilter::All;
+    let stale = issue(1, "first bug", IssueState::Open);
+    assert!(app.patch_issue(later(&issue(1, "first bug", IssueState::Closed), 5)));
+
+    app.set_data(vec![RepoIssues {
+        repo: "alpha".into(),
+        repo_url: "u".into(),
+        issues: vec![stale, issue(2, "feature idea", IssueState::Open)],
+    }]);
+
+    let one = app.repos[0].issues.iter().find(|i| i.id == "I_1").unwrap();
+    assert_eq!(one.state, IssueState::Closed, "the newer patch wins");
+}
+
+#[test]
+fn set_data_takes_a_refetch_newer_than_the_loaded_copy() {
+    let mut app = two_repo_app();
+    let mut theirs = later(&issue(1, "renamed by someone else", IssueState::Open), 10);
+    theirs.labels = labelled(1, &["bug"]).labels;
+
+    app.set_data(vec![RepoIssues {
+        repo: "alpha".into(),
+        repo_url: "u".into(),
+        issues: vec![theirs, issue(2, "feature idea", IssueState::Open)],
+    }]);
+
+    let one = app.repos[0].issues.iter().find(|i| i.id == "I_1").unwrap();
+    assert_eq!(one.title, "renamed by someone else");
+}
+
+#[test]
+fn set_data_drops_an_issue_the_refetch_no_longer_returns() {
+    let mut app = two_repo_app();
+    assert!(app.patch_issue(later(&issue(1, "first bug", IssueState::Open), 5)));
+
+    app.set_data(vec![RepoIssues {
+        repo: "alpha".into(),
+        repo_url: "u".into(),
+        issues: vec![issue(2, "feature idea", IssueState::Open)],
+    }]);
+
+    assert!(app.repos[0].issues.iter().all(|i| i.id != "I_1"));
+}
