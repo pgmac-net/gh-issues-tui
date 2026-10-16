@@ -13,6 +13,7 @@ mod form;
 mod harness;
 pub mod help;
 mod mode;
+mod patch;
 mod picker;
 mod pr;
 mod ranks;
@@ -207,7 +208,9 @@ impl App {
         // judgements derived from them (#160).
         self.comment_cache.clear();
         self.readiness.clear();
-        self.repos = repos;
+        // Never regress an issue to an older copy: a refetch can read a
+        // replica that has not yet seen a patch applied since (#196).
+        self.repos = patch::keep_newer_loaded(std::mem::take(&mut self.repos), repos);
         // A refresh brings fresh issues whose labels carry no rank.
         self.stamp_label_ranks();
         // First-seen repos take the configured default; repos the user has

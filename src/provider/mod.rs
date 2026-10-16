@@ -9,8 +9,8 @@ use async_trait::async_trait;
 
 use error::{ProviderError, Result};
 use types::{
-    Comment, FormOptions, IssueState, NewIssueParams, PrLookup, PrRef, RateLimitData, RepoIssues,
-    RepoLabel,
+    Comment, FormOptions, Issue, IssueState, NewIssueParams, PrLookup, PrRef, RateLimitData,
+    RepoIssues, RepoLabel,
 };
 
 /// The backend-neutral surface the TUI talks to. One provider is selected at
@@ -36,15 +36,20 @@ pub trait IssueProvider: Send + Sync {
     /// backends — Jira — address a comment by issue key + comment id).
     async fn update_comment(&self, issue_id: &str, comment_id: &str, body: &str) -> Result<()>;
 
-    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()>;
+    // Issue-level mutations return the issue as the backend holds it after
+    // the write (#196), so the TUI patches that one entry in place instead
+    // of refetching the org — a refetch straight after a write can read a
+    // stale replica and leave the list showing the old state.
 
-    async fn update_title(&self, issue_id: &str, title: &str) -> Result<()>;
+    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<Issue>;
+
+    async fn update_title(&self, issue_id: &str, title: &str) -> Result<Issue>;
 
     /// Edit an issue's description (body).
-    async fn update_body(&self, issue_id: &str, body: &str) -> Result<()>;
+    async fn update_body(&self, issue_id: &str, body: &str) -> Result<Issue>;
 
     /// Replace the full assignee set with the users named in `logins`.
-    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()>;
+    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<Issue>;
 
     /// Replace the full label set with labels named in `names` (must exist
     /// on the repo).
@@ -54,14 +59,14 @@ pub trait IssueProvider: Send + Sync {
         repo: &str,
         org: &str,
         names: &[String],
-    ) -> Result<()>;
+    ) -> Result<Issue>;
 
     async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>>;
 
     /// Everything the new-issue form's pickers need, fetched per repo.
     async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions>;
 
-    /// Create an issue; returns its number and node id.
+    /// Create an issue; returns its number and web URL.
     async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)>;
 
     /// The most recently observed rate limit state, if the provider tracks one.
@@ -160,20 +165,20 @@ mod tests {
         async fn update_comment(&self, _: &str, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
-        async fn set_state(&self, _: &str, _: IssueState) -> Result<()> {
-            Ok(())
+        async fn set_state(&self, _: &str, _: IssueState) -> Result<Issue> {
+            Err(ProviderError::Unsupported("stub"))
         }
-        async fn update_title(&self, _: &str, _: &str) -> Result<()> {
-            Ok(())
+        async fn update_title(&self, _: &str, _: &str) -> Result<Issue> {
+            Err(ProviderError::Unsupported("stub"))
         }
-        async fn update_body(&self, _: &str, _: &str) -> Result<()> {
-            Ok(())
+        async fn update_body(&self, _: &str, _: &str) -> Result<Issue> {
+            Err(ProviderError::Unsupported("stub"))
         }
-        async fn set_assignees(&self, _: &str, _: &[String]) -> Result<()> {
-            Ok(())
+        async fn set_assignees(&self, _: &str, _: &[String]) -> Result<Issue> {
+            Err(ProviderError::Unsupported("stub"))
         }
-        async fn set_labels(&self, _: &str, _: &str, _: &str, _: &[String]) -> Result<()> {
-            Ok(())
+        async fn set_labels(&self, _: &str, _: &str, _: &str, _: &[String]) -> Result<Issue> {
+            Err(ProviderError::Unsupported("stub"))
         }
         async fn repo_labels(&self, _: &str, _: &str) -> Result<Vec<RepoLabel>> {
             Ok(vec![])

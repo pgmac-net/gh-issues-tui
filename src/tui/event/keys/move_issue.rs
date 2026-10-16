@@ -86,7 +86,7 @@ fn confirm_move(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<App
         client,
         tx,
         msg,
-        CommentRefresh::Skip,
+        AfterMutation::RefetchOrg,
         move |c, id| async move { c.move_issue(&id, &org, &target).await },
     );
 }

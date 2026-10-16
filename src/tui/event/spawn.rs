@@ -205,14 +205,18 @@ pub(crate) fn spawn_pr_summary(client: &Provider, pr: PrRef, tx: &mpsc::Unbounde
     });
 }
 
-/// Whether a mutation changed the selected issue's comment thread, and so
-/// whether `MutationDone` needs to invalidate the cache and refetch it.
-/// Most mutations (state, title, assignees, labels, description) leave the
-/// thread untouched — only adding or editing a comment does.
+/// What has to follow a mutation that does not report the changed issue
+/// back. Issue-level mutations do report it and go through
+/// [`with_issue_patch`] instead, which patches the list in place (#196).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommentRefresh {
-    Refetch,
-    Skip,
+pub(crate) enum AfterMutation {
+    /// The mutation changed which issues exist or where they live (create,
+    /// move to another repo) — refetch the org.
+    RefetchOrg,
+    /// A comment was added: bump the list's count, refetch the thread.
+    CommentAdded,
+    /// A comment was edited: refetch the thread; the count is unchanged.
+    CommentEdited,
 }
 
 /// Spawn a mutation against the selected issue; reports done/failed via `tx`.
@@ -225,7 +229,7 @@ pub(crate) fn with_issue<F, Fut>(
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
     done_msg: impl Into<String> + Send + 'static,
-    comments: CommentRefresh,
+    after: AfterMutation,
     op: F,
 ) where
     F: FnOnce(Provider, String) -> Fut + Send + 'static,
@@ -239,10 +243,44 @@ pub(crate) fn with_issue<F, Fut>(
     let tx = tx.clone();
     app.status = Some("working…".into());
     tokio::spawn(async move {
-        let msg = match op(client, id).await {
+        let msg = match op(client, id.clone()).await {
             Ok(()) => AppEvent::MutationDone {
                 msg: done_msg.into(),
-                comments,
+                issue_id: Some(id),
+                after,
+            },
+            Err(e) => AppEvent::MutationFailed(e.to_string()),
+        };
+        let _ = tx.send(msg);
+    });
+}
+
+/// Spawn an issue-level mutation (state, title, body, assignees, labels)
+/// against the selected issue. The provider reports the issue as it stands
+/// after the write, and `IssuePatched` replaces that one list entry — no org
+/// refetch, which could read a replica that has not seen the write yet.
+pub(crate) fn with_issue_patch<F, Fut>(
+    app: &mut App,
+    client: &Provider,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    done_msg: impl Into<String> + Send + 'static,
+    op: F,
+) where
+    F: FnOnce(Provider, String) -> Fut + Send + 'static,
+    Fut: Future<Output = crate::provider::error::Result<Issue>> + Send,
+{
+    let Some(issue) = app.selected_issue() else {
+        return;
+    };
+    let id = issue.id.clone();
+    let client = client.clone();
+    let tx = tx.clone();
+    app.status = Some("working…".into());
+    tokio::spawn(async move {
+        let msg = match op(client, id).await {
+            Ok(issue) => AppEvent::IssuePatched {
+                msg: done_msg.into(),
+                issue: Box::new(issue),
             },
             Err(e) => AppEvent::MutationFailed(e.to_string()),
         };

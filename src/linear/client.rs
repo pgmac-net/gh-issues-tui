@@ -202,22 +202,26 @@ impl Client {
     }
 
     /// Edit an issue's description. Linear calls the body `description`.
-    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
-        self.graphql(
-            "mutation($id: String!, $body: String!) {
-               issueUpdate(id: $id, input: {description: $body}) { success }
-             }",
-            json!({ "id": issue_id, "body": body }),
-        )
-        .await
-        .map(drop)
+    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<Issue> {
+        self.issue_update(issue_id, json!({ "description": body }))
+            .await
+    }
+
+    /// Run `issueUpdate` with `input` and return the issue it reports, mapped
+    /// by the same fragment the bulk fetch uses (#196).
+    async fn issue_update(&self, issue_id: &str, input: Value) -> Result<Issue> {
+        let query = format!("{ISSUE_UPDATE_MUTATION}{ISSUE_FIELDS}");
+        let data = self
+            .graphql(&query, json!({ "id": issue_id, "input": input }))
+            .await?;
+        issue_from_payload(&data)
     }
 
     /// Move the issue to one of its team's workflow states of the appropriate
     /// type: a `completed` state to close, an `unstarted`/`backlog`/`started`
     /// state to reopen. Linear has no single "closed" flag — state is a
     /// per-team object — so the target team's states are resolved first.
-    pub async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
+    pub async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<Issue> {
         let data = self
             .graphql(
                 "query($id: String!) {
@@ -243,42 +247,23 @@ impl Client {
                     if want_closed { "completed" } else { "open" }
                 ))
             })?;
-        self.graphql(
-            "mutation($id: String!, $stateId: String!) {
-               issueUpdate(id: $id, input: {stateId: $stateId}) { success }
-             }",
-            json!({ "id": issue_id, "stateId": target.id }),
-        )
-        .await
-        .map(drop)
+        self.issue_update(issue_id, json!({ "stateId": target.id }))
+            .await
     }
 
-    pub async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
-        self.graphql(
-            "mutation($id: String!, $title: String!) {
-               issueUpdate(id: $id, input: {title: $title}) { success }
-             }",
-            json!({ "id": issue_id, "title": title }),
-        )
-        .await
-        .map(drop)
+    pub async fn update_title(&self, issue_id: &str, title: &str) -> Result<Issue> {
+        self.issue_update(issue_id, json!({ "title": title })).await
     }
 
     /// Linear issues have a single assignee. Only the first login is used;
     /// an empty list unassigns.
-    pub async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
+    pub async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<Issue> {
         let assignee_id = match logins.first() {
             Some(login) => Some(self.resolve_user_id(login).await?),
             None => None,
         };
-        self.graphql(
-            "mutation($id: String!, $assigneeId: String) {
-               issueUpdate(id: $id, input: {assigneeId: $assigneeId}) { success }
-             }",
-            json!({ "id": issue_id, "assigneeId": assignee_id }),
-        )
-        .await
-        .map(drop)
+        self.issue_update(issue_id, json!({ "assigneeId": assignee_id }))
+            .await
     }
 
     async fn resolve_user_id(&self, login: &str) -> Result<String> {
@@ -307,7 +292,7 @@ impl Client {
         repo: &str,
         org: &str,
         names: &[String],
-    ) -> Result<()> {
+    ) -> Result<Issue> {
         let mut priority: u8 = 0;
         let mut real_names: Vec<&String> = Vec::new();
         for name in names {
@@ -326,14 +311,11 @@ impl Client {
                 .ok_or_else(|| ProviderError::Shape(format!("no label named {name} in {repo}")))?;
             label_ids.push(label.id.clone());
         }
-        self.graphql(
-            "mutation($id: String!, $labelIds: [String!]!, $priority: Int!) {
-               issueUpdate(id: $id, input: {labelIds: $labelIds, priority: $priority}) { success }
-             }",
-            json!({ "id": issue_id, "labelIds": label_ids, "priority": priority }),
+        self.issue_update(
+            issue_id,
+            json!({ "labelIds": label_ids, "priority": priority }),
         )
         .await
-        .map(drop)
     }
 
     /// Real Linear labels for a team, keyed by team key. Does NOT include the
@@ -528,6 +510,19 @@ const ISSUE_FIELDS: &str = "fragment IssueFields on Issue {
   labels(first: 20) { nodes { id name } }
 }";
 
+/// `issueUpdate` reporting the updated issue; append [`ISSUE_FIELDS`].
+const ISSUE_UPDATE_MUTATION: &str = "mutation($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success issue { ...IssueFields } }
+}
+";
+
+/// Parse `data.issueUpdate.issue` into an [`Issue`].
+fn issue_from_payload(data: &Value) -> Result<Issue> {
+    let node: Option<IssueNode> = parse_at(data, &["issueUpdate", "issue"])?;
+    node.map(|n| n.to_issue())
+        .ok_or_else(|| ProviderError::Shape("issueUpdate returned no issue".into()))
+}
+
 const TEAMS_QUERY: &str = "query($teamsFirst: Int!, $teamCursor: String) {
   teams(first: $teamsFirst, after: $teamCursor) {
     nodes { id key name }
@@ -715,16 +710,16 @@ impl crate::provider::IssueProvider for Client {
     async fn update_comment(&self, _issue_id: &str, comment_id: &str, body: &str) -> Result<()> {
         self.update_comment(comment_id, body).await
     }
-    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
+    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<Issue> {
         self.set_state(issue_id, state).await
     }
-    async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
+    async fn update_title(&self, issue_id: &str, title: &str) -> Result<Issue> {
         self.update_title(issue_id, title).await
     }
-    async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+    async fn update_body(&self, issue_id: &str, body: &str) -> Result<Issue> {
         self.update_body(issue_id, body).await
     }
-    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
+    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<Issue> {
         self.set_assignees(issue_id, logins).await
     }
     async fn set_labels(
@@ -733,7 +728,7 @@ impl crate::provider::IssueProvider for Client {
         repo: &str,
         org: &str,
         names: &[String],
-    ) -> Result<()> {
+    ) -> Result<Issue> {
         self.set_labels(issue_id, repo, org, names).await
     }
     async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {
@@ -789,6 +784,40 @@ mod tests {
         assert_eq!(issue.labels[1].name, "bug");
         assert_eq!(issue.priority_rank(), 3); // high
         assert!(issue.closed_at.is_none());
+    }
+
+    /// #196: the mutation payload carries the issue through the bulk
+    /// fetch's fragment, so a patch maps exactly like a fetched issue.
+    #[test]
+    fn issue_update_payload_maps_to_the_updated_issue() {
+        let data = json!({ "issueUpdate": { "success": true, "issue": {
+            "id": "iss_1", "number": 42, "title": "Do the thing",
+            "description": "body", "url": "u", "priority": 0,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-05T00:00:00Z",
+            "completedAt": "2026-01-05T00:00:00Z", "canceledAt": null,
+            "state": {"type": "completed"},
+            "creator": {"displayName": "Ada"}, "assignee": null,
+            "labels": {"nodes": [{"id": "lab_2", "name": "wontfix"}]}
+        }}});
+        let issue = issue_from_payload(&data).unwrap();
+        assert_eq!(issue.id, "iss_1");
+        assert_eq!(issue.state, IssueState::Closed);
+        assert_eq!(issue.labels[0].name, "wontfix");
+    }
+
+    #[test]
+    fn issue_update_payload_without_an_issue_is_a_shape_error() {
+        let data = json!({ "issueUpdate": { "success": true, "issue": null } });
+        assert!(matches!(
+            issue_from_payload(&data),
+            Err(ProviderError::Shape(_))
+        ));
+    }
+
+    #[test]
+    fn issue_update_mutation_selects_the_shared_fragment() {
+        assert!(ISSUE_UPDATE_MUTATION.contains("issue { ...IssueFields }"));
+        assert!(ISSUE_UPDATE_MUTATION.contains("$input: IssueUpdateInput!"));
     }
 
     #[test]

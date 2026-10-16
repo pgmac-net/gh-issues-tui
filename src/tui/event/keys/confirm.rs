@@ -48,14 +48,9 @@ pub(crate) fn confirm_toggle_state(
         IssueState::Closed => "issue closed",
         IssueState::Open => "issue reopened",
     };
-    with_issue(
-        app,
-        client,
-        tx,
-        msg,
-        CommentRefresh::Skip,
-        move |c, id| async move { c.set_state(&id, target).await },
-    );
+    with_issue_patch(app, client, tx, msg, move |c, id| async move {
+        c.set_state(&id, target).await
+    });
 }
 
 #[cfg(test)]

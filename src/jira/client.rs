@@ -174,6 +174,19 @@ impl Client {
         Ok(issues)
     }
 
+    /// Read one issue back with the bulk fetch's field list and mapper. Jira's
+    /// write endpoints answer 204 with no body, so every issue-level mutation
+    /// ends here to report the post-write issue (#196).
+    async fn issue(&self, issue_id: &str) -> Result<Issue> {
+        let data = self
+            .get(
+                &format!("/issue/{issue_id}"),
+                &[("fields", ISSUE_FIELDS.to_string())],
+            )
+            .await?;
+        Ok(map_issue(&data))
+    }
+
     pub async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         let data = self.get(&format!("/issue/{issue_id}/comment"), &[]).await?;
         let nodes = data
@@ -222,18 +235,19 @@ impl Client {
     }
 
     /// Edit an issue's description. Jira's body field is `description` (ADF).
-    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+    pub async fn update_body(&self, issue_id: &str, body: &str) -> Result<Issue> {
         self.put(
             &format!("/issue/{issue_id}"),
             json!({ "fields": { "description": text_to_adf(body) } }),
         )
-        .await
+        .await?;
+        self.issue(issue_id).await
     }
 
     /// Move the issue through a workflow transition whose target status
     /// category matches the wanted open/closed state. Transitions are
     /// workflow-defined per issue, so the available set is fetched first.
-    pub async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
+    pub async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<Issue> {
         let data = self
             .get(&format!("/issue/{issue_id}/transitions"), &[])
             .await?;
@@ -262,21 +276,22 @@ impl Client {
             &format!("/issue/{issue_id}/transitions"),
             json!({ "transition": { "id": target } }),
         )
-        .await
-        .map(drop)
+        .await?;
+        self.issue(issue_id).await
     }
 
-    pub async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
+    pub async fn update_title(&self, issue_id: &str, title: &str) -> Result<Issue> {
         self.put(
             &format!("/issue/{issue_id}"),
             json!({ "fields": { "summary": title } }),
         )
-        .await
+        .await?;
+        self.issue(issue_id).await
     }
 
     /// Jira issues have a single assignee. Only the first login is used; an
     /// empty list unassigns.
-    pub async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
+    pub async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<Issue> {
         let account_id = match logins.first() {
             Some(login) => Some(self.resolve_account_id(login).await?),
             None => None,
@@ -285,7 +300,8 @@ impl Client {
             &format!("/issue/{issue_id}/assignee"),
             json!({ "accountId": account_id }),
         )
-        .await
+        .await?;
+        self.issue(issue_id).await
     }
 
     async fn resolve_account_id(&self, query: &str) -> Result<String> {
@@ -309,7 +325,7 @@ impl Client {
         _repo: &str,
         _org: &str,
         names: &[String],
-    ) -> Result<()> {
+    ) -> Result<Issue> {
         let mut priority: Option<&str> = None;
         let mut labels: Vec<&String> = Vec::new();
         for name in names {
@@ -323,7 +339,8 @@ impl Client {
             fields["priority"] = json!({ "name": p });
         }
         self.put(&format!("/issue/{issue_id}"), json!({ "fields": fields }))
-            .await
+            .await?;
+        self.issue(issue_id).await
     }
 
     /// Global labels (best-effort) plus the synthetic `priority:*` labels so the
@@ -596,16 +613,16 @@ impl crate::provider::IssueProvider for Client {
     async fn update_comment(&self, issue_id: &str, comment_id: &str, body: &str) -> Result<()> {
         self.update_comment(issue_id, comment_id, body).await
     }
-    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<()> {
+    async fn set_state(&self, issue_id: &str, state: IssueState) -> Result<Issue> {
         self.set_state(issue_id, state).await
     }
-    async fn update_title(&self, issue_id: &str, title: &str) -> Result<()> {
+    async fn update_title(&self, issue_id: &str, title: &str) -> Result<Issue> {
         self.update_title(issue_id, title).await
     }
-    async fn update_body(&self, issue_id: &str, body: &str) -> Result<()> {
+    async fn update_body(&self, issue_id: &str, body: &str) -> Result<Issue> {
         self.update_body(issue_id, body).await
     }
-    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<()> {
+    async fn set_assignees(&self, issue_id: &str, logins: &[String]) -> Result<Issue> {
         self.set_assignees(issue_id, logins).await
     }
     async fn set_labels(
@@ -614,7 +631,7 @@ impl crate::provider::IssueProvider for Client {
         repo: &str,
         org: &str,
         names: &[String],
-    ) -> Result<()> {
+    ) -> Result<Issue> {
         self.set_labels(issue_id, repo, org, names).await
     }
     async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {

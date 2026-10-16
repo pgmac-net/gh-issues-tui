@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::provider::Provider;
 use crate::provider::error::RATE_LIMIT_MSG_PREFIX;
-use crate::provider::types::{Comment, FormOptions, PrLookup, PrRef, RepoIssues, RepoLabel};
+use crate::provider::types::{Comment, FormOptions, Issue, PrLookup, PrRef, RepoIssues, RepoLabel};
 
 use super::app::{
     App, Mode, SessionId, inferred_priority_set_options, priority_set_options,
@@ -28,7 +28,7 @@ mod spawn;
 
 use keys::{HarnessCtx, handle_key};
 use spawn::{
-    CommentRefresh, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks,
+    AfterMutation, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks,
     spawn_readiness, spawn_semantic_search,
 };
 
@@ -38,9 +38,19 @@ pub enum AppEvent {
         issue_id: String,
         result: Result<Vec<Comment>, String>,
     },
+    /// A mutation that reports nothing back finished; `after` says what has
+    /// to follow it. `issue_id` is the issue it targeted (`None` for create,
+    /// which reports no id).
     MutationDone {
         msg: String,
-        comments: CommentRefresh,
+        issue_id: Option<String>,
+        after: AfterMutation,
+    },
+    /// An issue-level mutation finished and reported the issue as it now
+    /// stands; that one list entry is replaced in place (#196).
+    IssuePatched {
+        msg: String,
+        issue: Box<Issue>,
     },
     MutationFailed(String),
     /// Per-repo picker options for the new-issue form.
@@ -446,24 +456,42 @@ pub(crate) fn handle_app_event(
                 Err(_) => {}
             }
         }
-        AppEvent::MutationDone { msg, comments } => {
+        AppEvent::MutationDone {
+            msg,
+            issue_id,
+            after,
+        } => {
             app.status = Some(msg);
             // Only refetch if we have rate limit budget left.
             let should_fetch = app.rate_limit.is_none_or(|rl| rl.remaining > 0);
-            if should_fetch {
+            if after == AfterMutation::CommentAdded
+                && let Some(id) = &issue_id
+            {
+                app.bump_comment_count(id);
+            }
+            if !should_fetch {
+                app.rate_limit_error = Some("rate limited — refetch skipped until reset".into());
+            } else if after == AfterMutation::RefetchOrg {
                 app.loading = true;
                 spawn_fetch(client, app, tx);
-                if comments == CommentRefresh::Refetch
-                    && let Some(id) = comments_refresh_target(app)
-                {
-                    // The mutation changed the comment thread itself, so the
-                    // cached copy is known-stale — drop it before refetching.
-                    app.invalidate_comments(&id);
-                    spawn_comments(client, id, tx);
-                }
-            } else {
-                app.rate_limit_error = Some("rate limited — refetch skipped until reset".into());
+            } else if let Some(id) = comments_refresh_target(app) {
+                // The mutation changed the comment thread itself, so the
+                // cached copy is known-stale — drop it before refetching.
+                app.invalidate_comments(&id);
+                spawn_comments(client, id, tx);
             }
+        }
+        AppEvent::IssuePatched { msg, issue } => {
+            let mut listed = false;
+            nav(app, client, tx, |app| listed = app.patch_issue(*issue));
+            // Unlisted: it left the list under a refetch while the write was
+            // in flight; the next refresh settles where it belongs.
+            app.status = Some(if listed {
+                msg
+            } else {
+                format!("{msg} (no longer listed)")
+            });
+            spawn_label_ranks(app, ranker, tx);
         }
         AppEvent::MutationFailed(e) => {
             if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
@@ -648,7 +676,7 @@ pub(crate) mod prelude {
     pub use tokio::sync::mpsc;
 
     pub use crate::provider::Provider;
-    pub use crate::provider::types::{IssueState, PrRef, RepoLabel};
+    pub use crate::provider::types::{Issue, IssueState, PrRef, RepoLabel};
     pub use crate::tui::app::{
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorState, EditorTarget, Focus,
         HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH,
@@ -801,7 +829,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mutation_done_skip_leaves_cached_comments_alone() {
+    async fn mutation_done_refetch_org_leaves_cached_comments_alone() {
         let (mut app, issue_id) = app_with_issue(&[]);
         app.detail.open = true;
         app.comment_cache
@@ -813,8 +841,9 @@ mod tests {
         handle_app_event(
             &mut app,
             AppEvent::MutationDone {
-                msg: "issue closed".into(),
-                comments: CommentRefresh::Skip,
+                msg: "moved to elsewhere".into(),
+                issue_id: Some(issue_id.clone()),
+                after: AfterMutation::RefetchOrg,
             },
             &client,
             None,
@@ -822,10 +851,11 @@ mod tests {
         );
 
         assert!(app.comment_cache.contains_key(&issue_id));
+        assert!(app.loading, "a move or create must refetch the org");
     }
 
     #[tokio::test]
-    async fn mutation_done_refetch_invalidates_cached_comments() {
+    async fn mutation_done_comment_edit_invalidates_cached_comments() {
         let (mut app, issue_id) = app_with_issue(&[]);
         app.detail.open = true;
         app.comment_cache
@@ -837,8 +867,9 @@ mod tests {
         handle_app_event(
             &mut app,
             AppEvent::MutationDone {
-                msg: "comment added".into(),
-                comments: CommentRefresh::Refetch,
+                msg: "comment updated".into(),
+                issue_id: Some(issue_id.clone()),
+                after: AfterMutation::CommentEdited,
             },
             &client,
             None,
@@ -846,6 +877,90 @@ mod tests {
         );
 
         assert!(!app.comment_cache.contains_key(&issue_id));
+        assert!(!app.loading, "a comment mutation must not refetch the org");
+        assert_eq!(app.repos[0].issues[0].comment_count, 0);
+    }
+
+    #[tokio::test]
+    async fn mutation_done_comment_added_bumps_the_listed_count() {
+        let (mut app, issue_id) = app_with_issue(&[]);
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::MutationDone {
+                msg: "comment added".into(),
+                issue_id: Some(issue_id),
+                after: AfterMutation::CommentAdded,
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        assert_eq!(app.repos[0].issues[0].comment_count, 1);
+        assert!(!app.loading, "a comment mutation must not refetch the org");
+    }
+
+    /// The #196 contract: an issue-level mutation patches its one entry and
+    /// does not refetch the org — the refetch is what read stale data.
+    #[tokio::test]
+    async fn issue_patched_replaces_the_entry_without_an_org_refetch() {
+        let (mut app, issue_id) = app_with_issue(&["bug"]);
+        app.state_filter = crate::tui::app::StateFilter::All;
+        app.rebuild_rows();
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        let mut patched = app.repos[0].issues[0].clone();
+        patched.state = IssueState::Closed;
+        patched.labels = vec![Label {
+            name: "wontfix".into(),
+            color: String::new(),
+            rank: None,
+        }];
+        handle_app_event(
+            &mut app,
+            AppEvent::IssuePatched {
+                msg: "issue closed".into(),
+                issue: Box::new(patched),
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        let issue = app.selected_issue().expect("still listed under `all`");
+        assert_eq!(issue.id, issue_id);
+        assert_eq!(issue.state, IssueState::Closed);
+        assert_eq!(issue.labels[0].name, "wontfix");
+        assert!(!app.loading, "no org refetch after an issue-level mutation");
+        assert_eq!(app.status.as_deref(), Some("issue closed"));
+    }
+
+    #[tokio::test]
+    async fn issue_patched_for_an_unlisted_issue_says_so() {
+        let (mut app, _issue_id) = app_with_issue(&[]);
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::IssuePatched {
+                msg: "labels updated".into(),
+                issue: Box::new(stub_issue("I_gone", 9)),
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        assert_eq!(
+            app.status.as_deref(),
+            Some("labels updated (no longer listed)")
+        );
+        assert_eq!(app.repos[0].issues.len(), 1);
     }
 
     /// The consent contract for issue text (#160): without `send_issue_text`
