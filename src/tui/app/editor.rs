@@ -202,20 +202,50 @@ impl BodyEditor {
         }
     }
 
+    /// ←: at column 0 move to the end of the previous line; no-op on the
+    /// first line.
     pub fn left(&mut self) {
-        self.lines[self.line].left();
+        if self.lines[self.line].cursor == 0 && self.line > 0 {
+            self.line -= 1;
+            self.lines[self.line].end();
+        } else {
+            self.lines[self.line].left();
+        }
     }
 
+    /// →: at the end of a line move to column 0 of the next line; no-op on
+    /// the last line.
     pub fn right(&mut self) {
-        self.lines[self.line].right();
+        let cur = &self.lines[self.line];
+        if cur.cursor == cur.buffer.chars().count() && self.line + 1 < self.lines.len() {
+            self.line += 1;
+            self.lines[self.line].home();
+        } else {
+            self.lines[self.line].right();
+        }
     }
 
+    /// Ctrl+←: at column 0 cross to the previous line's end, otherwise
+    /// step by word.
     pub fn word_left(&mut self) {
-        self.lines[self.line].word_left();
+        if self.lines[self.line].cursor == 0 && self.line > 0 {
+            self.line -= 1;
+            self.lines[self.line].end();
+        } else {
+            self.lines[self.line].word_left();
+        }
     }
 
+    /// Ctrl+→: at the end of a line cross to the next line's start,
+    /// otherwise step by word.
     pub fn word_right(&mut self) {
-        self.lines[self.line].word_right();
+        let cur = &self.lines[self.line];
+        if cur.cursor == cur.buffer.chars().count() && self.line + 1 < self.lines.len() {
+            self.line += 1;
+            self.lines[self.line].home();
+        } else {
+            self.lines[self.line].word_right();
+        }
     }
 
     pub fn delete_word_back(&mut self) {
