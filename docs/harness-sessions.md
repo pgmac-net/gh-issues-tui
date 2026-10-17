@@ -132,6 +132,27 @@ No provenance check across process boundaries was added (see
 `docs/adr/0001-adoption-is-name-shaped-ownership-is-surfaced-not-enforced.md`): reading
 `/proc/<pid>/environ` would only work on Linux, one of the four release targets.
 
+### Remote Control (#206)
+
+Claude Code has two ways a session can be reached from claude.ai/code or the mobile app,
+and gh-issues-tui sees only one of them.
+
+- **Sessions this tool dispatches** (`bg_dispatch`, `claude --bg`) are reachable from
+  claude.ai only when `"remoteControlAtStartup": true` is set in `~/.claude/settings.json`.
+  That setting turns Remote Control on for each background session as it starts. Without
+  it, the session is local-only: `Z` and `claude attach` still work, the phone does not.
+  Nothing in gh-issues-tui sets this per session; it is read by Claude Code, not by this tool.
+- **`claude remote-control` server** (for example a systemd user unit) accepts new sessions
+  from claude.ai/code and the phone. It spawns each one as a `claude --print --sdk-url …`
+  process with no terminal. In `claude agents --json` those rows are `"kind": "interactive"`
+  with no `id`. gh-issues-tui filters them out (#147), so they never appear in `Z`, are never
+  adopted (#148), and could not be attached to with `claude attach` anyway.
+
+Running both side by side needs no configuration. The server cannot be told to start a
+session for a particular issue from this tool: it accepts new sessions only from claude.ai
+or the phone, and there is no local entry point. To send an issue to a phone-reachable
+agent, press `A` as usual with `remoteControlAtStartup` set.
+
 ## Configuration
 
 `~/.config/gh-issues/config.toml`:
