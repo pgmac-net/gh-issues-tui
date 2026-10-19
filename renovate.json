@@ -21,6 +21,17 @@
       "groupName": "Tokio"
     },
     {
+      "description": "tui-term implements its Screen trait for one vt100 version; a lone vt100 bump fails to compile. Move them together and hold vt100 at the version tui-term supports (raise when tui-term does)",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["vt100", "tui-term"],
+      "groupName": "tui-term + vt100"
+    },
+    {
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["vt100"],
+      "allowedVersions": "<0.17"
+    },
+    {
       "description": "Auto-merge patch and minor Rust crate updates",
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["patch", "minor"],
