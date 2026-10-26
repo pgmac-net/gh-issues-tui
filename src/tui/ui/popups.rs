@@ -625,10 +625,10 @@ fn draw_key_table(
 /// Keys available from the issue list and detail pane.
 pub(super) const LIST_HELP: &[(&str, &str)] = &[
     ("j/k ↑/↓", "move list / scroll detail region"),
-    ("Space", "collapse/expand repo group"),
+    ("Space", "collapse repo group / fold comment (in pane)"),
     ("←", "collapse repo group / back to list"),
     ("→", "expand repo group / into detail pane"),
-    ("[ / ]", "collapse all / expand all"),
+    ("[ / ]", "collapse / expand all (fold / unfold in pane)"),
     ("Enter", "open issue in detail pane"),
     (
         "Tab",

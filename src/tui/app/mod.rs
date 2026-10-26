@@ -110,6 +110,10 @@ pub struct App {
     /// `set_data` and `switch_org` — a refetch can reveal comments added
     /// elsewhere, and a stale thread is worse than a cheap refetch.
     pub comment_cache: HashMap<String, Vec<Comment>>,
+    /// Ids of comments folded down to their header row (#210). Keyed by comment
+    /// id, not position, so it survives the thread being refetched after an
+    /// add or edit. Session-only; cleared by `switch_org`.
+    pub folded_comments: std::collections::HashSet<String>,
     /// Ticket-readiness judgements this session (#160). Advisory and
     /// display-only — nothing here reaches a harness launch. Dropped with the
     /// comment threads they were derived from.
@@ -175,6 +179,7 @@ impl App {
             rate_limit: None,
             rate_limit_error: None,
             comment_cache: HashMap::new(),
+            folded_comments: std::collections::HashSet::new(),
             readiness: ReadinessState::default(),
             search: SearchState::default(),
             typesafe: Default::default(),
@@ -281,6 +286,7 @@ impl App {
         self.org = org;
         self.repos.clear();
         self.comment_cache.clear();
+        self.folded_comments.clear();
         self.readiness.clear();
         self.reset_search();
         self.rows.clear();

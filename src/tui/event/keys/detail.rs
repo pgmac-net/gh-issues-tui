@@ -240,8 +240,8 @@ pub(crate) fn detail_scroll(app: &mut App, lines: isize) {
         DetailSel::Comment(i) => {
             let bounds = app.detail.comments.as_ref().and_then(|comments| {
                 let c = comments.get(i)?;
-                let top = ui::comment_offset(comments, i, inner_w);
-                let height = ui::comment_height(c, inner_w);
+                let top = ui::comment_offset(comments, i, inner_w, &app.folded_comments);
+                let height = ui::comment_height(c, inner_w, app.is_comment_folded(c));
                 Some((top, top + height.saturating_sub(comments_view)))
             });
             if let Some((lo, hi)) = bounds {
@@ -270,8 +270,26 @@ pub(crate) fn snap_after_select(app: &mut App) {
     let Some(comments) = app.detail.comments.as_ref() else {
         return;
     };
-    let top = ui::comment_offset(comments, i, inner_w);
+    let top = ui::comment_offset(comments, i, inner_w, &app.folded_comments);
     app.detail.snap_comment(top);
+}
+
+/// After a fold or unfold (#210), re-anchor the comments viewport: on a
+/// selected comment its header goes to the top, as after `Tab`; with the body
+/// selected the offset is only clamped to the thread's new, possibly shorter,
+/// extent so it cannot be left scrolled past the end.
+pub(crate) fn snap_after_fold(app: &mut App) {
+    if matches!(app.detail.sel, DetailSel::Comment(_)) {
+        snap_after_select(app);
+        return;
+    }
+    let (inner_w, _, comments_view) = detail_metrics();
+    let Some(comments) = app.detail.comments.as_ref() else {
+        return;
+    };
+    let total = ui::comment_offset(comments, comments.len(), inner_w, &app.folded_comments);
+    let max = total.saturating_sub(comments_view);
+    app.detail.comments_scroll = app.detail.comments_scroll.min(max);
 }
 
 #[cfg(test)]

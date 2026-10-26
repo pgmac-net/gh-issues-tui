@@ -59,7 +59,9 @@ pub(super) fn draw_detail_body(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
-        .title(" issue (Tab comment · j/k scroll · e edit · P PR · ← list · Esc close) ");
+        .title(
+            " issue (Tab comment · Space fold · j/k scroll · e edit · P PR · ← list · Esc close) ",
+        );
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 
@@ -126,7 +128,13 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     let mut lines: Vec<Line> = Vec::new();
     let mut links: Vec<LinkSpan> = Vec::new();
     for (i, c) in comments.iter().enumerate() {
-        let (card, card_links) = comment_card_lines_links(c, selected == Some(i), card_width, t);
+        let (card, card_links) = comment_card_lines_links(
+            c,
+            selected == Some(i),
+            app.is_comment_folded(c),
+            card_width,
+            t,
+        );
         let base = lines.len();
         for mut l in card_links {
             l.line += base;
@@ -146,8 +154,8 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     // Scrollbar maps to the selected comment's own extent; falls back to the
     // whole thread when the body (not a comment) has focus.
     if let Some(i) = selected {
-        let top = comment_offset(comments, i, inner_w);
-        let height = comment_height(&comments[i], inner_w);
+        let top = comment_offset(comments, i, inner_w, &app.folded_comments);
+        let height = comment_height(&comments[i], inner_w, app.is_comment_folded(&comments[i]));
         render_region_scrollbar(f, t, area, height, inner_h, scroll.saturating_sub(top));
     } else {
         render_region_scrollbar(f, t, area, total, inner_h, scroll);
@@ -253,22 +261,30 @@ pub(super) fn body_lines_links(
 pub(super) fn comment_card_lines(
     c: &Comment,
     selected: bool,
+    folded: bool,
     card_width: usize,
     t: &Theme,
 ) -> Vec<Line<'static>> {
-    comment_card_lines_links(c, selected, card_width, t).0
+    comment_card_lines_links(c, selected, folded, card_width, t).0
 }
 
 /// [`comment_card_lines`] plus the URL positions in the comment body, with each
 /// link's line index offset past the header rule.
+///
+/// A folded card (#210) is the header rule alone, marked `▸` and carrying the
+/// number of rows unfolding would reveal; an open card is marked `▾`. Folding
+/// drops the footer rule and trailing blank too, so a folded thread reads as a
+/// compact list of headers.
 pub(super) fn comment_card_lines_links(
     c: &Comment,
     selected: bool,
+    folded: bool,
     card_width: usize,
     t: &Theme,
 ) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
-    let header = format!(
-        "── {} · {} ",
+    let marker = if folded { '▸' } else { '▾' };
+    let mut header = format!(
+        "── {marker} {} · {} ",
         c.author,
         c.created_at.format("%Y-%m-%d %H:%M")
     );
@@ -278,9 +294,18 @@ pub(super) fn comment_card_lines_links(
         header_style = header_style.add_modifier(Modifier::REVERSED);
         rule_style = Style::default().fg(t.accent);
     }
+    let (md_lines, md_links) = markdown::render_with_links(&c.body, card_width, t);
+    if folded {
+        let hidden = linkmap::wrapped_height(&md_lines, card_width);
+        let noun = if hidden == 1 { "line" } else { "lines" };
+        header.push_str(&format!("({hidden} {noun}) "));
+        return (
+            vec![rule_line(&header, card_width, header_style)],
+            Vec::new(),
+        );
+    }
     let mut lines = vec![rule_line(&header, card_width, header_style)];
     let base = lines.len();
-    let (md_lines, md_links) = markdown::render_with_links(&c.body, card_width, t);
     let links = md_links
         .into_iter()
         .map(|mut l| {
@@ -330,20 +355,27 @@ pub fn body_content_height(issue: &Issue, readiness: Option<&Readiness>, width: 
 
 /// Wrapped height of one comment card (header rule + body + footer + blank) at
 /// inner width `width`.
-pub fn comment_height(c: &Comment, width: u16) -> u16 {
+/// A folded card (#210) is its header row alone.
+pub fn comment_height(c: &Comment, width: u16, folded: bool) -> u16 {
     paragraph_height(
-        &comment_card_lines(c, false, width as usize, &Theme::default()),
+        &comment_card_lines(c, false, folded, width as usize, &Theme::default()),
         width,
     )
 }
 
 /// Visual-row offset of comment `i`'s top within the stacked comments
-/// paragraph: the summed heights of the comments before it.
-pub fn comment_offset(comments: &[Comment], i: usize, width: u16) -> u16 {
+/// paragraph: the summed heights of the comments before it. `folded` holds the
+/// ids of folded comments, which are one row tall.
+pub fn comment_offset(
+    comments: &[Comment],
+    i: usize,
+    width: u16,
+    folded: &std::collections::HashSet<String>,
+) -> u16 {
     comments
         .iter()
         .take(i)
-        .map(|c| comment_height(c, width))
+        .map(|c| comment_height(c, width, folded.contains(&c.id)))
         .fold(0u16, |acc, h| acc.saturating_add(h))
 }
 
@@ -387,9 +419,38 @@ mod tests {
     #[test]
     fn comment_height_counts_header_body_footer_blank() {
         // header rule + 1 body line + footer rule + trailing blank.
-        assert_eq!(comment_height(&test_comment("one line"), 80), 4);
+        assert_eq!(comment_height(&test_comment("one line"), 80, false), 4);
         // header + 3 body + footer + blank.
-        assert_eq!(comment_height(&test_comment("a\nb\nc"), 80), 6);
+        assert_eq!(comment_height(&test_comment("a\nb\nc"), 80, false), 6);
+    }
+
+    #[test]
+    fn folded_comment_is_one_header_row_with_hidden_line_count() {
+        let c = test_comment("a\nb\nc");
+        assert_eq!(comment_height(&c, 80, true), 1);
+        let t = Theme::default();
+        let folded = comment_card_lines(&c, false, true, 80, &t);
+        assert_eq!(folded.len(), 1);
+        let text: String = folded[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("── ▸ octocat"), "got: {text}");
+        assert!(text.contains("(3 lines)"), "got: {text}");
+        // Singular for one row, and an open card is marked ▾ instead.
+        let one = comment_card_lines(&test_comment("x"), false, true, 80, &t);
+        let one: String = one[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(one.contains("(1 line)"), "got: {one}");
+        let open = comment_card_lines(&c, false, false, 80, &t);
+        let open: String = open[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(open.starts_with("── ▾ octocat"), "got: {open}");
+    }
+
+    #[test]
+    fn folded_hidden_count_uses_wrapped_rows() {
+        let long = "word ".repeat(60);
+        let c = test_comment(&long);
+        let rows = comment_height(&c, 40, false) - 3; // minus header, footer, blank
+        let folded = comment_card_lines(&c, false, true, 40, &Theme::default());
+        let text: String = folded[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains(&format!("({rows} lines)")), "got: {text}");
     }
 
     /// A table breaks the renderer's one-line-per-source-line property, so the
@@ -474,24 +535,50 @@ mod tests {
         // A body line far wider than the pane wraps into multiple visual rows,
         // so the measured height exceeds the naive source-line count.
         let long = "x".repeat(200);
-        let h = comment_height(&test_comment(&long), 40);
+        let h = comment_height(&test_comment(&long), 40, false);
         assert!(h > 4, "expected wrapped height > 4, got {h}");
     }
 
     #[test]
     fn comment_offset_sums_preceding_card_heights() {
+        let none = std::collections::HashSet::new();
         let comments = vec![test_comment("a\nb\nc"), test_comment("only one")];
-        assert_eq!(comment_offset(&comments, 0, 80), 0);
+        assert_eq!(comment_offset(&comments, 0, 80, &none), 0);
         // First card is header + 3 body + footer + blank = 6 rows.
-        assert_eq!(comment_offset(&comments, 1, 80), 6);
+        assert_eq!(comment_offset(&comments, 1, 80, &none), 6);
+    }
+
+    #[test]
+    fn comment_offset_counts_a_folded_card_as_one_row() {
+        let mut comments = vec![test_comment("a\nb\nc"), test_comment("only one")];
+        comments[0].id = "first".into();
+        let folded: std::collections::HashSet<String> = ["first".to_string()].into();
+        assert_eq!(comment_offset(&comments, 1, 80, &folded), 1);
+        // The whole thread: 1 folded row + the open card's 4.
+        assert_eq!(comment_offset(&comments, 2, 80, &folded), 5);
+    }
+
+    #[test]
+    fn folded_comment_renders_marker_and_hides_its_body() {
+        use crate::tui::app::DetailSel;
+        let mut app = detail_app_with_comments();
+        app.detail.sel = DetailSel::Comment(0);
+        let open = render_detail_string(&app);
+        assert!(open.contains("▾ octocat"), "open marker missing");
+        assert!(open.contains("Comment line 1 "), "open body missing");
+        assert!(app.toggle_selected_comment_fold());
+        let folded = render_detail_string(&app);
+        assert!(folded.contains("▸ octocat"), "folded marker missing");
+        assert!(folded.contains("(15 lines)"), "hidden count missing");
+        assert!(!folded.contains("Comment line 1 "), "body should be hidden");
+        // The next card is untouched.
+        assert!(folded.contains("Second comment, short."));
     }
 
     /// A detail-pane app with a long body and one long + two short comments,
     /// rendered into a `TestBackend` so the two-region layout can be asserted.
-    fn detail_render_string(sel: DetailSel) -> String {
+    fn detail_app_with_comments_at(sel: DetailSel) -> App {
         use crate::provider::types::RepoIssues;
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
 
         let mut i = issue(vec![]);
         i.number = 42;
@@ -515,7 +602,7 @@ mod tests {
         }]);
         app.selected = 1;
         app.open_detail();
-        app.detail.comments = Some(vec![
+        let mut comments = vec![
             test_comment(
                 &(1..=15)
                     .map(|n| format!("Comment line {n} long enough to scroll within one card."))
@@ -524,18 +611,40 @@ mod tests {
             ),
             test_comment("Second comment, short."),
             test_comment("Third comment."),
-        ]);
+        ];
+        for (n, c) in comments.iter_mut().enumerate() {
+            c.id = format!("c{n}");
+        }
+        app.detail.comments = Some(comments);
         app.detail.sel = sel;
         if let DetailSel::Comment(idx) = sel {
             let w = layout::detail_inner_width(100);
-            app.detail.comments_scroll =
-                comment_offset(app.detail.comments.as_ref().unwrap(), idx, w);
+            app.detail.comments_scroll = comment_offset(
+                app.detail.comments.as_ref().unwrap(),
+                idx,
+                w,
+                &app.folded_comments,
+            );
         }
+        app
+    }
+
+    fn detail_render_string(sel: DetailSel) -> String {
+        render_detail_string(&detail_app_with_comments_at(sel))
+    }
+
+    fn detail_app_with_comments() -> App {
+        detail_app_with_comments_at(DetailSel::Body)
+    }
+
+    fn render_detail_string(app: &App) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| draw(f, &app, &Theme::default(), &HarnessRegistry::default()))
+            .draw(|f| draw(f, app, &Theme::default(), &HarnessRegistry::default()))
             .unwrap();
         terminal
             .backend()
@@ -556,7 +665,7 @@ mod tests {
         assert!(out.contains("#42"), "issue number missing");
         assert!(out.contains("Body line 1"), "body text missing");
         // The selected comment's header rule renders in the bottom region.
-        assert!(out.contains("── octocat"), "comment header missing");
+        assert!(out.contains("── ▾ octocat"), "comment header missing");
     }
 
     #[test]

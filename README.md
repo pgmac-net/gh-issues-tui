@@ -229,9 +229,9 @@ code_number  = "#dcdcdc"
 |-----|--------|
 | `j`/`k`, `↑`/`↓` | move selection in the list; in the detail pane, scroll the selected region (issue body or the selected comment) |
 | `PgUp`/`PgDn`, `g`/`G` | page / jump to top / bottom |
-| `Space` | collapse/expand the selected repo group |
+| `Space` | collapse/expand the selected repo group; in the detail pane, fold/unfold the selected comment |
 | `←` / `→` | on a repo header: collapse / expand the group. On an issue: `→` moves into the detail pane (opening it if closed), `←` backs out to the list |
-| `[` / `]` | collapse all / expand all groups |
+| `[` / `]` | collapse all / expand all groups; in the detail pane, fold / unfold every comment |
 | `Enter` | open the issue in a right-hand detail pane (loads the comment thread) |
 | `Tab` / `Shift+Tab` | from the list: switch into the detail pane. In the detail pane: move to the next / previous comment |
 | `←` | in the detail pane: return focus to the list |
