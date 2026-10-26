@@ -1,5 +1,5 @@
 use super::super::prelude::*;
-use super::detail::{detail_page_rows, detail_scroll, snap_after_select};
+use super::detail::{detail_page_rows, detail_scroll, snap_after_fold, snap_after_select};
 use super::harness::{HarnessCtx, open_harness_picker, open_session_picker};
 
 pub(crate) fn handle_normal_key(
@@ -122,6 +122,21 @@ pub(crate) fn handle_normal_key(
             } else {
                 nav(app, client, tx, |a| a.set_current_collapsed(true));
             }
+        }
+        // In the detail pane the same keys fold comments (#210) rather than
+        // collapse repo groups: Space the selected comment, `[`/`]` all of them.
+        KeyCode::Char(' ') if app.focus == Focus::Detail => {
+            if app.toggle_selected_comment_fold() {
+                snap_after_fold(app);
+            }
+        }
+        KeyCode::Char('[') if app.focus == Focus::Detail => {
+            app.set_all_comments_folded(true);
+            snap_after_fold(app);
+        }
+        KeyCode::Char(']') if app.focus == Focus::Detail => {
+            app.set_all_comments_folded(false);
+            snap_after_fold(app);
         }
         KeyCode::Char(' ') => nav(app, client, tx, App::toggle_collapse),
         KeyCode::Char('[') => nav(app, client, tx, |a| a.set_all_collapsed(true)),

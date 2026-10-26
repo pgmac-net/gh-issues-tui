@@ -896,6 +896,79 @@ mod tests {
         );
     }
 
+    /// Detail pane focused on an issue with three comments of 3, 1 and 1 lines.
+    fn folding_app() -> App {
+        let (mut app, _) = app_with_issue(&[]);
+        app.open_detail();
+        app.focus = Focus::Detail;
+        let c = |id: &str, body: &str| crate::provider::types::Comment {
+            id: id.into(),
+            author: "octocat".into(),
+            created_at: chrono::Utc::now(),
+            body: body.into(),
+        };
+        app.detail.comments = Some(vec![c("c1", "a\nb\nc"), c("c2", "x"), c("c3", "y")]);
+        app
+    }
+
+    fn press(app: &mut App, ch: char) {
+        let mut h = fixture(None);
+        let client = test_client();
+        let tx = h.tx.clone();
+        handle_normal_key(app, key(KeyCode::Char(ch)), &client, &tx, &mut h.ctx());
+    }
+
+    #[test]
+    fn space_in_the_detail_pane_folds_the_selected_comment_not_the_repo_group() {
+        let mut app = folding_app();
+        app.detail.select(1);
+        let groups = app.collapsed.clone();
+        press(&mut app, ' ');
+        assert!(app.folded_comments.contains("c1"));
+        assert_eq!(app.collapsed, groups, "repo group must not move");
+        // Viewport snapped to the selected comment's header: first card, row 0.
+        assert_eq!(app.detail.comments_scroll, 0);
+        press(&mut app, ' ');
+        assert!(app.folded_comments.is_empty());
+    }
+
+    #[test]
+    fn space_in_the_list_still_collapses_the_repo_group() {
+        let mut app = folding_app();
+        app.focus = Focus::List;
+        let groups = app.collapsed.clone();
+        press(&mut app, ' ');
+        assert_ne!(app.collapsed, groups);
+        assert!(app.folded_comments.is_empty());
+    }
+
+    #[test]
+    fn brackets_in_the_detail_pane_fold_and_unfold_all_comments() {
+        let mut app = folding_app();
+        press(&mut app, '[');
+        assert_eq!(app.folded_comments.len(), 3);
+        press(&mut app, ']');
+        assert!(app.folded_comments.is_empty());
+    }
+
+    #[test]
+    fn folding_snaps_to_the_selected_comment_header() {
+        let mut app = folding_app();
+        app.detail.select(2); // Comment(1), "x"
+        app.detail.comments_scroll = 99;
+        press(&mut app, '[');
+        // c1 folded = 1 row, so comment 1 starts at row 1.
+        assert_eq!(app.detail.comments_scroll, 1);
+    }
+
+    #[test]
+    fn folding_with_the_body_selected_clamps_a_stale_scroll() {
+        let mut app = folding_app();
+        app.detail.comments_scroll = 99;
+        press(&mut app, '[');
+        assert!(app.detail.comments_scroll < 99);
+    }
+
     #[test]
     fn q_with_only_exited_sessions_quits_straight_away() {
         let (mut app, _) = app_with_issue(&[]);

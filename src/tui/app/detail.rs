@@ -123,6 +123,48 @@ impl App {
         Some(id)
     }
 
+    /// Whether comment `c` is folded down to its header row (#210).
+    pub fn is_comment_folded(&self, c: &Comment) -> bool {
+        self.folded_comments.contains(&c.id)
+    }
+
+    /// `Space` in the detail pane: fold or unfold the selected comment. The
+    /// body is not foldable, so with it selected this does nothing and returns
+    /// `false`; the caller re-snaps the viewport only when it returns `true`.
+    pub fn toggle_selected_comment_fold(&mut self) -> bool {
+        let DetailSel::Comment(i) = self.detail.sel else {
+            return false;
+        };
+        let Some(id) = self
+            .detail
+            .comments
+            .as_ref()
+            .and_then(|c| c.get(i))
+            .map(|c| c.id.clone())
+        else {
+            return false;
+        };
+        if !self.folded_comments.remove(&id) {
+            self.folded_comments.insert(id);
+        }
+        true
+    }
+
+    /// `[` / `]` in the detail pane: fold or unfold every comment of the
+    /// loaded thread. Other threads' folds are left alone.
+    pub fn set_all_comments_folded(&mut self, folded: bool) {
+        let Some(comments) = self.detail.comments.as_ref() else {
+            return;
+        };
+        for c in comments {
+            if folded {
+                self.folded_comments.insert(c.id.clone());
+            } else {
+                self.folded_comments.remove(&c.id);
+            }
+        }
+    }
+
     /// Record a fetched thread so revisiting the issue costs nothing.
     pub fn cache_comments(&mut self, id: String, comments: Vec<Comment>) {
         self.comment_cache.insert(id, comments);

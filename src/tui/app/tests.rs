@@ -1510,6 +1510,60 @@ fn detail_app_with_comments() -> App {
 }
 
 #[test]
+fn space_fold_toggles_only_the_selected_comment() {
+    let mut app = detail_app_with_comments();
+    // Body selected: nothing to fold.
+    assert!(!app.toggle_selected_comment_fold());
+    assert!(app.folded_comments.is_empty());
+
+    app.detail.sel = DetailSel::Comment(1);
+    assert!(app.toggle_selected_comment_fold());
+    assert!(app.folded_comments.contains("c2"));
+    assert!(!app.folded_comments.contains("c1"));
+    assert!(app.toggle_selected_comment_fold()); // toggles back
+    assert!(app.folded_comments.is_empty());
+}
+
+#[test]
+fn fold_all_and_unfold_all_cover_the_loaded_thread_only() {
+    let mut app = detail_app_with_comments();
+    app.folded_comments.insert("elsewhere".into()); // another issue's comment
+    app.set_all_comments_folded(true);
+    assert!(app.folded_comments.contains("c1") && app.folded_comments.contains("c2"));
+    app.set_all_comments_folded(false);
+    assert!(!app.folded_comments.contains("c1") && !app.folded_comments.contains("c2"));
+    assert!(app.folded_comments.contains("elsewhere"));
+}
+
+#[test]
+fn folds_survive_a_thread_refetch_and_reopening_the_pane() {
+    let mut app = detail_app_with_comments();
+    app.set_all_comments_folded(true);
+    // A refetch after an add/edit replaces the thread with fresh copies.
+    app.detail.comments = Some(vec![
+        comment("c1", "first, edited"),
+        comment("c2", "only one line"),
+        comment("c3", "brand new"),
+    ]);
+    assert!(app.is_comment_folded(&comment("c1", "")));
+    assert!(
+        !app.is_comment_folded(&comment("c3", "")),
+        "new starts open"
+    );
+    app.close_detail();
+    app.open_detail();
+    assert!(app.folded_comments.contains("c2"));
+}
+
+#[test]
+fn switching_org_clears_folds() {
+    let mut app = detail_app_with_comments();
+    app.set_all_comments_folded(true);
+    app.switch_org("other".into());
+    assert!(app.folded_comments.is_empty());
+}
+
+#[test]
 fn body_editor_from_text_splits_lines_and_ends_cursor() {
     let b = BodyEditor::from_text("hello\nworld");
     assert_eq!(b.text(), "hello\nworld");
