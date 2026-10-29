@@ -287,7 +287,7 @@ impl App {
     /// Prepares the calendar cursor from the current filter value or today.
     pub fn calendar_init(&mut self, idx: usize) {
         let current = self.current_filter_value(idx);
-        self.calendar_cursor = parse_date(&current).unwrap_or_else(|| Utc::now().date_naive());
+        self.calendar_cursor = parse_date(&current).unwrap_or_else(crate::localtime::today);
     }
 
     /// Returns `true` when the field at `idx` uses the calendar date picker.

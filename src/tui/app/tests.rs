@@ -21,12 +21,16 @@ fn issue(number: u64, title: &str, state: IssueState) -> Issue {
         assignees: vec![],
         labels: vec![],
         comment_count: 0,
-        created_at: Utc
-            .with_ymd_and_hms(2026, 6, number as u32 % 28 + 1, 0, 0, 0)
-            .unwrap(),
-        updated_at: Utc
-            .with_ymd_and_hms(2026, 7, number as u32 % 28 + 1, 0, 0, 0)
-            .unwrap(),
+        // Local noon, so the local day (what filters compare) is the same on
+        // every host timezone.
+        created_at: chrono::Local
+            .with_ymd_and_hms(2026, 6, number as u32 % 28 + 1, 12, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc),
+        updated_at: chrono::Local
+            .with_ymd_and_hms(2026, 7, number as u32 % 28 + 1, 12, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc),
         closed_at: None,
     }
 }
