@@ -4,6 +4,13 @@ Redesign of the issue detail pane's navigation, tracking
 [gh-issues-tui#59](https://github.com/pgmac-net/gh-issues-tui/issues/59)
 (follow-up feedback on the original PR #70).
 
+> **Partly superseded by #217** (`docs/consistent-pane-keys.md`, ADR 0006).
+> The two regions remain, but `↑`/`↓` now move a row cursor through the body
+> and comments instead of scrolling within the selected one, selecting a
+> comment edge-scrolls instead of snapping its header to the top, and the
+> comments scrollbar shows position in the whole thread. `scroll_comment`,
+> `snap_comment` and the per-comment clamp below are gone.
+
 ## Motivation
 
 The first detail pane (PR #70) used a **card cursor**: the body and every

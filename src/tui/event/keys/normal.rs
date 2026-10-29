@@ -1,5 +1,5 @@
 use super::super::prelude::*;
-use super::detail::{detail_page_rows, detail_scroll, snap_after_fold, snap_after_select};
+use super::detail::{detail_jump_end, detail_page, detail_select, detail_step, with_fold};
 use super::harness::{HarnessCtx, open_harness_picker, open_session_picker};
 
 pub(crate) fn handle_normal_key(
@@ -41,24 +41,14 @@ pub(crate) fn handle_normal_key(
         // reattach to a detached session
         KeyCode::Char('Z') => open_session_picker(app),
         KeyCode::Esc if app.detail.open => app.close_detail(),
-        // In the detail pane Tab/Shift+Tab move between comments; from the
-        // list they switch into the pane.
-        KeyCode::Tab => {
-            if app.focus == Focus::Detail {
-                app.detail.select(1);
-                snap_after_select(app);
-            } else {
-                app.cycle_focus();
-            }
+        // Every key below that has a meaning in both panes acts on the focused
+        // pane only (#217, ADR 0006): one branch per key, split on focus, so
+        // nothing reaches the pane without focus. In the detail pane Tab /
+        // Shift+Tab move header to header; from the list they switch panes.
+        KeyCode::Tab | KeyCode::BackTab if app.focus == Focus::Detail => {
+            detail_select(app, if key.code == KeyCode::Tab { 1 } else { -1 });
         }
-        KeyCode::BackTab => {
-            if app.focus == Focus::Detail {
-                app.detail.select(-1);
-                snap_after_select(app);
-            } else {
-                app.cycle_focus();
-            }
-        }
+        KeyCode::Tab | KeyCode::BackTab => app.cycle_focus(),
         KeyCode::Char('?') => app.open_help(app.context_topic()),
         KeyCode::Char('r') => {
             app.loading = true;
@@ -66,81 +56,62 @@ pub(crate) fn handle_normal_key(
             spawn_fetch(client, app, tx);
         }
 
-        // navigation
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.focus == Focus::Detail {
-                detail_scroll(app, 1);
-            } else {
-                nav(app, client, tx, |a| a.move_selection(1));
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.focus == Focus::Detail {
-                detail_scroll(app, -1);
-            } else {
-                nav(app, client, tx, |a| a.move_selection(-1));
-            }
-        }
-        KeyCode::PageDown => {
-            if app.focus == Focus::Detail {
-                let page = detail_page_rows(app);
-                detail_scroll(app, page);
-            } else {
-                nav(app, client, tx, |a| a.move_selection(15));
-            }
-        }
-        KeyCode::PageUp => {
-            if app.focus == Focus::Detail {
-                let page = detail_page_rows(app);
-                detail_scroll(app, -page);
-            } else {
-                nav(app, client, tx, |a| a.move_selection(-15));
-            }
-        }
-        KeyCode::Char('g') | KeyCode::Home => nav(app, client, tx, |a| a.selected = 0),
-        KeyCode::Char('G') | KeyCode::End => {
-            nav(app, client, tx, |a| {
+        // navigation: ↑/↓ move a row cursor through whichever pane has focus
+        // — tree rows, or the body and comments of the detail pane (#217).
+        KeyCode::Char('j') | KeyCode::Down => match app.focus {
+            Focus::Detail => detail_step(app, 1),
+            Focus::List => nav(app, client, tx, |a| a.move_selection(1)),
+        },
+        KeyCode::Char('k') | KeyCode::Up => match app.focus {
+            Focus::Detail => detail_step(app, -1),
+            Focus::List => nav(app, client, tx, |a| a.move_selection(-1)),
+        },
+        KeyCode::PageDown => match app.focus {
+            Focus::Detail => detail_page(app, 1),
+            Focus::List => nav(app, client, tx, |a| a.move_selection(15)),
+        },
+        KeyCode::PageUp => match app.focus {
+            Focus::Detail => detail_page(app, -1),
+            Focus::List => nav(app, client, tx, |a| a.move_selection(-15)),
+        },
+        KeyCode::Char('g') | KeyCode::Home => match app.focus {
+            Focus::Detail => app.detail.jump_top(),
+            Focus::List => nav(app, client, tx, |a| a.selected = 0),
+        },
+        KeyCode::Char('G') | KeyCode::End => match app.focus {
+            Focus::Detail => detail_jump_end(app),
+            Focus::List => nav(app, client, tx, |a| {
                 a.selected = a.rows.len().saturating_sub(1);
-            });
-        }
+            }),
+        },
 
-        // grouping (list focus only — in the detail pane ← focuses the list)
-        KeyCode::Right if app.focus == Focus::List => {
-            if app.selected_issue().is_some() {
-                // Issue row: → goes deeper into the detail pane (mirror of
-                // ← backing out), opening the split like Enter if needed.
-                if let Some(issue_id) = app.enter_detail() {
-                    spawn_comments(client, issue_id, tx);
-                }
-            } else {
-                app.set_current_collapsed(false);
+        // nesting: ← out one level, → in one level, Space/Enter toggle — the
+        // same meaning in the tree and the detail pane (#217, ADR 0006).
+        KeyCode::Right => match app.focus {
+            Focus::Detail => with_fold(app, App::detail_right),
+            Focus::List => tree_right(app, client, tx),
+        },
+        KeyCode::Left => match app.focus {
+            Focus::Detail => with_fold(app, App::detail_left),
+            Focus::List => nav(app, client, tx, App::tree_left),
+        },
+        KeyCode::Char(' ') | KeyCode::Enter => match app.focus {
+            Focus::Detail => with_fold(app, App::toggle_selected_comment_fold),
+            // On an issue the toggle is `→`; on a header it opens or closes it.
+            Focus::List if app.selected_issue().is_some() => tree_right(app, client, tx),
+            Focus::List => nav(app, client, tx, App::toggle_collapse),
+        },
+        // `[`/`]`: fold or unfold everything in the focused pane.
+        KeyCode::Char('[') | KeyCode::Char(']') => {
+            let folded = key.code == KeyCode::Char('[');
+            match app.focus {
+                Focus::Detail => with_fold(app, |a| {
+                    a.set_all_comments_folded(folded);
+                    true
+                }),
+                Focus::List => nav(app, client, tx, |a| a.set_all_collapsed(folded)),
             }
         }
-        KeyCode::Left => {
-            if app.focus == Focus::Detail {
-                app.focus = Focus::List;
-            } else {
-                nav(app, client, tx, |a| a.set_current_collapsed(true));
-            }
-        }
-        // In the detail pane the same keys fold comments (#210) rather than
-        // collapse repo groups: Space the selected comment, `[`/`]` all of them.
-        KeyCode::Char(' ') if app.focus == Focus::Detail => {
-            if app.toggle_selected_comment_fold() {
-                snap_after_fold(app);
-            }
-        }
-        KeyCode::Char('[') if app.focus == Focus::Detail => {
-            app.set_all_comments_folded(true);
-            snap_after_fold(app);
-        }
-        KeyCode::Char(']') if app.focus == Focus::Detail => {
-            app.set_all_comments_folded(false);
-            snap_after_fold(app);
-        }
-        KeyCode::Char(' ') => nav(app, client, tx, App::toggle_collapse),
-        KeyCode::Char('[') => nav(app, client, tx, |a| a.set_all_collapsed(true)),
-        KeyCode::Char(']') => nav(app, client, tx, |a| a.set_all_collapsed(false)),
 
         // filters & sort
         KeyCode::Char('/') => {
@@ -213,18 +184,6 @@ pub(crate) fn handle_normal_key(
                     Ok(()) => app.status = Some(format!("opened {url}")),
                     Err(e) => app.status = Some(format!("open failed: {e}")),
                 }
-            }
-        }
-
-        // detail
-        KeyCode::Enter => {
-            if let Some(issue_id) = app.selected_issue().map(|i| i.id.clone()) {
-                app.open_detail();
-                if let Some(issue_id) = app.load_comments(issue_id) {
-                    spawn_comments(client, issue_id, tx);
-                }
-            } else {
-                app.toggle_collapse();
             }
         }
 
@@ -320,5 +279,18 @@ pub(crate) fn handle_normal_key(
             }
         }
         _ => {}
+    }
+}
+
+/// `→` (and `Space`/`Enter` on an issue) in the tree (#217): one level in. On
+/// an issue that is the detail pane — opened, or just focused when already
+/// open so its place is kept — with the comment fetch it may need.
+fn tree_right(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let mut step = TreeRight::Handled;
+    nav(app, client, tx, |a| step = a.tree_right());
+    if step == TreeRight::EnterDetail
+        && let Some(issue_id) = app.enter_detail()
+    {
+        spawn_comments(client, issue_id, tx);
     }
 }

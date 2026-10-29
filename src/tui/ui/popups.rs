@@ -624,12 +624,16 @@ fn draw_key_table(
 
 /// Keys available from the issue list and detail pane.
 pub(super) const LIST_HELP: &[(&str, &str)] = &[
-    ("j/k ↑/↓", "move list / scroll detail region"),
-    ("Space", "collapse repo group / fold comment (in pane)"),
-    ("←", "collapse repo group / back to list"),
-    ("→", "expand repo group / into detail pane"),
-    ("[ / ]", "collapse / expand all (fold / unfold in pane)"),
-    ("Enter", "open issue in detail pane"),
+    ("j/k ↑/↓", "move tree row / move through body + comments"),
+    ("PgUp / PgDn", "a page of ↑/↓ in the focused pane"),
+    ("g G Home End", "top / bottom of the focused pane"),
+    ("←", "tree: up to repo, collapse · pane: fold, back to tree"),
+    ("→", "tree: expand, first issue, into pane · pane: unfold"),
+    (
+        "Space / Enter",
+        "toggle repo group / comment fold; issue: into pane",
+    ),
+    ("[ / ]", "collapse / expand all in the focused pane"),
     (
         "Tab",
         "next comment in pane / switch pane (Shift+Tab reverse)",

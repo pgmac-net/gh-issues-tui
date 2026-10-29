@@ -16,7 +16,7 @@ mod widgets;
 #[cfg(test)]
 mod testutil;
 
-pub use detail::{body_content_height, comment_height, comment_offset};
+pub use detail::{body_content_height, comment_height};
 pub use help::{help_inner_height, help_max_scroll};
 pub use pr::{pr_max_scroll, pr_summary_inner_height, pr_summary_inner_width, pr_targets};
 
