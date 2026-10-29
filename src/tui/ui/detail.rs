@@ -223,11 +223,11 @@ pub(super) fn body_lines_links(
                 format!(
                     "by {} · created {} · updated {}{}",
                     issue.author,
-                    issue.created_at.format("%Y-%m-%d"),
-                    issue.updated_at.format("%Y-%m-%d"),
+                    crate::localtime::fmt_date(issue.created_at),
+                    crate::localtime::fmt_date(issue.updated_at),
                     issue
                         .closed_at
-                        .map(|c| format!(" · closed {}", c.format("%Y-%m-%d")))
+                        .map(|c| format!(" · closed {}", crate::localtime::fmt_date(c)))
                         .unwrap_or_default(),
                 ),
                 Style::default().fg(t.dim),
@@ -310,7 +310,7 @@ pub(super) fn comment_card_lines_links(
     let mut header = format!(
         "── {marker} {} · {} ",
         c.author,
-        c.created_at.format("%Y-%m-%d %H:%M")
+        crate::localtime::fmt_datetime(c.created_at)
     );
     let mut header_style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
     let mut rule_style = Style::default().fg(t.dim);

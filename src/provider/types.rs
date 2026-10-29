@@ -197,12 +197,13 @@ impl RateLimitData {
             Some(dt) => {
                 let now = chrono::Utc::now().timestamp();
                 let diff = self.reset - now;
+                let at = crate::localtime::fmt_time(dt);
                 if diff > 60 {
-                    format!("{} (in {}m)", dt.format("%H:%M UTC"), diff / 60)
+                    format!("{at} (in {}m)", diff / 60)
                 } else if diff > 0 {
-                    format!("{} (in {}s)", dt.format("%H:%M UTC"), diff)
+                    format!("{at} (in {diff}s)")
                 } else {
-                    dt.format("%H:%M UTC").to_string()
+                    at
                 }
             }
             None => format!("epoch {}", self.reset),
@@ -569,6 +570,21 @@ pub struct PrSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_time_is_local_with_no_zone_suffix() {
+        let reset = chrono::Utc::now().timestamp() + 600;
+        let data = RateLimitData {
+            remaining: 1,
+            limit: 5,
+            reset,
+            last_cost: None,
+        };
+        let shown = data.reset_time();
+        let at = crate::localtime::fmt_time(chrono::DateTime::from_timestamp(reset, 0).unwrap());
+        assert!(shown.starts_with(&at), "{shown}");
+        assert!(!shown.contains("UTC"), "{shown}");
+    }
 
     fn issue_with_labels(labels: Vec<Label>) -> Issue {
         Issue {

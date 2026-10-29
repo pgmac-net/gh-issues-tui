@@ -4,6 +4,7 @@ mod cwd_repo;
 mod github;
 mod jira;
 mod linear;
+mod localtime;
 mod provider;
 mod tui;
 mod typesafe;

@@ -94,7 +94,7 @@ pub(super) fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
         ));
     }
     spans.push(Span::styled(
-        format!("  {}", issue.updated_at.format("%Y-%m-%d")),
+        format!("  {}", crate::localtime::fmt_date(issue.updated_at)),
         Style::default().fg(t.dim),
     ));
     ListItem::new(Line::from(spans))

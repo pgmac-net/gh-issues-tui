@@ -34,17 +34,62 @@ pub fn parse_date(input: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(t, "%Y-%m-%d").ok()
 }
 
+/// Date bounds are local days, matching the dates the panes display.
 pub(super) fn on_or_after(ts: Option<DateTime<Utc>>, bound: Option<NaiveDate>) -> bool {
-    match bound {
-        None => true,
-        Some(b) => ts.is_some_and(|t| t.date_naive() >= b),
-    }
+    on_or_after_in(ts, bound, &chrono::Local)
 }
 
 pub(super) fn on_or_before(ts: Option<DateTime<Utc>>, bound: Option<NaiveDate>) -> bool {
+    on_or_before_in(ts, bound, &chrono::Local)
+}
+
+fn on_or_after_in<Tz: chrono::TimeZone>(
+    ts: Option<DateTime<Utc>>,
+    bound: Option<NaiveDate>,
+    tz: &Tz,
+) -> bool {
     match bound {
         None => true,
-        Some(b) => ts.is_some_and(|t| t.date_naive() <= b),
+        Some(b) => ts.is_some_and(|t| crate::localtime::local_date_in(t, tz) >= b),
+    }
+}
+
+fn on_or_before_in<Tz: chrono::TimeZone>(
+    ts: Option<DateTime<Utc>>,
+    bound: Option<NaiveDate>,
+    tz: &Tz,
+) -> bool {
+    match bound {
+        None => true,
+        Some(b) => ts.is_some_and(|t| crate::localtime::local_date_in(t, tz) <= b),
+    }
+}
+
+#[cfg(test)]
+mod tz_tests {
+    use chrono::FixedOffset;
+
+    use super::*;
+
+    #[test]
+    fn bounds_compare_local_days() {
+        let ts = Some("2026-10-28T22:00:00Z".parse::<DateTime<Utc>>().unwrap());
+        let day = NaiveDate::from_ymd_opt(2026, 10, 29);
+        let east10 = FixedOffset::east_opt(10 * 3600).unwrap();
+        let west5 = FixedOffset::west_opt(5 * 3600).unwrap();
+        // 22:00Z is the 29th at +10, still the 28th at -5.
+        assert!(on_or_after_in(ts, day, &east10));
+        assert!(!on_or_after_in(ts, day, &west5));
+        assert!(!on_or_before_in(
+            ts,
+            NaiveDate::from_ymd_opt(2026, 10, 28),
+            &east10
+        ));
+        assert!(on_or_before_in(
+            ts,
+            NaiveDate::from_ymd_opt(2026, 10, 28),
+            &west5
+        ));
     }
 }
 

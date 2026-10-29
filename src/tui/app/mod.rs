@@ -172,7 +172,7 @@ impl App {
             issue_form: None,
             editor: EditorState::default(),
             confirm_choice: ConfirmChoice::No,
-            calendar_cursor: Utc::now().date_naive(),
+            calendar_cursor: crate::localtime::today(),
             loading: true,
             auto_refreshing: false,
             include_closed,
