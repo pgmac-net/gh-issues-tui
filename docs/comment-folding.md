@@ -28,23 +28,26 @@ body's wrapped row count at the current pane width, so it matches what
 unfolding shows. Folding also drops the footer rule and trailing blank line.
 
 Keys, **detail pane focused** (with the list focused they keep their
-repo-group meaning):
+repo-group meaning). Since #217 these follow the same "in / out one level"
+rule as the tree — see `docs/consistent-pane-keys.md` and ADR 0006:
 
 | Key | Action |
 |---|---|
-| `Space` | fold/unfold the selected comment (no-op while the body is selected) |
+| `Space` / `Enter` | fold/unfold the selected comment (no-op while the body is selected) |
+| `←` | fold an open comment; on a folded comment or the body, focus the list |
+| `→` | unfold a folded comment |
 | `[` | fold every comment in the thread |
 | `]` | unfold every comment in the thread |
 
 Details:
 
 - Everything starts expanded; newly added comments start expanded.
-- `Tab`/`Shift+Tab` still stop on folded comments, which is how you reach one
-  to unfold it. `j`/`k`/`PgUp`/`PgDn` on a folded comment do nothing: one row
-  always fits.
-- After any fold or unfold, the selected comment's header is snapped to the
-  top of the comments region. With the body selected, the scroll offset is only
-  clamped to the thread's new, shorter height.
+- `↑`/`↓` and `Tab`/`Shift+Tab` stop on folded comments, which is how you reach
+  one to unfold it.
+- A fold or unfold keeps the selected comment's header on the screen row it
+  was on (#217; before that it snapped to the top). The view moves only when
+  the thread becomes shorter than the viewport, or when folding the comment
+  you were reading mid-way would leave it off screen.
 - `e` still edits a folded comment; it stays folded after the thread refetch.
 
 ## Implementation notes

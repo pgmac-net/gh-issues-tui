@@ -188,6 +188,7 @@ color_profile = "gruvbox"
 accent      = "#83a598"   # repo headers, prompts, help keys
 dim         = "#928374"   # issue numbers, dates, metadata
 selected_bg = "#3c3836"   # selection bar (list + pickers + calendar)
+selected_bg_unfocused = "#32302f"  # selection in the pane without focus
 open        = "#b8bb26"   # open-issue dot and label
 closed      = "#d3869b"   # closed-issue dot and label
 assignee    = "#fabd2f"   # assignee badges / detail meta line
@@ -227,14 +228,14 @@ code_number  = "#dcdcdc"
 
 | Key | Action |
 |-----|--------|
-| `j`/`k`, `↑`/`↓` | move selection in the list; in the detail pane, scroll the selected region (issue body or the selected comment) |
-| `PgUp`/`PgDn`, `g`/`G` | page / jump to top / bottom |
-| `Space` | collapse/expand the selected repo group; in the detail pane, fold/unfold the selected comment |
-| `←` / `→` | on a repo header: collapse / expand the group. On an issue: `→` moves into the detail pane (opening it if closed), `←` backs out to the list |
-| `[` / `]` | collapse all / expand all groups; in the detail pane, fold / unfold every comment |
-| `Enter` | open the issue in a right-hand detail pane (loads the comment thread) |
-| `Tab` / `Shift+Tab` | from the list: switch into the detail pane. In the detail pane: move to the next / previous comment |
-| `←` | in the detail pane: return focus to the list |
+| `j`/`k`, `↑`/`↓` | in the list: move the selected row. In the detail pane: move through the body and comments — a comment taller than the view scrolls a row at a time until its bottom shows, then the next `↓` selects the next comment (no wrap) |
+| `PgUp`/`PgDn` | a page of `↑`/`↓` in the **focused** pane |
+| `g`/`G`, `Home`/`End` | top / bottom of the **focused** pane (in the detail pane: the body / the last comment) |
+| `←` | "out one level". In the list: from an issue, select its repo header; on an expanded header, collapse it. In the detail pane: fold an open comment; from a folded comment or the body, return focus to the list |
+| `→` | "in one level". In the list: expand a collapsed header; on an expanded header, select its first issue; on an issue, move into the detail pane (opening it if closed). In the detail pane: unfold a folded comment |
+| `Space` / `Enter` | the same key: on a repo header, collapse/expand it; on an issue, the same as `→`; on a comment, fold/unfold it |
+| `[` / `]` | collapse all / expand all in the focused pane — repo groups in the list, comments in the detail pane |
+| `Tab` / `Shift+Tab` | from the list: switch into the detail pane. In the detail pane: jump to the next / previous comment header (wrapping) |
 | `Esc` / `q` | close the detail pane (from either pane) |
 | `o` / `O` | open issue / repo in the browser |
 | `y` | copy the selected issue's short reference (`owner/repo#number`) to the clipboard, via OSC 52 |
@@ -288,7 +289,7 @@ In the multi-line comment and description editors — including the new-issue fo
 
 The detail pane splits into two independently scrolling regions. The **top region** pins the issue metadata and description so it never scrolls away with the comments. The **bottom region** holds the comment thread, rendered as **cards** — each comment is bounded by a header rule showing its author and timestamp and a matching bottom rule, so where one comment ends and the next begins is obvious. Each region shows a scrollbar on its right edge when its content is taller than the region, marking your position through the text.
 
-`Tab` / `Shift+Tab` move the selection through the body and each comment (wrapping around); `←` hands focus back to the list. `j`/`k` (or `↑`/`↓`) scroll the **selected** region only — the description when the body is selected, or, once you select a comment, that comment's own text (its header scrolls up out of the way as you read, and the scrollbar tracks your position within that one comment). `PageUp`/`PageDown` step by a screenful. `e` opens the same inline editor section on the selected region, prefilled with its current text — the issue **description** when the body is selected, or the **comment** otherwise. Editing uses the identical editor controls as adding a comment (`Ctrl+S` saves, `Esc` discards). Saving an edited description or comment refreshes the pane; an empty save discards a comment edit but is accepted for the description (clearing it is valid). All three backends (GitHub, Linear, Jira) support editing.
+`↑`/`↓` move through the body and each comment as one sequence, the way they move through rows in the list. The view scrolls only when the selection reaches its edge, and then only by a row: on a comment taller than the view, `↓` scrolls until its bottom shows, and the next `↓` selects the next comment. `Tab` / `Shift+Tab` jump header to header (wrapping around); `←` folds an open comment, or hands focus back to the list from a folded comment or the body. The comments scrollbar marks your position in the whole thread. `PageUp`/`PageDown` step a screenful of `↑`/`↓`. All of these act only on the focused pane, and the other pane's selection is dimmed. `e` opens the same inline editor section on the selected region, prefilled with its current text — the issue **description** when the body is selected, or the **comment** otherwise. Editing uses the identical editor controls as adding a comment (`Ctrl+S` saves, `Esc` discards). Saving an edited description or comment refreshes the pane; an empty save discards a comment edit but is accepted for the description (clearing it is valid). All three backends (GitHub, Linear, Jira) support editing.
 
 The body and each comment render as lightweight markdown: `# ` headings, `**bold**`/`*italic*`, `` `inline code` ``, fenced ` ``` ` code blocks, `> ` blockquotes, `-`/`*`/`+` and numbered lists, `---` rules, and `[text](url)` links. Rendering is line-for-line — one screen line per source line — with wrapping measured accurately so scroll positions and scrollbars stay correct; tables, nested-list re-indent, and syntax highlighting inside code fences aren't supported.
 
