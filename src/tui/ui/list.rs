@@ -49,7 +49,7 @@ pub(super) fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
                 .border_style(pane_border(app, t, Focus::List))
                 .title(title),
         )
-        .highlight_style(Style::default().bg(t.selected_bg))
+        .highlight_style(Style::default().bg(selection_bg(app, t, Focus::List)))
         .highlight_symbol("> ");
 
     let height = layout::inner_height(area) as usize;
@@ -106,6 +106,17 @@ pub(super) fn pane_border(app: &App, t: &Theme, pane: Focus) -> Style {
         Style::default().fg(t.accent)
     } else {
         Style::default()
+    }
+}
+
+/// Selection background for a pane: dimmed while the split is open and
+/// another pane has focus (#217), so only the focused pane's selection is
+/// loud.
+pub(super) fn selection_bg(app: &App, t: &Theme, pane: Focus) -> Color {
+    if app.detail.open && app.focus != pane {
+        t.selected_bg_unfocused
+    } else {
+        t.selected_bg
     }
 }
 

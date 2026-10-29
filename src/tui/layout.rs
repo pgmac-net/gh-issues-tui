@@ -169,6 +169,42 @@ pub fn scroll_top(prev: usize, cursor: usize, height: usize, len: usize) -> usiz
     top.min(len.saturating_sub(height))
 }
 
+/// Minimal-scroll viewport top for a selection spanning rows
+/// `[sel_top, sel_bottom)` of a `total`-row region (#217): [`scroll_top`]
+/// extended to a selection taller than one row.
+///
+/// A selection that fits is brought wholly into view, moving `prev` only as
+/// far as needed. One taller than the viewport keeps `prev` while the viewport
+/// lies inside it, and otherwise aligns its top row (the header) with the
+/// viewport's top. Clamped to `[0, total − viewport]`; a zero-height viewport
+/// scrolls nowhere.
+pub fn scroll_into_view(
+    prev: u16,
+    sel_top: u16,
+    sel_bottom: u16,
+    viewport: u16,
+    total: u16,
+) -> u16 {
+    if viewport == 0 {
+        return 0;
+    }
+    let sel_bottom = sel_bottom.max(sel_top.saturating_add(1));
+    let top = if sel_bottom - sel_top > viewport {
+        if prev >= sel_top && prev + viewport <= sel_bottom {
+            prev
+        } else {
+            sel_top
+        }
+    } else if sel_top < prev {
+        sel_top
+    } else if sel_bottom > prev + viewport {
+        sel_bottom - viewport
+    } else {
+        prev
+    };
+    top.min(total.saturating_sub(viewport))
+}
+
 pub fn inner_width(area: Rect) -> u16 {
     area.width.saturating_sub(2)
 }
@@ -213,6 +249,46 @@ mod tests {
         assert_eq!(scroll_top(7, 2, 5, 3), 0);
         assert_eq!(scroll_top(40, 45, 5, 46), 41);
         assert_eq!(scroll_top(0, 0, 0, 0), 0);
+    }
+
+    #[test]
+    fn scroll_into_view_moves_only_as_far_as_the_selection_needs() {
+        use super::scroll_into_view;
+        // Already visible: unchanged.
+        assert_eq!(scroll_into_view(5, 6, 9, 5, 50), 5);
+        // Below the window: its last row lands on the viewport's last row.
+        assert_eq!(scroll_into_view(5, 9, 12, 5, 50), 7);
+        // Above the window: its first row lands on the viewport's first row.
+        assert_eq!(scroll_into_view(5, 2, 4, 5, 50), 2);
+        // A single row is the same rule as `scroll_top`.
+        assert_eq!(scroll_into_view(5, 10, 11, 5, 50), 6);
+        // An empty span is treated as one row.
+        assert_eq!(scroll_into_view(5, 10, 10, 5, 50), 6);
+    }
+
+    #[test]
+    fn scroll_into_view_with_a_selection_taller_than_the_viewport() {
+        use super::scroll_into_view;
+        // Viewport wholly inside the selection: keep it (mid-comment reading).
+        assert_eq!(scroll_into_view(12, 10, 30, 5, 50), 12);
+        assert_eq!(scroll_into_view(25, 10, 30, 5, 50), 25);
+        // Otherwise the header goes to the top, from either side.
+        assert_eq!(scroll_into_view(0, 10, 30, 5, 50), 10);
+        assert_eq!(scroll_into_view(40, 10, 30, 5, 50), 10);
+        // Partially overlapping the end: header to the top too.
+        assert_eq!(scroll_into_view(27, 10, 30, 5, 50), 10);
+    }
+
+    #[test]
+    fn scroll_into_view_clamps_to_the_region_and_a_shrunken_terminal() {
+        use super::scroll_into_view;
+        // Never past the end of the content.
+        assert_eq!(scroll_into_view(0, 48, 49, 5, 50), 44);
+        assert_eq!(scroll_into_view(90, 10, 12, 5, 12), 7);
+        // Short content: always 0.
+        assert_eq!(scroll_into_view(7, 2, 3, 5, 3), 0);
+        // No viewport (region not drawn): nowhere to scroll.
+        assert_eq!(scroll_into_view(9, 20, 25, 0, 50), 0);
     }
 
     use super::*;

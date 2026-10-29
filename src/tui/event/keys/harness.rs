@@ -413,6 +413,7 @@ mod tests {
     use super::super::testutil::{app_with_issue, key};
     use super::*;
     use crate::config::builtin_harnesses;
+    use crate::tui::app::DetailSel;
     use crate::tui::harness::HarnessRegistry;
 
     struct Harness {
@@ -926,20 +927,33 @@ mod tests {
         press(&mut app, ' ');
         assert!(app.folded_comments.contains("c1"));
         assert_eq!(app.collapsed, groups, "repo group must not move");
-        // Viewport snapped to the selected comment's header: first card, row 0.
         assert_eq!(app.detail.comments_scroll, 0);
         press(&mut app, ' ');
         assert!(app.folded_comments.is_empty());
     }
 
     #[test]
-    fn space_in_the_list_still_collapses_the_repo_group() {
+    fn space_on_a_list_header_collapses_the_repo_group() {
         let mut app = folding_app();
         app.focus = Focus::List;
+        app.selected = 0; // the repo header
         let groups = app.collapsed.clone();
         press(&mut app, ' ');
         assert_ne!(app.collapsed, groups);
         assert!(app.folded_comments.is_empty());
+    }
+
+    #[test]
+    fn space_on_a_list_issue_moves_into_the_detail_pane_without_collapsing() {
+        let mut app = folding_app();
+        app.focus = Focus::List;
+        let groups = app.collapsed.clone();
+        press(&mut app, ' ');
+        assert_eq!(
+            app.collapsed, groups,
+            "Space on an issue no longer collapses"
+        );
+        assert_eq!(app.focus, Focus::Detail);
     }
 
     #[test]
@@ -952,13 +966,13 @@ mod tests {
     }
 
     #[test]
-    fn folding_snaps_to_the_selected_comment_header() {
+    fn folding_does_not_snap_the_selected_header_to_the_top() {
         let mut app = folding_app();
-        app.detail.select(2); // Comment(1), "x"
-        app.detail.comments_scroll = 99;
+        app.detail.select(3); // Comment(2), "y" — header at row 10
+        app.detail.comments_scroll = 0;
         press(&mut app, '[');
-        // c1 folded = 1 row, so comment 1 starts at row 1.
-        assert_eq!(app.detail.comments_scroll, 1);
+        // Thread is now 3 rows: nothing to scroll, and no snap to comment 2.
+        assert_eq!(app.detail.comments_scroll, 0);
     }
 
     #[test]
@@ -967,6 +981,169 @@ mod tests {
         app.detail.comments_scroll = 99;
         press(&mut app, '[');
         assert!(app.detail.comments_scroll < 99);
+    }
+
+    fn press_code(app: &mut App, code: KeyCode) {
+        let mut h = fixture(None);
+        let client = test_client();
+        let tx = h.tx.clone();
+        handle_normal_key(app, key(code), &client, &tx, &mut h.ctx());
+    }
+
+    /// Every key #217 gives a meaning in both panes.
+    const PANE_KEYS: [KeyCode; 16] = [
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Char('g'),
+        KeyCode::Char('G'),
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Char(' '),
+        KeyCode::Enter,
+        KeyCode::Char('['),
+        KeyCode::Char(']'),
+        KeyCode::Tab,
+        KeyCode::BackTab,
+    ];
+
+    #[test]
+    fn with_the_detail_pane_focused_no_key_moves_the_tree() {
+        for code in PANE_KEYS {
+            for sel in [
+                DetailSel::Body,
+                DetailSel::Comment(0),
+                DetailSel::Comment(2),
+            ] {
+                let mut app = folding_app();
+                app.detail.sel = sel;
+                let (selected, collapsed) = (app.selected, app.collapsed.clone());
+                press_code(&mut app, code);
+                assert_eq!(app.selected, selected, "{code:?} on {sel:?} moved the tree");
+                assert_eq!(
+                    app.collapsed, collapsed,
+                    "{code:?} on {sel:?} collapsed a group"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn with_the_tree_focused_no_key_touches_the_comments() {
+        for code in PANE_KEYS {
+            for row in [0, 1] {
+                let mut app = folding_app();
+                app.focus = Focus::List;
+                app.selected = row;
+                app.detail.sel = DetailSel::Comment(1);
+                press_code(&mut app, code);
+                assert!(
+                    app.folded_comments.is_empty(),
+                    "{code:?} on row {row} folded a comment"
+                );
+                assert_eq!(
+                    app.detail.comments_scroll, 0,
+                    "{code:?} on row {row} scrolled the comments"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn g_and_shift_g_in_the_detail_pane_jump_within_it() {
+        let mut app = folding_app();
+        press_code(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.detail.sel, DetailSel::Comment(2));
+        press_code(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.detail.sel, DetailSel::Body);
+        assert_eq!((app.detail.body_scroll, app.detail.comments_scroll), (0, 0));
+        press_code(&mut app, KeyCode::End);
+        assert_eq!(app.detail.sel, DetailSel::Comment(2));
+        press_code(&mut app, KeyCode::Home);
+        assert_eq!(app.detail.sel, DetailSel::Body);
+    }
+
+    #[test]
+    fn arrows_in_the_detail_pane_follow_the_fold_table() {
+        let mut app = folding_app();
+        app.detail.sel = DetailSel::Comment(0);
+        // → on an open comment: no-op.
+        press_code(&mut app, KeyCode::Right);
+        assert!(app.folded_comments.is_empty());
+        // ← on an open comment: fold it, focus stays.
+        press_code(&mut app, KeyCode::Left);
+        assert!(app.folded_comments.contains("c1"));
+        assert_eq!(app.focus, Focus::Detail);
+        // → on a folded comment: unfold it.
+        press_code(&mut app, KeyCode::Right);
+        assert!(app.folded_comments.is_empty());
+        // ← twice: fold, then out to the tree.
+        press_code(&mut app, KeyCode::Left);
+        press_code(&mut app, KeyCode::Left);
+        assert_eq!(app.focus, Focus::List);
+        assert!(app.folded_comments.contains("c1"));
+        // ← on the body: out to the tree.
+        let mut app = folding_app();
+        press_code(&mut app, KeyCode::Left);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn enter_and_space_are_the_same_key_in_the_detail_pane() {
+        let mut app = folding_app();
+        app.detail.sel = DetailSel::Comment(1);
+        press_code(&mut app, KeyCode::Enter);
+        assert!(app.folded_comments.contains("c2"));
+        press_code(&mut app, KeyCode::Char(' '));
+        assert!(app.folded_comments.is_empty());
+        // On the body both are no-ops.
+        app.detail.sel = DetailSel::Body;
+        press_code(&mut app, KeyCode::Enter);
+        press_code(&mut app, KeyCode::Char(' '));
+        assert!(app.folded_comments.is_empty());
+        assert_eq!(app.focus, Focus::Detail);
+    }
+
+    #[test]
+    fn enter_on_an_issue_keeps_the_place_in_an_open_pane() {
+        let mut app = folding_app();
+        app.detail.sel = DetailSel::Comment(2);
+        app.detail.comments_scroll = 4;
+        app.focus = Focus::List;
+        press_code(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Detail);
+        assert_eq!(app.detail.sel, DetailSel::Comment(2));
+        assert_eq!(app.detail.comments_scroll, 4);
+    }
+
+    #[test]
+    fn left_on_an_issue_in_the_tree_selects_its_header_and_right_comes_back() {
+        let mut app = folding_app();
+        app.focus = Focus::List;
+        press_code(&mut app, KeyCode::Left);
+        assert_eq!(app.selected, 0);
+        assert!(app.collapsed.is_empty());
+        press_code(&mut app, KeyCode::Right);
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.focus, Focus::List);
+        press_code(&mut app, KeyCode::Right);
+        assert_eq!(app.focus, Focus::Detail);
+    }
+
+    #[test]
+    fn down_in_the_detail_pane_walks_body_then_comments() {
+        let mut app = folding_app();
+        // The empty body fits its region, so the first ↓ leaves it.
+        press_code(&mut app, KeyCode::Down);
+        assert_eq!(app.detail.sel, DetailSel::Comment(0));
+        press_code(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.detail.sel, DetailSel::Comment(1));
+        press_code(&mut app, KeyCode::Up);
+        press_code(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.detail.sel, DetailSel::Body);
     }
 
     #[test]

@@ -224,72 +224,65 @@ pub(crate) fn submit_comment(
     }
 }
 
-/// Scroll the selected detail region by `lines` (negative = up), clamped to
-/// that region's extent: the body to its content, a comment to its own span.
-pub(crate) fn detail_scroll(app: &mut App, lines: isize) {
+/// The detail pane's geometry at the live terminal size (#217), measured
+/// with the renderer's own height functions so the key handlers and the draw
+/// can't disagree about where a comment starts. `None` with no issue selected.
+pub(crate) fn detail_geometry(app: &App) -> Option<DetailGeometry> {
     let (inner_w, body_view, comments_view) = detail_metrics();
-    match app.detail.sel {
-        DetailSel::Body => {
-            let Some(issue) = app.selected_issue() else {
-                return;
-            };
-            let content = ui::body_content_height(issue, app.selected_readiness(), inner_w);
-            let max = content.saturating_sub(body_view);
-            app.detail.scroll_body(lines, max);
-        }
-        DetailSel::Comment(i) => {
-            let bounds = app.detail.comments.as_ref().and_then(|comments| {
-                let c = comments.get(i)?;
-                let top = ui::comment_offset(comments, i, inner_w, &app.folded_comments);
-                let height = ui::comment_height(c, inner_w, app.is_comment_folded(c));
-                Some((top, top + height.saturating_sub(comments_view)))
-            });
-            if let Some((lo, hi)) = bounds {
-                app.detail.scroll_comment(lines, lo, hi);
-            }
-        }
+    let issue = app.selected_issue()?;
+    let comment_heights = app.detail.comments.as_ref().map_or_else(Vec::new, |cs| {
+        cs.iter()
+            .map(|c| ui::comment_height(c, inner_w, app.is_comment_folded(c)))
+            .collect()
+    });
+    Some(DetailGeometry {
+        body_height: ui::body_content_height(issue, app.selected_readiness(), inner_w),
+        body_view,
+        comment_heights,
+        comments_view,
+    })
+}
+
+/// `↓`/`↑` (`dir` = ±1) in the detail pane: one row-cursor step.
+pub(crate) fn detail_step(app: &mut App, dir: isize) {
+    if let Some(g) = detail_geometry(app) {
+        app.detail.step(dir, &g);
     }
 }
 
-/// The active region's viewport height, used as the PageUp/PageDown step.
-pub(crate) fn detail_page_rows(app: &App) -> isize {
-    let (_, body_view, comments_view) = detail_metrics();
-    match app.detail.sel {
-        DetailSel::Body => body_view as isize,
-        DetailSel::Comment(_) => comments_view as isize,
+/// `PgDn`/`PgUp` in the detail pane: one viewport of steps.
+pub(crate) fn detail_page(app: &mut App, dir: isize) {
+    if let Some(g) = detail_geometry(app) {
+        app.detail.page(dir, &g);
     }
 }
 
-/// After `select_detail` lands on a comment, snap the comments viewport so
-/// that comment's header sits at the top of the region.
-pub(crate) fn snap_after_select(app: &mut App) {
-    let DetailSel::Comment(i) = app.detail.sel else {
-        return;
-    };
-    let (inner_w, _, _) = detail_metrics();
-    let Some(comments) = app.detail.comments.as_ref() else {
-        return;
-    };
-    let top = ui::comment_offset(comments, i, inner_w, &app.folded_comments);
-    app.detail.snap_comment(top);
+/// `G`/`End` in the detail pane: last comment, thread scrolled to its end.
+pub(crate) fn detail_jump_end(app: &mut App) {
+    if let Some(g) = detail_geometry(app) {
+        app.detail.jump_end(&g);
+    }
 }
 
-/// After a fold or unfold (#210), re-anchor the comments viewport: on a
-/// selected comment its header goes to the top, as after `Tab`; with the body
-/// selected the offset is only clamped to the thread's new, possibly shorter,
-/// extent so it cannot be left scrolled past the end.
-pub(crate) fn snap_after_fold(app: &mut App) {
-    if matches!(app.detail.sel, DetailSel::Comment(_)) {
-        snap_after_select(app);
-        return;
+/// `Tab`/`Shift+Tab` in the detail pane: move the selection header to header
+/// (wrapping), then edge-scroll it into view.
+pub(crate) fn detail_select(app: &mut App, delta: isize) {
+    app.detail.select(delta);
+    if let Some(g) = detail_geometry(app) {
+        app.detail.reveal_selected(&g);
     }
-    let (inner_w, _, comments_view) = detail_metrics();
-    let Some(comments) = app.detail.comments.as_ref() else {
-        return;
-    };
-    let total = ui::comment_offset(comments, comments.len(), inner_w, &app.folded_comments);
-    let max = total.saturating_sub(comments_view);
-    app.detail.comments_scroll = app.detail.comments_scroll.min(max);
+}
+
+/// Run a fold change (`fold` returns whether anything folded or unfolded)
+/// and re-anchor the comments viewport so the selected header keeps its
+/// screen row (#210, #217).
+pub(crate) fn with_fold(app: &mut App, fold: impl FnOnce(&mut App) -> bool) {
+    let anchor = detail_geometry(app).and_then(|g| app.detail.fold_anchor(&g));
+    if fold(app)
+        && let Some(g) = detail_geometry(app)
+    {
+        app.detail.after_fold(anchor, &g);
+    }
 }
 
 #[cfg(test)]

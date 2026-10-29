@@ -24,7 +24,7 @@ pub mod search;
 #[cfg(test)]
 mod tests;
 
-pub use detail::DetailState;
+pub use detail::{DetailGeometry, DetailState};
 pub use editor::*;
 pub use filters::*;
 pub use form::*;
@@ -34,6 +34,7 @@ pub use mode::*;
 pub use picker::PickerState;
 pub use pr::PrState;
 pub use ranks::RankState;
+pub use rows::TreeRight;
 
 use prelude::*;
 

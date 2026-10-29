@@ -124,6 +124,65 @@ impl App {
         }
     }
 
+    /// `←` in the tree (#217) — "out one level": from an issue, select its
+    /// repo header (the group stays open); on an expanded header, collapse
+    /// it; on a collapsed header, nothing.
+    pub fn tree_left(&mut self) {
+        match self.rows.get(self.selected) {
+            Some(Row::Issue { .. }) => self.select_repo_header(),
+            Some(Row::RepoHeader { .. }) if !self.selected_group_collapsed() => {
+                self.set_current_collapsed(true);
+            }
+            _ => {}
+        }
+    }
+
+    /// `→` in the tree (#217) — "in one level": on a collapsed header, expand
+    /// it; on an expanded one, select its first issue. On an issue the next
+    /// level is the detail pane, which the caller opens (it may need a
+    /// comment fetch), so that case is only reported.
+    pub fn tree_right(&mut self) -> TreeRight {
+        match self.rows.get(self.selected) {
+            Some(Row::Issue { .. }) => return TreeRight::EnterDetail,
+            Some(Row::RepoHeader { .. }) if self.selected_group_collapsed() => {
+                self.set_current_collapsed(false);
+            }
+            Some(Row::RepoHeader { .. }) => self.select_first_issue(),
+            None => {}
+        }
+        TreeRight::Handled
+    }
+
+    /// Whether the selected row's repo group is collapsed.
+    fn selected_group_collapsed(&self) -> bool {
+        self.selected_repo()
+            .is_some_and(|r| self.collapsed.contains(&r.repo))
+    }
+
+    /// Move the selection from an issue up to its repo's header row.
+    pub fn select_repo_header(&mut self) {
+        if let Some(Row::Issue { repo_idx, .. }) = self.rows.get(self.selected) {
+            let repo_idx = *repo_idx;
+            if let Some(idx) = self.rows[..self.selected]
+                .iter()
+                .rposition(|r| matches!(r, Row::RepoHeader { repo_idx: h } if *h == repo_idx))
+            {
+                self.selected = idx;
+            }
+        }
+    }
+
+    /// Move the selection from an expanded header down to its first issue.
+    /// An empty group has none, so the selection stays on the header.
+    pub fn select_first_issue(&mut self) {
+        if let Some(Row::RepoHeader { repo_idx }) = self.rows.get(self.selected)
+            && matches!(self.rows.get(self.selected + 1),
+                Some(Row::Issue { repo_idx: r, .. }) if r == repo_idx)
+        {
+            self.selected += 1;
+        }
+    }
+
     pub fn set_all_collapsed(&mut self, collapsed: bool) {
         if collapsed {
             self.collapsed = self.repos.iter().map(|r| r.repo.clone()).collect();
@@ -275,4 +334,12 @@ impl App {
             .filter(|i| self.filters.matches(i, self.state_filter))
             .count()
     }
+}
+
+/// What `→` on a tree row did (#217). On an issue it moves into the detail
+/// pane, which the key handler performs because it may spawn a comment fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeRight {
+    Handled,
+    EnterDetail,
 }

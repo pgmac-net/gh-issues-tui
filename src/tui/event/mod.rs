@@ -678,11 +678,11 @@ pub(crate) mod prelude {
     pub use crate::provider::Provider;
     pub use crate::provider::types::{Issue, IssueState, PrRef, RepoLabel};
     pub use crate::tui::app::{
-        App, BodyEditor, CommentFocus, ConfirmChoice, DetailSel, EditorState, EditorTarget, Focus,
-        HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW, ISSUE_FORM_LABEL_WIDTH,
-        InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove, PendingPriority,
-        SessionId, StateFilter, issue_form_width, options_are_convention, priority_label_set,
-        ranked_label_set,
+        App, BodyEditor, CommentFocus, ConfirmChoice, DetailGeometry, EditorState, EditorTarget,
+        Focus, HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW,
+        ISSUE_FORM_LABEL_WIDTH, InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove,
+        PendingPriority, SessionId, StateFilter, TreeRight, issue_form_width,
+        options_are_convention, priority_label_set, ranked_label_set,
     };
     pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};
     pub use crate::tui::{layout, ui};

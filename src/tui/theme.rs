@@ -13,6 +13,9 @@ pub struct Theme {
     pub dim: Color,
     /// Background of the selected row in the list and popup pickers.
     pub selected_bg: Color,
+    /// Background of the selection in whichever pane does *not* have focus
+    /// while the split is open (#217): still visible, but quieter.
+    pub selected_bg_unfocused: Color,
     /// Open-issue state dot and label.
     pub open: Color,
     /// Closed-issue state dot and label.
@@ -47,6 +50,7 @@ impl Default for Theme {
             accent: Color::Cyan,
             dim: Color::DarkGray,
             selected_bg: Color::Rgb(45, 90, 160),
+            selected_bg_unfocused: Color::Rgb(48, 56, 72),
             open: Color::Green,
             closed: Color::Magenta,
             assignee: Color::Yellow,
@@ -76,6 +80,7 @@ pub struct ColorProfile {
     pub accent: Option<Color>,
     pub dim: Option<Color>,
     pub selected_bg: Option<Color>,
+    pub selected_bg_unfocused: Option<Color>,
     pub open: Option<Color>,
     pub closed: Option<Color>,
     pub assignee: Option<Color>,
@@ -98,6 +103,9 @@ impl Theme {
             accent: profile.accent.unwrap_or(d.accent),
             dim: profile.dim.unwrap_or(d.dim),
             selected_bg: profile.selected_bg.unwrap_or(d.selected_bg),
+            selected_bg_unfocused: profile
+                .selected_bg_unfocused
+                .unwrap_or(d.selected_bg_unfocused),
             open: profile.open.unwrap_or(d.open),
             closed: profile.closed.unwrap_or(d.closed),
             assignee: profile.assignee.unwrap_or(d.assignee),
@@ -137,6 +145,18 @@ mod tests {
         // Untouched fields keep defaults.
         assert_eq!(theme.open, Color::Green);
         assert_eq!(theme.error, Color::Red);
+    }
+
+    #[test]
+    fn unfocused_selection_is_distinct_and_overrides_independently() {
+        let d = Theme::default();
+        assert_ne!(d.selected_bg_unfocused, d.selected_bg);
+
+        let profile: ColorProfile =
+            toml::from_str("selected_bg_unfocused = \"#3c3836\"\n").unwrap();
+        let theme = Theme::with_profile(&profile);
+        assert_eq!(theme.selected_bg_unfocused, Color::Rgb(0x3c, 0x38, 0x36));
+        assert_eq!(theme.selected_bg, d.selected_bg);
     }
 
     #[test]

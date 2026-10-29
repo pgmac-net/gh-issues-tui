@@ -1617,40 +1617,6 @@ fn select_detail_with_no_comments_stays_on_body() {
 }
 
 #[test]
-fn scroll_body_clamps_to_zero_and_max() {
-    let mut app = detail_app_with_comments();
-    app.detail.scroll_body(-1, 10); // can't go above the top
-    assert_eq!(app.detail.body_scroll, 0);
-    app.detail.scroll_body(4, 10);
-    assert_eq!(app.detail.body_scroll, 4);
-    app.detail.scroll_body(100, 10); // clamped at max
-    assert_eq!(app.detail.body_scroll, 10);
-}
-
-#[test]
-fn scroll_comment_clamps_within_its_span() {
-    let mut app = detail_app_with_comments();
-    app.detail.sel = DetailSel::Comment(1);
-    app.detail.snap_comment(20); // comment top offset
-    // Span is [20, 25]; scrolling can't rise above the header.
-    app.detail.scroll_comment(-5, 20, 25);
-    assert_eq!(app.detail.comments_scroll, 20);
-    app.detail.scroll_comment(3, 20, 25);
-    assert_eq!(app.detail.comments_scroll, 23);
-    app.detail.scroll_comment(100, 20, 25); // clamped at the bottom
-    assert_eq!(app.detail.comments_scroll, 25);
-}
-
-#[test]
-fn scroll_comment_that_fits_does_not_move() {
-    let mut app = detail_app_with_comments();
-    app.detail.snap_comment(8);
-    // hi < lo (comment shorter than viewport): stays pinned to the top.
-    app.detail.scroll_comment(5, 8, 3);
-    assert_eq!(app.detail.comments_scroll, 8);
-}
-
-#[test]
 fn clamp_detail_sel_falls_back_when_thread_shrinks() {
     let mut app = detail_app_with_comments();
     app.detail.sel = DetailSel::Comment(1);
@@ -4130,4 +4096,93 @@ fn set_data_drops_an_issue_the_refetch_no_longer_returns() {
     }]);
 
     assert!(app.repos[0].issues.iter().all(|i| i.id != "I_1"));
+}
+
+// --- #217: ←/→ in the tree are "out one level" / "in one level" ---
+
+#[test]
+fn tree_left_on_an_issue_selects_its_header_without_collapsing() {
+    let mut app = two_repo_app();
+    app.selected = 2; // alpha #2
+    app.tree_left();
+    assert_eq!(app.selected, 0);
+    assert!(app.collapsed.is_empty(), "the group stays open");
+    app.selected = 4; // beta #3
+    app.tree_left();
+    assert_eq!(app.selected, 3);
+}
+
+#[test]
+fn tree_left_collapses_an_expanded_header_and_ignores_a_collapsed_one() {
+    let mut app = two_repo_app();
+    app.selected = 3; // beta header
+    app.tree_left();
+    assert!(app.collapsed.contains("beta"));
+    assert_eq!(app.selected, 3);
+    let rows = app.rows.len();
+    app.tree_left();
+    assert!(app.collapsed.contains("beta"));
+    assert_eq!((app.selected, app.rows.len()), (3, rows));
+}
+
+#[test]
+fn tree_right_expands_a_collapsed_header_then_enters_its_first_issue() {
+    let mut app = two_repo_app();
+    app.selected = 0;
+    app.set_current_collapsed(true);
+    assert_eq!(app.tree_right(), TreeRight::Handled);
+    assert!(!app.collapsed.contains("alpha"));
+    assert_eq!(app.selected, 0, "expanding keeps the header selected");
+    assert_eq!(app.tree_right(), TreeRight::Handled);
+    assert_eq!(app.selected, 1, "first issue of alpha");
+    assert_eq!(app.tree_right(), TreeRight::EnterDetail);
+    assert_eq!(app.selected, 1, "the caller opens the pane");
+}
+
+#[test]
+fn tree_right_on_an_expanded_group_with_no_visible_issues_stays_on_the_header() {
+    let mut app = two_repo_app();
+    app.filters.hide_empty = false;
+    app.filters.text = "docs".into(); // only beta has a match
+    app.rebuild_rows();
+    app.selected = 0; // alpha header, no issue rows under it
+    assert!(matches!(app.rows[1], Row::RepoHeader { .. }));
+    app.tree_right();
+    assert_eq!(app.selected, 0);
+}
+
+// --- #217: ←/→ in the detail pane ---
+
+#[test]
+fn detail_left_folds_an_open_comment_then_returns_focus_to_the_tree() {
+    let mut app = detail_app_with_comments();
+    app.focus = Focus::Detail;
+    app.detail.sel = DetailSel::Comment(0);
+    assert!(app.detail_left(), "an open comment folds");
+    assert_eq!(app.focus, Focus::Detail);
+    assert_eq!(app.folded_comments.len(), 1);
+    assert!(!app.detail_left(), "a folded comment hands focus back");
+    assert_eq!(app.focus, Focus::List);
+    assert_eq!(app.folded_comments.len(), 1, "and stays folded");
+}
+
+#[test]
+fn detail_left_on_the_body_returns_focus_to_the_tree() {
+    let mut app = detail_app_with_comments();
+    app.focus = Focus::Detail;
+    assert!(!app.detail_left());
+    assert_eq!(app.focus, Focus::List);
+}
+
+#[test]
+fn detail_right_unfolds_a_folded_comment_and_is_otherwise_a_no_op() {
+    let mut app = detail_app_with_comments();
+    app.focus = Focus::Detail;
+    assert!(!app.detail_right(), "body: nothing to unfold");
+    app.detail.sel = DetailSel::Comment(1);
+    assert!(!app.detail_right(), "open comment: nothing to unfold");
+    app.set_all_comments_folded(true);
+    assert!(app.detail_right());
+    assert_eq!(app.folded_comments.len(), 1, "only the selected one opened");
+    assert_eq!(app.focus, Focus::Detail);
 }

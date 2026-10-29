@@ -55,13 +55,11 @@ pub(super) fn draw_detail_body(
     area: Rect,
     focused: bool,
 ) {
-    let selected = focused && app.detail.sel == DetailSel::Body;
+    let selected = Highlight::of(app.detail.sel == DetailSel::Body, focused);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
-        .title(
-            " issue (Tab comment · Space fold · j/k scroll · e edit · P PR · ← list · Esc close) ",
-        );
+        .title(" issue (↑↓ move · ←→ fold · Tab comment · e edit · P PR · Esc close) ");
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 
@@ -86,7 +84,7 @@ pub(super) fn draw_detail_body(
 }
 
 /// The bottom region: the stacked comment cards, scrolled by `comments_scroll`,
-/// with a scrollbar reflecting position within the *selected* comment.
+/// with a scrollbar reflecting position within the whole thread (#217).
 pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Rect, focused: bool) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -96,7 +94,6 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     let inner_h = area.height.saturating_sub(2);
 
     let selected = match app.detail.sel {
-        _ if !focused => None,
         DetailSel::Comment(i) => Some(i),
         DetailSel::Body => None,
     };
@@ -130,7 +127,7 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     for (i, c) in comments.iter().enumerate() {
         let (card, card_links) = comment_card_lines_links(
             c,
-            selected == Some(i),
+            Highlight::of(selected == Some(i), focused),
             app.is_comment_folded(c),
             card_width,
             t,
@@ -145,29 +142,52 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     let (wrapped, rects) = linkmap::wrap(&lines, &links, inner_w as usize);
     let total = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
 
-    let scroll = app.detail.comments_scroll;
+    // Clamped here too so a terminal resized since the last key still draws
+    // a full viewport; the scrollbar is position in the whole thread (#217,
+    // ADR 0006 — #59's per-comment scrollbar is gone with its clamp).
+    let scroll = app
+        .detail
+        .comments_scroll
+        .min(total.saturating_sub(inner_h));
     f.render_widget(
         Paragraph::new(wrapped).block(block).scroll((scroll, 0)),
         area,
     );
-
-    // Scrollbar maps to the selected comment's own extent; falls back to the
-    // whole thread when the body (not a comment) has focus.
-    if let Some(i) = selected {
-        let top = comment_offset(comments, i, inner_w, &app.folded_comments);
-        let height = comment_height(&comments[i], inner_w, app.is_comment_folded(&comments[i]));
-        render_region_scrollbar(f, t, area, height, inner_h, scroll.saturating_sub(top));
-    } else {
-        render_region_scrollbar(f, t, area, total, inner_h, scroll);
-    }
+    render_region_scrollbar(f, t, area, total, inner_h, scroll);
     apply_hyperlinks(f.buffer_mut(), inner_area(area), &rects, scroll);
+}
+
+/// How a selectable item (the body's title, a comment's header) is drawn: not
+/// selected, selected in the focused pane, or selected in the unfocused one —
+/// dimmed, so the selection is still visible but the eye goes to focus (#217).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Highlight {
+    None,
+    Focused,
+    Unfocused,
+}
+
+impl Highlight {
+    pub(super) fn of(selected: bool, focused: bool) -> Self {
+        match (selected, focused) {
+            (false, _) => Highlight::None,
+            (true, true) => Highlight::Focused,
+            (true, false) => Highlight::Unfocused,
+        }
+    }
+}
+
+impl From<bool> for Highlight {
+    fn from(selected: bool) -> Self {
+        Highlight::of(selected, true)
+    }
 }
 
 /// The issue metadata + description lines, without link positions.
 pub(super) fn body_lines(
     issue: &Issue,
     readiness: Option<&Readiness>,
-    selected: bool,
+    selected: impl Into<Highlight>,
     width: usize,
     t: &Theme,
 ) -> Vec<Line<'static>> {
@@ -180,13 +200,17 @@ pub(super) fn body_lines(
 pub(super) fn body_lines_links(
     issue: &Issue,
     readiness: Option<&Readiness>,
-    selected: bool,
+    selected: impl Into<Highlight>,
     width: usize,
     t: &Theme,
 ) -> (Vec<Line<'static>>, Vec<LinkSpan>) {
     let mut title_style = title_style(issue, t).add_modifier(Modifier::BOLD);
-    if selected {
-        title_style = title_style.fg(t.accent).add_modifier(Modifier::REVERSED);
+    match selected.into() {
+        Highlight::None => {}
+        Highlight::Focused => {
+            title_style = title_style.fg(t.accent).add_modifier(Modifier::REVERSED);
+        }
+        Highlight::Unfocused => title_style = title_style.bg(t.selected_bg_unfocused),
     }
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
@@ -260,7 +284,7 @@ pub(super) fn body_lines_links(
 /// when it is the selected card. Shared by the renderer and `comment_height`.
 pub(super) fn comment_card_lines(
     c: &Comment,
-    selected: bool,
+    selected: impl Into<Highlight>,
     folded: bool,
     card_width: usize,
     t: &Theme,
@@ -277,7 +301,7 @@ pub(super) fn comment_card_lines(
 /// compact list of headers.
 pub(super) fn comment_card_lines_links(
     c: &Comment,
-    selected: bool,
+    selected: impl Into<Highlight>,
     folded: bool,
     card_width: usize,
     t: &Theme,
@@ -290,9 +314,13 @@ pub(super) fn comment_card_lines_links(
     );
     let mut header_style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
     let mut rule_style = Style::default().fg(t.dim);
-    if selected {
-        header_style = header_style.add_modifier(Modifier::REVERSED);
-        rule_style = Style::default().fg(t.accent);
+    match selected.into() {
+        Highlight::None => {}
+        Highlight::Focused => {
+            header_style = header_style.add_modifier(Modifier::REVERSED);
+            rule_style = Style::default().fg(t.accent);
+        }
+        Highlight::Unfocused => header_style = header_style.bg(t.selected_bg_unfocused),
     }
     let (md_lines, md_links) = markdown::render_with_links(&c.body, card_width, t);
     if folded {
@@ -365,7 +393,9 @@ pub fn comment_height(c: &Comment, width: u16, folded: bool) -> u16 {
 
 /// Visual-row offset of comment `i`'s top within the stacked comments
 /// paragraph: the summed heights of the comments before it. `folded` holds the
-/// ids of folded comments, which are one row tall.
+/// ids of folded comments, which are one row tall. The key handlers get the
+/// same answer from `DetailGeometry::comment_top`; this stays for the tests.
+#[cfg(test)]
 pub fn comment_offset(
     comments: &[Comment],
     i: usize,
@@ -659,7 +689,7 @@ mod tests {
     fn detail_pane_shows_two_regions_body_and_comments() {
         let out = detail_render_string(DetailSel::Comment(0));
         // Both region blocks are titled and present.
-        assert!(out.contains("issue (Tab comment"), "body title missing");
+        assert!(out.contains("issue (↑↓ move"), "body title missing");
         assert!(out.contains(" comments "), "comments title missing");
         // The pinned body metadata and description render in the top region.
         assert!(out.contains("#42"), "issue number missing");
@@ -674,6 +704,110 @@ mod tests {
         // scrollbar thumb (█) is drawn for each.
         let out = detail_render_string(DetailSel::Comment(0));
         assert!(out.contains('█'), "expected scrollbar thumbs to be drawn");
+    }
+
+    /// Render `app` into a 100×32 buffer.
+    fn render_buffer(app: &App) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|f| draw(f, app, &Theme::default(), &HarnessRegistry::default()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Rows of the comments region's scrollbar thumb (the right border column).
+    fn comments_thumb_rows(app: &App) -> Vec<u16> {
+        let buf = render_buffer(app);
+        let frame = layout::frame(Rect::new(0, 0, 100, 32));
+        let detail = layout::panes(frame.main, true).detail.unwrap();
+        let comments = layout::detail_regions(detail).comments.unwrap();
+        let x = comments.right() - 1;
+        (comments.y + 1..comments.bottom() - 1)
+            .filter(|&y| buf[(x, y)].symbol() == "█")
+            .collect()
+    }
+
+    #[test]
+    fn comments_scrollbar_shows_position_in_the_whole_thread() {
+        let frame = layout::frame(Rect::new(0, 0, 100, 32));
+        let detail = layout::panes(frame.main, true).detail.unwrap();
+        let comments = layout::detail_regions(detail).comments.unwrap();
+        let (first, last) = (comments.y + 1, comments.bottom() - 2);
+
+        // Comment 1 selected with its header at the top of the viewport. The
+        // old per-comment bar (#59) sat at the top here; the thread bar is
+        // well down, since the long comment 0 is scrolled past.
+        let app = detail_app_with_comments_at(DetailSel::Comment(1));
+        assert!(app.detail.comments_scroll > 0);
+        let rows = comments_thumb_rows(&app);
+        assert!(!rows.is_empty(), "thread overflows: thumb drawn");
+        assert!(rows[0] > first, "thumb {rows:?} should not be at the top");
+
+        // A stale offset past the end (a since-shrunk terminal) is clamped:
+        // it draws exactly as the last full viewport does.
+        let mut app = detail_app_with_comments_at(DetailSel::Comment(2));
+        let w = layout::inner_width(detail);
+        let total: u16 = app
+            .detail
+            .comments
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| comment_height(c, w, false))
+            .sum();
+        app.detail.comments_scroll = total - layout::inner_height(comments);
+        let at_end = comments_thumb_rows(&app);
+        assert!(*at_end.last().unwrap() <= last);
+        app.detail.comments_scroll = u16::MAX;
+        assert_eq!(comments_thumb_rows(&app), at_end);
+
+        // Top of the thread: thumb at the top, whichever comment is selected.
+        let mut app = detail_app_with_comments_at(DetailSel::Comment(2));
+        app.detail.comments_scroll = 0;
+        assert_eq!(comments_thumb_rows(&app)[0], first);
+    }
+
+    #[test]
+    fn the_unfocused_panes_selection_is_dimmed() {
+        let t = Theme::default();
+        let mut app = detail_app_with_comments_at(DetailSel::Comment(0));
+        let frame = layout::frame(Rect::new(0, 0, 100, 32));
+        let panes = layout::panes(frame.main, true);
+        let comments = layout::detail_regions(panes.detail.unwrap())
+            .comments
+            .unwrap();
+        // The selected list row is row 1 (the issue, under its header).
+        let list_cell = (panes.list.x + 1, panes.list.y + 2);
+        // Comment 0's header is the comments viewport's first row.
+        let header_cell = (comments.x + 1, comments.y + 1);
+
+        app.focus = Focus::Detail;
+        let buf = render_buffer(&app);
+        assert_eq!(buf[list_cell].bg, t.selected_bg_unfocused, "tree dimmed");
+        assert!(
+            buf[header_cell].modifier.contains(Modifier::REVERSED),
+            "focused comment header stays loud"
+        );
+
+        app.focus = Focus::List;
+        let buf = render_buffer(&app);
+        assert_eq!(buf[list_cell].bg, t.selected_bg, "focused tree loud");
+        assert_eq!(
+            buf[header_cell].bg, t.selected_bg_unfocused,
+            "comment dimmed"
+        );
+        assert!(!buf[header_cell].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn with_the_split_closed_the_list_selection_is_never_dimmed() {
+        let mut app = detail_app_with_comments();
+        app.close_detail();
+        let buf = render_buffer(&app);
+        assert_eq!(buf[(1, 2)].bg, Theme::default().selected_bg);
     }
 
     /// Render a detail pane whose body and first comment each hold a URL, then
