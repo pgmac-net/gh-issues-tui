@@ -11,6 +11,7 @@ mod help;
 mod list;
 mod popups;
 mod pr;
+mod runs;
 mod widgets;
 
 #[cfg(test)]

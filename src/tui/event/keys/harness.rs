@@ -919,6 +919,95 @@ mod tests {
         handle_normal_key(app, key(KeyCode::Char(ch)), &client, &tx, &mut h.ctx());
     }
 
+    /// The selected issue, with a provider that has runs.
+    fn runs_app() -> App {
+        let (mut app, _) = app_with_issue(&[]);
+        app.runs.supported = true;
+        app
+    }
+
+    #[test]
+    fn capital_r_opens_the_pane_on_the_runs_tab_from_the_list() {
+        let mut app = runs_app();
+        assert!(!app.detail.open);
+        press(&mut app, 'R');
+        assert!(app.runs_showing());
+        assert_eq!(app.focus, Focus::Detail);
+        assert!(app.runs.due.is_some(), "a load is scheduled");
+    }
+
+    #[test]
+    fn capital_r_flips_back_and_keeps_the_pane_open() {
+        let mut app = runs_app();
+        press(&mut app, 'R');
+        press(&mut app, 'R');
+        assert!(app.detail.open);
+        assert!(!app.runs_showing());
+    }
+
+    #[test]
+    fn capital_r_says_so_when_the_provider_has_no_runs() {
+        let (mut app, _) = app_with_issue(&[]);
+        press(&mut app, 'R');
+        assert!(!app.detail.open);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("workflow runs not supported by this provider")
+        );
+    }
+
+    #[test]
+    fn capital_r_on_a_repo_header_asks_for_an_issue() {
+        let mut app = runs_app();
+        app.selected = 0;
+        press(&mut app, 'R');
+        assert!(!app.detail.open);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("select an issue to see its runs")
+        );
+    }
+
+    #[test]
+    fn r_in_the_runs_tab_refreshes_runs_not_the_org() {
+        let mut app = runs_app();
+        press(&mut app, 'R');
+        app.runs.due = None;
+        press(&mut app, 'r');
+        assert!(!app.loading, "the org is not reloaded");
+        assert!(app.runs.due.is_some());
+    }
+
+    #[test]
+    fn e_does_nothing_in_the_runs_tab() {
+        let mut app = runs_app();
+        press(&mut app, 'R');
+        press(&mut app, 'e');
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn c_in_the_runs_tab_goes_back_to_the_thread_it_adds_to() {
+        let mut app = runs_app();
+        press(&mut app, 'R');
+        press(&mut app, 'c');
+        assert!(!app.runs_showing());
+        assert_eq!(app.mode, Mode::CommentEditor);
+    }
+
+    #[test]
+    fn pane_keys_move_the_tree_cursor_not_the_comment_selection() {
+        let mut app = folding_app();
+        app.runs.supported = true;
+        app.toggle_runs_tab(std::time::Instant::now());
+        app.focus = Focus::Detail;
+        let sel = app.detail.sel;
+        press(&mut app, 'j');
+        press(&mut app, ' ');
+        assert_eq!(app.detail.sel, sel, "the hidden tab keeps its place");
+        assert!(app.folded_comments.is_empty());
+    }
+
     #[test]
     fn space_in_the_detail_pane_folds_the_selected_comment_not_the_repo_group() {
         let mut app = folding_app();

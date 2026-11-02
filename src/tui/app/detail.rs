@@ -241,6 +241,7 @@ impl App {
         self.detail.reset_scroll();
         self.detail.comments = None;
         self.pr = PrState::default();
+        self.runs.close();
     }
 
     /// Point the detail pane at issue `id`'s comment thread, returning the id
@@ -434,6 +435,7 @@ impl App {
         self.detail.open = false;
         self.focus = Focus::List;
         self.pr = PrState::default();
+        self.runs.close();
     }
 }
 

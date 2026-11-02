@@ -244,29 +244,91 @@ pub(crate) fn detail_geometry(app: &App) -> Option<DetailGeometry> {
 }
 
 /// `↓`/`↑` (`dir` = ±1) in the detail pane: one row-cursor step.
+///
+/// This and the handlers below are the one place the detail pane's keys split
+/// between its tabs (#222), so `keys/normal.rs` keeps one arm per key.
 pub(crate) fn detail_step(app: &mut App, dir: isize) {
-    if let Some(g) = detail_geometry(app) {
+    if app.runs_showing() {
+        app.runs_move(dir);
+    } else if let Some(g) = detail_geometry(app) {
         app.detail.step(dir, &g);
     }
 }
 
 /// `PgDn`/`PgUp` in the detail pane: one viewport of steps.
 pub(crate) fn detail_page(app: &mut App, dir: isize) {
-    if let Some(g) = detail_geometry(app) {
+    if app.runs_showing() {
+        let (_, _, view) = detail_metrics();
+        app.runs_move(dir * isize::from(view.max(1) as i16));
+    } else if let Some(g) = detail_geometry(app) {
         app.detail.page(dir, &g);
+    }
+}
+
+/// `g`/`Home` in the detail pane.
+pub(crate) fn detail_jump_top(app: &mut App) {
+    if app.runs_showing() {
+        app.runs_jump_top();
+    } else {
+        app.detail.jump_top();
     }
 }
 
 /// `G`/`End` in the detail pane: last comment, thread scrolled to its end.
 pub(crate) fn detail_jump_end(app: &mut App) {
-    if let Some(g) = detail_geometry(app) {
+    if app.runs_showing() {
+        app.runs_jump_end();
+    } else if let Some(g) = detail_geometry(app) {
         app.detail.jump_end(&g);
+    }
+}
+
+/// `→` in the detail pane.
+pub(crate) fn detail_key_right(app: &mut App) {
+    if app.runs_showing() {
+        app.runs_right();
+    } else {
+        with_fold(app, App::detail_right);
+    }
+}
+
+/// `←` in the detail pane.
+pub(crate) fn detail_key_left(app: &mut App) {
+    if app.runs_showing() {
+        app.runs_left();
+    } else {
+        with_fold(app, App::detail_left);
+    }
+}
+
+/// `Space`/`Enter` in the detail pane.
+pub(crate) fn detail_key_toggle(app: &mut App) {
+    if app.runs_showing() {
+        app.runs_toggle();
+    } else {
+        with_fold(app, App::toggle_selected_comment_fold);
+    }
+}
+
+/// `[`/`]` in the detail pane.
+pub(crate) fn detail_key_fold_all(app: &mut App, folded: bool) {
+    if app.runs_showing() {
+        app.runs_set_all_folded(folded);
+    } else {
+        with_fold(app, |a| {
+            a.set_all_comments_folded(folded);
+            true
+        });
     }
 }
 
 /// `Tab`/`Shift+Tab` in the detail pane: move the selection header to header
 /// (wrapping), then edge-scroll it into view.
 pub(crate) fn detail_select(app: &mut App, delta: isize) {
+    if app.runs_showing() {
+        app.runs_next_header(delta);
+        return;
+    }
     app.detail.select(delta);
     if let Some(g) = detail_geometry(app) {
         app.detail.reveal_selected(&g);

@@ -656,10 +656,11 @@ pub(super) const LIST_HELP: &[(&str, &str)] = &[
     ("t", "edit title"),
     ("p", "set priority"),
     ("P", "summarise linked PR (in detail pane)"),
+    ("R", "flip detail pane between comments and workflow runs"),
     ("m", "move issue to another repo"),
     ("n", "new issue"),
     ("A", "start a coding harness (F12 ? for its keys)"),
-    ("r", "reload"),
+    ("r", "reload (in the runs tab: refresh runs)"),
     ("q", "back / quit"),
 ];
 

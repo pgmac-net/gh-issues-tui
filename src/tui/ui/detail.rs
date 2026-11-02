@@ -2,6 +2,7 @@ use super::form::draw_comment_section;
 use super::list::pane_border;
 use super::list::{state_style, title_style};
 use super::prelude::*;
+use super::runs::{draw_detail_runs, tab_title};
 use super::widgets::{apply_hyperlinks, inner_area, paragraph_height, render_region_scrollbar};
 use crate::tui::app::{DetailSel, Focus, Mode};
 use crate::tui::markdown;
@@ -39,9 +40,19 @@ pub(super) fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     let focused = app.focus == Focus::Detail;
     let regions = layout::detail_regions(area);
 
-    draw_detail_body(f, app, t, issue, regions.body, focused);
-    if let Some(comments) = regions.comments {
-        draw_detail_comments(f, app, t, comments, focused);
+    let runs = app.runs_showing();
+    match regions.comments {
+        Some(lower) => {
+            draw_detail_body(f, app, t, issue, regions.body, focused);
+            if runs {
+                draw_detail_runs(f, app, t, lower, focused);
+            } else {
+                draw_detail_comments(f, app, t, lower, focused);
+            }
+        }
+        // Too short for two regions: the tab asked for keeps the screen.
+        None if runs => draw_detail_runs(f, app, t, regions.body, focused),
+        None => draw_detail_body(f, app, t, issue, regions.body, focused),
     }
 }
 
@@ -55,11 +66,17 @@ pub(super) fn draw_detail_body(
     area: Rect,
     focused: bool,
 ) {
-    let selected = Highlight::of(app.detail.sel == DetailSel::Body, focused);
+    let runs = app.runs_showing();
+    let selected = Highlight::of(app.detail.sel == DetailSel::Body && !runs, focused);
+    let title = if runs {
+        " issue (↑↓ move · ←→ fold · Tab next · o open · r refresh · R comments) "
+    } else {
+        " issue (↑↓ move · ←→ fold · Tab comment · e edit · P PR · Esc close) "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
-        .title(" issue (↑↓ move · ←→ fold · Tab comment · e edit · P PR · Esc close) ");
+        .title(title);
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 
@@ -89,7 +106,7 @@ pub(super) fn draw_detail_comments(f: &mut Frame, app: &App, t: &Theme, area: Re
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(pane_border(app, t, Focus::Detail))
-        .title(" comments ");
+        .title(tab_title(app, t));
     let inner_w = area.width.saturating_sub(2);
     let inner_h = area.height.saturating_sub(2);
 

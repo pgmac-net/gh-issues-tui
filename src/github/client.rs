@@ -13,6 +13,7 @@ use crate::provider::types::{
     Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary, RateLimitData, RepoIssues,
     RepoLabel, ReviewDecision, ReviewSummary, WorkflowRunInfo,
 };
+use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 /// GitHub's maximum page size. Cost does not scale with this once the bulk
@@ -61,8 +62,10 @@ fn halve(current: u32, floor: u32) -> u32 {
 /// Async GitHub GraphQL v4 client. Cheap to clone.
 #[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    pub(super) http: reqwest::Client,
     rate_limit: RateLimitStore,
+    /// REST's budget, separate from GraphQL's (`github::actions`).
+    pub(super) rest_rate_limit: RateLimitStore,
 }
 
 impl Client {
@@ -70,6 +73,7 @@ impl Client {
         Ok(Self {
             http: build_http_client(&format!("Bearer {token}"), &[])?,
             rate_limit: RateLimitStore::default(),
+            rest_rate_limit: RateLimitStore::default(),
         })
     }
 
@@ -80,11 +84,20 @@ impl Client {
 
     /// GitHub reports the reset as epoch **seconds**, so it is stored as-is.
     fn update_rate_limit(&self, headers: &reqwest::header::HeaderMap) {
+        self.note_rate_limit(&self.rate_limit, headers);
+    }
+
+    /// Record the rate-limit headers of a response into `store`.
+    pub(super) fn note_rate_limit(
+        &self,
+        store: &RateLimitStore,
+        headers: &reqwest::header::HeaderMap,
+    ) {
         let remaining = header_i64(headers, "x-ratelimit-remaining");
         let limit = header_i64(headers, "x-ratelimit-limit");
         let reset = header_i64(headers, "x-ratelimit-reset");
         if let (Some(remaining), Some(limit), Some(reset)) = (remaining, limit, reset) {
-            self.rate_limit.set(RateLimitData {
+            store.set(RateLimitData {
                 remaining: remaining.max(0) as u64,
                 limit: limit.max(0) as u64,
                 reset,
@@ -93,7 +106,7 @@ impl Client {
         }
     }
 
-    async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
+    pub(super) async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
         let resp = self
             .http
             .post(GRAPHQL_URL)
@@ -1385,6 +1398,36 @@ impl crate::provider::IssueProvider for Client {
 
     async fn pull_request(&self, pr: &PrRef) -> Result<PrLookup> {
         self.pull_request(pr).await
+    }
+
+    fn supports_runs(&self) -> bool {
+        true
+    }
+
+    async fn linked_prs(&self, issue_id: &str, text_refs: &[PrRef]) -> Result<Vec<LinkedPr>> {
+        self.linked_prs(issue_id, text_refs).await
+    }
+
+    async fn head_runs(&self, owner: &str, repo: &str, sha: &str) -> Result<Vec<ActionsRun>> {
+        self.head_runs(owner, repo, sha).await
+    }
+
+    async fn run_jobs(&self, owner: &str, repo: &str, run_id: i64) -> Result<Vec<ActionsJob>> {
+        self.run_jobs(owner, repo, run_id).await
+    }
+
+    async fn history_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+        workflow_id: i64,
+        event: &str,
+    ) -> Result<Vec<ActionsRun>> {
+        self.history_runs(owner, repo, workflow_id, event).await
+    }
+
+    fn runs_rate_limit(&self) -> Option<RateLimitData> {
+        self.rest_rate_limit.get()
     }
 
     fn supports_move(&self) -> bool {
