@@ -50,9 +50,18 @@ impl App {
 
     /// The filtered scope: an exact repo filter narrows the fetch to that
     /// repo; anything else (no filter, a substring) fetches the org.
+    ///
+    /// Before anything has loaded there are no names to match against, and
+    /// the only repo filter that can exist is the one detected from the
+    /// clone you started in (#230): that one is trusted as exact. If the repo
+    /// turns out not to exist, the group comes back gone, the filter no
+    /// longer matches exactly, and the auto-widen falls back to the org.
     pub fn filtered_target(&self) -> FetchTarget {
         if self.filters.repo.is_empty() {
             return FetchTarget::Org;
+        }
+        if self.loaded.is_none() && self.repos.is_empty() {
+            return FetchTarget::Repo(self.filters.repo.clone());
         }
         self.repos
             .iter()
@@ -97,20 +106,29 @@ impl App {
             self.invalidate_comments(&issue.id);
         }
         if let Some(fresh) = incoming {
+            self.vocab.absorb_repos(std::slice::from_ref(&fresh));
             let merged = keep_newer_loaded(loaded.into_iter().collect(), vec![fresh])
                 .pop()
                 .expect("one repo in, one repo out");
-            if self.seen_repos.insert(merged.repo.clone()) && self.default_collapsed {
-                self.collapsed.insert(merged.repo.clone());
-            }
+            let name = merged.repo.clone();
             // Keep the org query's name order wherever the repo lands.
             let at = slot.unwrap_or_else(|| {
                 self.repos
                     .iter()
-                    .position(|r| r.repo.to_lowercase() > merged.repo.to_lowercase())
+                    .position(|r| r.repo.to_lowercase() > name.to_lowercase())
                     .unwrap_or(self.repos.len())
             });
             self.repos.insert(at, merged);
+            // A first-seen repo takes `default_collapsed`, except when it is
+            // the only group the filters leave visible — the same rule as
+            // `set_data`. Startup inside a clone lands here (#230), and one
+            // folded header is all it would otherwise show.
+            if self.seen_repos.insert(name.clone())
+                && self.default_collapsed
+                && self.single_visible_repo().as_deref() != Some(name.as_str())
+            {
+                self.collapsed.insert(name);
+            }
         }
         self.stamp_label_ranks();
         self.rebuild_rows();
@@ -217,6 +235,62 @@ mod tests {
         assert_eq!(app.filtered_target(), FetchTarget::Repo("alpha".into()));
         app.filters.repo = "alp".into();
         assert_eq!(app.filtered_target(), FetchTarget::Org);
+    }
+
+    /// #230: started inside a clone, the detected repo is fetched alone.
+    #[test]
+    fn before_the_first_load_the_detected_repo_is_the_target() {
+        let app = App::new(
+            "org".into(),
+            Some("gh-issues-tui".into()),
+            false,
+            false,
+            String::new(),
+        );
+        assert_eq!(
+            app.filtered_target(),
+            FetchTarget::Repo("gh-issues-tui".into())
+        );
+    }
+
+    /// #230, found live: a clone-scoped start lands through `replace_repo`,
+    /// which collapsed the lone group under `default_collapsed`.
+    #[test]
+    fn a_scoped_first_load_leaves_the_only_group_expanded() {
+        let mut app = App::new(
+            "org".into(),
+            Some("alpha".into()),
+            false,
+            true,
+            String::new(),
+        );
+        app.replace_repo("alpha", Some(repo("alpha", vec![issue("I_1", 1, T1)])));
+        assert!(!app.collapsed.contains("alpha"));
+        assert_eq!(app.rows.len(), 2, "header and its issue");
+
+        // A second first-seen group is not alone, so it still folds.
+        app.filters.repo.clear();
+        app.replace_repo("beta", Some(repo("beta", vec![issue("I_2", 2, T1)])));
+        assert!(app.collapsed.contains("beta"));
+    }
+
+    /// #230: the detected repo came back gone, so nothing matches it exactly
+    /// any more and the next fetch is the org.
+    #[test]
+    fn a_detected_repo_that_turned_out_gone_falls_back_to_the_org() {
+        let mut app = App::new(
+            "org".into(),
+            Some("nope".into()),
+            false,
+            false,
+            String::new(),
+        );
+        app.begin_fetch(app.wanted());
+        app.finish_fetch(true);
+        app.replace_repo("nope", None);
+        assert_eq!(app.filtered_target(), FetchTarget::Org);
+        app.loading = false;
+        assert!(app.widened(), "the org is wider than the repo that loaded");
     }
 
     #[test]

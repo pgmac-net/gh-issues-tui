@@ -22,7 +22,7 @@ Two required `IssueProvider` methods:
   - GitHub: `node(id:)` with the mutation payload's field set (`full_issue_fields!`).
   - Linear: `issue(id:)` with `IssueFields`.
   - Jira: `GET /issue/{key}` (the read mutations already used).
-- `repo_issues(org, repo, include_closed) -> Result<Option<RepoIssues>>`: one group, shaped like its `org_issues` entry.
+- `repo_issues(org, repo, scope) -> Result<Option<RepoIssues>>`: one group, shaped like its `org_issues` entry. (Since #230 it takes a `FetchScope`; it took `include_closed` here.)
   - GitHub: `REPO_QUERY` (first page, plus `isArchived`), then the same page loop and hydration as the bulk fetch (`finish_repo`).
   - Linear: team by key, then the shared `team_issues` loop.
   - Jira: `GET /project/{key}` to tell "gone" from "empty", then the shared `project_issues` JQL loop.
@@ -38,9 +38,9 @@ Each is classified as `ProviderError::NotFound` and turned into `None` by `provi
 
 - **Issue:** `AppEvent::IssueRefreshed` → `App::patch_issue` inside `nav()`, the same path as a mutation (#196), so a lagging read cannot regress a newer copy. `None` → `App::remove_issue`.
 - **Repo:** `AppEvent::RepoRefreshed` → `App::replace_repo`. Only that repo changes; within it the refetch decides membership and `keep_newer_loaded` keeps newer patched copies. The repo's cached threads and readiness judgements are dropped. A selected header stays selected; a selected issue stays selected by id. `None` drops the group.
-- Partial refreshes use the loaded `include_closed`, so the list stays one dataset.
+- Partial refreshes use the loaded scope (`include_closed` here; the full `FetchScope` since #230), so the list stays one dataset.
 
 ## Not changed
 
-- Startup, org switch, showing closed issues for the first time, create and move still fetch the org.
+- Create and move still fetch the org. Since #230, startup and showing closed issues go through the filtered scope and the auto-widen instead: see [filter-pushdown.md](filter-pushdown.md).
 - The info bar's "last fetch" cost is the last **org** fetch's; partial refreshes do not update it.

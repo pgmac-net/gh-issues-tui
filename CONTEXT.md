@@ -8,9 +8,11 @@ Terms used across this repo's code and docs.
 
 **Filtered scope**: the one repo an exact repo filter names, otherwise the whole org. A substring repo filter does not narrow it.
 
-**Fetch scope**: the parameters a fetch sends to the backend: today `include_closed`, and from #230 the pushed-down filters too. *Avoid*: "filter" alone, which means the client-side `Filters` that decide what is shown.
+**Fetch scope** (`FetchScope`): the parameters a fetch sends to the backend: `include_closed`, assignee, author, updated-since and one label group (#230). *Avoid*: "filter" alone, which means the client-side `Filters` that decide what is shown.
 
-**Loaded scope**: the fetch scope the loaded data was fetched with. Partial refreshes reuse it, so one group is never fresher in kind than the others.
+**Loaded scope** (`App.loaded`): the fetch scope the loaded data was fetched with, plus the one repo it was narrowed to, if any. Partial refreshes reuse it, so one group is never fresher in kind than the others.
+
+**Vocabulary** (`App.vocab`): every repo, assignee, author and label seen in any fetch this session, which the filter pickers offer. *Avoid*: "loaded labels", which since #230 is only what matches.
 
 **Widen** and **narrow**: a filter change widens when it could show issues outside the loaded scope (clearing an assignee, showing closed issues), and narrows when it can only hide loaded ones. Narrowing never fetches; widening refetches the filtered scope once.
 

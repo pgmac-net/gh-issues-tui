@@ -22,7 +22,9 @@ mod refresh;
 mod rows;
 mod run_tree;
 pub mod runs;
+mod scope;
 pub mod search;
+mod vocab;
 
 #[cfg(test)]
 mod tests;
@@ -41,6 +43,8 @@ pub use refresh::{FetchTarget, RefreshTarget};
 pub use rows::TreeRight;
 pub use run_tree::{RunRow, RunRowKind, RunsData};
 pub use runs::{DetailTab, RunsFetch, RunsState, RunsWork};
+pub use scope::Loaded;
+pub use vocab::Vocab;
 
 use prelude::*;
 
@@ -99,6 +103,15 @@ pub struct App {
     /// keypress — picks the quieter status wording when it lands.
     pub auto_refreshing: bool,
     pub include_closed: bool,
+    /// What the loaded data was fetched for (#230); `None` before the first
+    /// load lands.
+    pub loaded: Option<Loaded>,
+    /// What the fetch in flight asked for; becomes `loaded` when it lands.
+    pub pending_fetch: Option<Loaded>,
+    /// Every repo, person and label seen this session, for the pickers.
+    pub vocab: Vocab,
+    /// The org's full repo list, fetched lazily for move targets (#230).
+    pub org_repo_names: Option<Vec<String>>,
     pub status: Option<String>,
     /// Most recently observed API rate limit state.
     pub rate_limit: Option<RateLimitData>,
@@ -184,6 +197,10 @@ impl App {
             loading: true,
             auto_refreshing: false,
             include_closed,
+            loaded: None,
+            pending_fetch: None,
+            vocab: Vocab::default(),
+            org_repo_names: None,
             status: None,
             rate_limit: None,
             rate_limit_error: None,
@@ -225,6 +242,7 @@ impl App {
         self.readiness.clear();
         // Never regress an issue to an older copy: a refetch can read a
         // replica that has not yet seen a patch applied since (#196).
+        self.vocab.absorb_repos(&repos);
         self.repos = patch::keep_newer_loaded(std::mem::take(&mut self.repos), repos);
         // A refresh brings fresh issues whose labels carry no rank.
         self.stamp_label_ranks();
@@ -312,6 +330,10 @@ impl App {
         self.pr = PrState::default();
         self.runs.reset();
         self.label_rank = RankState::default();
+        self.loaded = None;
+        self.pending_fetch = None;
+        self.vocab = Vocab::default();
+        self.org_repo_names = None;
         self.loading = true;
     }
 

@@ -35,6 +35,8 @@ pub struct PickerState {
     /// Issue id the set-priority picker was requested for; guards against a
     /// stale options response landing after the selection moved on.
     pub priority_issue: Option<String>,
+    /// Issue id `m` is waiting on the org repo list for (#230); same guard.
+    pub move_issue: Option<String>,
     /// Issue id the edit-labels picker was requested for; same guard.
     pub label_issue: Option<String>,
 }
@@ -113,15 +115,15 @@ impl App {
     }
 
     /// Repo names available as a move target for the selected issue: every
-    /// loaded repo except its own. Empty when nothing is selected or the
-    /// issue's repo is the only one loaded.
+    /// known repo except its own ([`App::known_repos`]: the org's list once
+    /// fetched, plus every repo seen). Empty when nothing is selected or no
+    /// other repo is known.
     pub fn move_targets(&self) -> Vec<String> {
         let Some(current) = self.selected_repo().map(|r| r.repo.clone()) else {
             return Vec::new();
         };
-        self.repos
-            .iter()
-            .map(|r| r.repo.clone())
+        self.known_repos()
+            .into_iter()
             .filter(|r| *r != current)
             .collect()
     }
@@ -146,31 +148,15 @@ impl App {
     /// Build the list of options shown when the user presses Enter on a
     /// select-style filter field (repo, assignee, author).
     /// The first entry is always `"—"` which means "no filter".
+    ///
+    /// Options come from the session vocabulary, not the loaded issues
+    /// (#230): with filters pushed down, the loaded issues are only the ones
+    /// already matching, so they would offer nothing new to switch to.
     pub fn compute_select_options(&self, idx: usize) -> Vec<String> {
         let mut opts: Vec<String> = match idx {
-            1 => self.repos.iter().map(|r| r.repo.clone()).collect(),
-            2 => {
-                let mut v: Vec<String> = self
-                    .repos
-                    .iter()
-                    .flat_map(|r| r.issues.iter())
-                    .flat_map(|i| i.assignees.iter().cloned())
-                    .collect();
-                v.sort();
-                v.dedup();
-                v
-            }
-            3 => {
-                let mut v: Vec<String> = self
-                    .repos
-                    .iter()
-                    .flat_map(|r| r.issues.iter())
-                    .map(|i| i.author.clone())
-                    .collect();
-                v.sort();
-                v.dedup();
-                v
-            }
+            1 => self.known_repos(),
+            2 => self.vocab.assignees.iter().cloned().collect(),
+            3 => self.vocab.authors.iter().cloned().collect(),
             _ => vec![],
         };
         opts.insert(0, "\u{2014}".to_string());
@@ -225,16 +211,15 @@ impl App {
             .collect();
 
         let mut inferred: Vec<PriorityOption> = self
-            .repos
+            .vocab
+            .labels
             .iter()
-            .flat_map(|r| r.issues.iter())
-            .flat_map(|i| i.ranked_labels())
-            .filter(|l| priority_value(&l.name).is_none())
-            .filter(|l| !options.iter().any(|o| o.text.eq_ignore_ascii_case(&l.name)))
-            .filter_map(|l| {
+            .filter(|name| priority_value(name).is_none())
+            .filter(|name| !options.iter().any(|o| o.text.eq_ignore_ascii_case(name)))
+            .filter_map(|name| {
                 Some(PriorityOption {
-                    text: l.name.clone(),
-                    rank: l.rank?,
+                    text: name.clone(),
+                    rank: self.label_rank.rank_of(name)?,
                     convention: false,
                 })
             })
@@ -251,18 +236,16 @@ impl App {
         options.into_iter().map(|o| o.text).collect()
     }
 
-    /// Distinct sorted values of `<prefix>:<value>` labels across all issues.
-    /// Splits on `:` rather than byte-slicing so mixed-case or non-ASCII
-    /// label names can never panic on a char boundary.
+    /// Distinct sorted values of `<prefix>:<value>` labels seen this session
+    /// (the vocabulary, #230). Splits on `:` rather than byte-slicing so
+    /// mixed-case or non-ASCII label names can never panic on a char boundary.
     fn label_values(&self, prefix: &str) -> Vec<String> {
         let mut v: Vec<String> = self
-            .repos
+            .vocab
+            .labels
             .iter()
-            .flat_map(|r| r.issues.iter())
-            .flat_map(|i| i.labels.iter())
-            .filter_map(|l| {
-                l.name
-                    .split_once(':')
+            .filter_map(|name| {
+                name.split_once(':')
                     .filter(|(p, _)| p.eq_ignore_ascii_case(prefix))
                     .map(|(_, value)| value.to_string())
             })

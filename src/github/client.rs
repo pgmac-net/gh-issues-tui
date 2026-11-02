@@ -8,6 +8,7 @@ use crate::provider::http::{
     RateLimitStore, build_http_client, graphql_body, graphql_data, header_i64, join_error_messages,
     parse_at,
 };
+use crate::provider::scope::FetchScope;
 use crate::provider::types::{
     CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueRef, IssueState,
     Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary, RateLimitData, RepoIssues,
@@ -181,8 +182,18 @@ impl Client {
     ///
     /// Iterates repositories with cursor pagination (avoids the 1000-result
     /// search API cap) and follows per-repo issue pagination where needed.
-    pub async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
-        let states = issue_states(include_closed);
+    pub async fn org_issues(&self, org: &str, scope: &FetchScope) -> Result<Vec<RepoIssues>> {
+        match self.org_issues_at(org, &issue_filter(scope)).await {
+            Err(e) if scope.assignee.is_some() && is_unknown_assignee(&e) => {
+                let fallback = without_assignee(scope);
+                self.org_issues_at(org, &issue_filter(&fallback)).await
+            }
+            other => other,
+        }
+    }
+
+    /// [`Self::org_issues`] with the `filterBy` value already built.
+    async fn org_issues_at(&self, org: &str, filter: &Value) -> Result<Vec<RepoIssues>> {
         let mut out = Vec::new();
         let mut repo_cursor: Option<String> = None;
         let mut sizes = PageSizes {
@@ -201,7 +212,7 @@ impl Client {
                             "reposFirst": sizes.repos,
                             "issuesFirst": sizes.issues,
                             "repoCursor": repo_cursor,
-                            "states": states,
+                            "filter": filter,
                         })
                     },
                     &mut sizes,
@@ -220,7 +231,7 @@ impl Client {
                 }
                 // Empty repos are kept: the hide-empty-repos filter decides
                 // their visibility client-side, so toggling needs no refetch.
-                out.push(self.finish_repo(org, repo, &states, &mut sizes).await?);
+                out.push(self.finish_repo(org, repo, filter, &mut sizes).await?);
             }
 
             if !repos.page_info.has_next_page {
@@ -246,9 +257,25 @@ impl Client {
         &self,
         org: &str,
         repo: &str,
-        include_closed: bool,
+        scope: &FetchScope,
     ) -> Result<Option<RepoIssues>> {
-        let states = issue_states(include_closed);
+        match self.repo_issues_at(org, repo, &issue_filter(scope)).await {
+            Err(e) if scope.assignee.is_some() && is_unknown_assignee(&e) => {
+                let fallback = without_assignee(scope);
+                self.repo_issues_at(org, repo, &issue_filter(&fallback))
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// [`Self::repo_issues`] with the `filterBy` value already built.
+    async fn repo_issues_at(
+        &self,
+        org: &str,
+        repo: &str,
+        filter: &Value,
+    ) -> Result<Option<RepoIssues>> {
         let mut sizes = PageSizes {
             repos: REPOS_PAGE,
             issues: ISSUES_PAGE,
@@ -261,7 +288,7 @@ impl Client {
                         "owner": org,
                         "name": repo,
                         "issuesFirst": sizes.issues,
-                        "states": states,
+                        "filter": filter,
                     })
                 },
                 &mut sizes,
@@ -280,9 +307,35 @@ impl Client {
         if node.is_archived || !node.has_issues_enabled {
             return Ok(None);
         }
-        let mut out = vec![self.finish_repo(org, node, &states, &mut sizes).await?];
+        let mut out = vec![self.finish_repo(org, node, filter, &mut sizes).await?];
         self.hydrate_issues(&mut out).await?;
         Ok(out.pop())
+    }
+
+    /// Names of the repos `org_issues` would return, without issues (#230):
+    /// owned, not archived, issues enabled. One cheap page per 100 repos.
+    pub async fn repo_names(&self, org: &str) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let data = self
+                .graphql(REPO_NAMES_QUERY, json!({ "org": org, "cursor": cursor }))
+                .await?;
+            if data.get("repositoryOwner").is_some_and(Value::is_null) {
+                return Err(ProviderError::Shape(format!("no such org or user: {org}")));
+            }
+            let conn: RepoNamesConn = parse_at(&data, &["repositoryOwner", "repositories"])?;
+            names.extend(
+                conn.nodes
+                    .into_iter()
+                    .filter(|r| r.has_issues_enabled)
+                    .map(|r| r.name),
+            );
+            if !conn.page_info.has_next_page {
+                return Ok(names);
+            }
+            cursor = conn.page_info.end_cursor;
+        }
     }
 
     /// One issue by node id with its labels and assignees (#229). `Ok(None)`
@@ -310,7 +363,7 @@ impl Client {
         &self,
         owner: &str,
         repo: RepoNode,
-        states: &[&str],
+        filter: &Value,
         sizes: &mut PageSizes,
     ) -> Result<RepoIssues> {
         let mut issues: Vec<Issue> = repo.issues.nodes.iter().map(IssueNode::to_issue).collect();
@@ -325,7 +378,7 @@ impl Client {
                             "name": repo.name,
                             "issuesFirst": sizes.issues,
                             "issueCursor": page.end_cursor,
-                            "states": states,
+                            "filter": filter,
                         })
                     },
                     sizes,
@@ -734,6 +787,42 @@ fn issue_states(include_closed: bool) -> Vec<&'static str> {
     }
 }
 
+/// The `IssueFilters` value for `scope` (#230): states always, the rest only
+/// when set. Every field is case-insensitive at GitHub (checked live), which
+/// matches the client-side filters it pre-empts.
+fn issue_filter(scope: &FetchScope) -> Value {
+    let mut f = json!({ "states": issue_states(scope.include_closed) });
+    if let Some(login) = &scope.assignee {
+        f["assignee"] = json!(login);
+    }
+    if let Some(login) = &scope.author {
+        f["createdBy"] = json!(login);
+    }
+    if let Some(since) = scope.updated_since {
+        f["since"] = json!(since.to_rfc3339());
+    }
+    if !scope.labels.is_empty() {
+        f["labels"] = json!(scope.labels);
+    }
+    f
+}
+
+/// GitHub fails the whole query when `filterBy.assignee` names a login that
+/// does not exist (`UNPROCESSABLE`), where a real non-collaborator just
+/// matches nothing (both checked live). `createdBy` never errors.
+fn is_unknown_assignee(e: &ProviderError) -> bool {
+    matches!(e, ProviderError::Api(m) if m.contains("Could not find an assignee"))
+}
+
+/// `scope` without its assignee: a superset, so still correct to filter
+/// client-side, for retrying after [`is_unknown_assignee`].
+fn without_assignee(scope: &FetchScope) -> FetchScope {
+    FetchScope {
+        assignee: None,
+        ..scope.clone()
+    }
+}
+
 fn login_at(v: &Value, ptr: &str) -> String {
     v.pointer(ptr)
         .and_then(Value::as_str)
@@ -773,6 +862,21 @@ struct RepoNode {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoNamesConn {
+    page_info: PageInfo,
+    nodes: Vec<RepoNameNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoNameNode {
+    name: String,
+    #[serde(default = "default_true")]
+    has_issues_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -978,14 +1082,14 @@ const UPDATE_ISSUE_MUTATION: &str = concat!(
 );
 
 const ORG_ISSUES_QUERY: &str = concat!(
-    "query($org: String!, $reposFirst: Int!, $issuesFirst: Int!, $repoCursor: String, $states: [IssueState!]) {
+    "query($org: String!, $reposFirst: Int!, $issuesFirst: Int!, $repoCursor: String, $filter: IssueFilters) {
        rateLimit { cost }
        repositoryOwner(login: $org) {
          repositories(first: $reposFirst, after: $repoCursor, ownerAffiliations: OWNER, isArchived: false, orderBy: {field: NAME, direction: ASC}) {
            pageInfo { hasNextPage endCursor }
            nodes {
              name url hasIssuesEnabled
-             issues(first: $issuesFirst, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
+             issues(first: $issuesFirst, filterBy: $filter, orderBy: {field: UPDATED_AT, direction: DESC}) {
                pageInfo { hasNextPage endCursor }
                nodes { ",
     issue_fields!(),
@@ -998,10 +1102,10 @@ const ORG_ISSUES_QUERY: &str = concat!(
 );
 
 const REPO_ISSUES_QUERY: &str = concat!(
-    "query($owner: String!, $name: String!, $issuesFirst: Int!, $issueCursor: String, $states: [IssueState!]) {
+    "query($owner: String!, $name: String!, $issuesFirst: Int!, $issueCursor: String, $filter: IssueFilters) {
        rateLimit { cost }
        repository(owner: $owner, name: $name) {
-         issues(first: $issuesFirst, after: $issueCursor, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
+         issues(first: $issuesFirst, after: $issueCursor, filterBy: $filter, orderBy: {field: UPDATED_AT, direction: DESC}) {
            pageInfo { hasNextPage endCursor }
            nodes { ",
     issue_fields!(),
@@ -1015,11 +1119,11 @@ const REPO_ISSUES_QUERY: &str = concat!(
 /// repo node for a single named repo, plus `isArchived`, which the bulk query
 /// filters on instead of selecting. One connection, scalars only.
 const REPO_QUERY: &str = concat!(
-    "query($owner: String!, $name: String!, $issuesFirst: Int!, $states: [IssueState!]) {
+    "query($owner: String!, $name: String!, $issuesFirst: Int!, $filter: IssueFilters) {
        rateLimit { cost }
        repository(owner: $owner, name: $name) {
          name url hasIssuesEnabled isArchived
-         issues(first: $issuesFirst, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
+         issues(first: $issuesFirst, filterBy: $filter, orderBy: {field: UPDATED_AT, direction: DESC}) {
            pageInfo { hasNextPage endCursor }
            nodes { ",
     issue_fields!(),
@@ -1028,6 +1132,18 @@ const REPO_QUERY: &str = concat!(
        }
      }"
 );
+
+/// The repos `ORG_ISSUES_QUERY` walks, names only (#230). No connections
+/// inside a repo node, so a page costs 1 point.
+const REPO_NAMES_QUERY: &str = "query($org: String!, $cursor: String) {
+  rateLimit { cost }
+  repositoryOwner(login: $org) {
+    repositories(first: 100, after: $cursor, ownerAffiliations: OWNER, isArchived: false, orderBy: {field: NAME, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { name hasIssuesEnabled }
+    }
+  }
+}";
 
 /// One issue as it stands, with the same label/assignee window as a hydrated
 /// bulk issue (#229). Connections on a single node are not billed per slot.
@@ -1462,8 +1578,8 @@ fn map_pr_lookup(pr: PrRef, data: PrRepoResponse) -> Result<PrLookup> {
 /// each call goes to the real implementation, not back into the trait.
 #[async_trait::async_trait]
 impl crate::provider::IssueProvider for Client {
-    async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
-        self.org_issues(org, include_closed).await
+    async fn org_issues(&self, org: &str, scope: &FetchScope) -> Result<Vec<RepoIssues>> {
+        self.org_issues(org, scope).await
     }
 
     async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
@@ -1473,9 +1589,12 @@ impl crate::provider::IssueProvider for Client {
         &self,
         org: &str,
         repo: &str,
-        include_closed: bool,
+        scope: &FetchScope,
     ) -> Result<Option<RepoIssues>> {
-        self.repo_issues(org, repo, include_closed).await
+        self.repo_issues(org, repo, scope).await
+    }
+    async fn repo_names(&self, org: &str) -> Result<Vec<String>> {
+        self.repo_names(org).await
     }
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.comments(issue_id).await
@@ -1878,7 +1997,7 @@ mod tests {
     #[test]
     fn repo_query_selects_what_the_bulk_query_filters_on() {
         assert!(REPO_QUERY.contains("hasIssuesEnabled isArchived"));
-        assert!(REPO_QUERY.contains("states: $states"));
+        assert!(REPO_QUERY.contains("filterBy: $filter"));
         assert!(REPO_QUERY.contains(issue_fields!()));
     }
 
@@ -1905,6 +2024,71 @@ mod tests {
         assert_eq!(issue.number, 7);
         assert_eq!(issue.assignees, vec!["pgmac"]);
         assert_eq!(issue.labels[0].name, "bug");
+    }
+
+    #[test]
+    fn an_empty_scope_filters_on_state_only() {
+        assert_eq!(
+            issue_filter(&FetchScope::default()),
+            serde_json::json!({ "states": ["OPEN"] })
+        );
+    }
+
+    #[test]
+    fn a_full_scope_maps_to_issue_filters() {
+        let scope = FetchScope {
+            include_closed: true,
+            assignee: Some("pgmac".into()),
+            author: Some("someone".into()),
+            updated_since: Some("2026-10-01T00:00:00Z".parse().unwrap()),
+            labels: vec!["high".into(), "priority:high".into()],
+        };
+        assert_eq!(
+            issue_filter(&scope),
+            serde_json::json!({
+                "states": ["OPEN", "CLOSED"],
+                "assignee": "pgmac",
+                "createdBy": "someone",
+                "since": "2026-10-01T00:00:00+00:00",
+                "labels": ["high", "priority:high"],
+            })
+        );
+    }
+
+    /// The live error for `filterBy: {assignee: "<no such login>"}`.
+    #[test]
+    fn only_the_unknown_assignee_error_triggers_the_fallback() {
+        let unknown = ProviderError::Api(
+            "Could not find an assignee with the login 'no-such-user-zz9q'.".into(),
+        );
+        assert!(is_unknown_assignee(&unknown));
+        assert!(!is_unknown_assignee(&ProviderError::Api("boom".into())));
+        assert!(!is_unknown_assignee(&ProviderError::NotFound(
+            "Could not find an assignee".into()
+        )));
+        let fallback = without_assignee(&FetchScope {
+            assignee: Some("x".into()),
+            labels: vec!["l".into()],
+            ..FetchScope::default()
+        });
+        assert_eq!(fallback.assignee, None);
+        assert_eq!(fallback.labels, vec!["l"]);
+    }
+
+    #[test]
+    fn issue_queries_filter_through_filter_by() {
+        for query in [ORG_ISSUES_QUERY, REPO_ISSUES_QUERY, REPO_QUERY] {
+            assert!(query.contains("$filter: IssueFilters"), "{query}");
+            assert!(query.contains("filterBy: $filter"), "{query}");
+            assert!(!query.contains("states: $states"), "{query}");
+        }
+    }
+
+    #[test]
+    fn repo_names_query_walks_the_same_repos_without_issues() {
+        assert!(REPO_NAMES_QUERY.contains("ownerAffiliations: OWNER, isArchived: false"));
+        assert!(REPO_NAMES_QUERY.contains("nodes { name hasIssuesEnabled }"));
+        assert!(!REPO_NAMES_QUERY.contains("issues("));
     }
 
     #[test]

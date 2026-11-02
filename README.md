@@ -79,7 +79,7 @@ Not available on Jira: the linked-PR summary (`P`) and workflow runs (`R`), whic
 
 ### Starting inside a repository clone
 
-When run from a directory inside a git repository whose `origin` remote points at github.com, `gh-issues` browses that remote's owner with the repo filter pre-set to the repository — so you see just that repo's issues immediately. Clear the filter (`F` → `c`, or empty the repo field) to see the whole organisation again.
+When run from a directory inside a git repository whose `origin` remote points at github.com, `gh-issues` browses that remote's owner with the repo filter pre-set to the repository — so you see just that repo's issues immediately. Only that repo is fetched, so startup is quick in a large org. Clear the filter (`F` → `c`, or empty the repo field) to see the whole organisation again; the org is fetched then.
 
 Resolution order for what to browse:
 
@@ -172,6 +172,10 @@ A harness runs in the current directory's repo when that is the issue's repo; ot
 ### Refreshing
 
 `r` refetches only what is selected: one issue (and its comment thread, if the detail pane is open), or one repo's issues when a repo header is selected. An issue or repo that no longer exists is removed from the list, and the status line says so. `Ctrl+R` refetches the filtered scope: just the repo when the repo filter names one exactly (as it does when you start inside a clone), otherwise the whole org. To refresh everything while a repo filter is on, clear the filters (`F` then `c`) first. A refresh key pressed while another refresh is running does nothing. Full detail: [docs/granular-refresh.md](docs/granular-refresh.md).
+
+### Filters and fetching
+
+On GitHub, the state, assignee, author and "updated after" filters, plus the priority **or** status filter (not both at once), are sent with the fetch, so a refresh brings back only matching issues. Narrowing a filter applies instantly from what is already loaded. Widening one past what was fetched (clearing the assignee, an earlier date, showing closed issues) refetches once by itself, with the status line `filters widened, refreshing…`. What is shown is always decided by the filters in the app, so the list is the same either way, just smaller to fetch. The filter pickers offer every repo, person and label seen this session, not only those in the current results. Linear and Jira fetch as before, filtering in the app. Full detail: [docs/filter-pushdown.md](docs/filter-pushdown.md).
 
 ### Auto-refresh
 
@@ -309,9 +313,9 @@ To create the *first* issue in a repo that shows no issues, filter to that repo 
 
 ### Moving an issue to another repo
 
-`m` moves the selected issue to a different repo in the same org: it opens a picker of every other loaded repo (type-ahead filters it), then a confirmation popup naming the destination and the move's side effects — the issue gets a new number, and everyone mentioned in it is notified. `Esc`/`n` cancels either step without mutating anything.
+`m` moves the selected issue to a different repo in the same org: it opens a picker of every other repo in the org (type-ahead filters it; the first `m` of a session fetches the repo list, showing `loading repos…`), then a confirmation popup naming the destination and the move's side effects — the issue gets a new number, and everyone mentioned in it is notified. `Esc`/`n` cancels either step without mutating anything.
 
-GitHub only allows same-owner transfers — the picker's targets are exactly the repos already loaded for this org, so there's nothing to fetch. Labels missing from the target repo are recreated there (`priority:*`/`status:*` included) so the app's sort/colour/filter keeps working on the moved issue; recreated labels get GitHub's default colour rather than the source's. On Linear, `m` moves the issue to another team instead — see the [Linear backend](#linear-backend) table for what that remaps. Not available on Jira — see the [Jira backend](#jira-backend) section.
+GitHub only allows same-owner transfers, so the targets are the org's own repos (owned, not archived, issues enabled), whether or not they are loaded. Labels missing from the target repo are recreated there (`priority:*`/`status:*` included) so the app's sort/colour/filter keeps working on the moved issue; recreated labels get GitHub's default colour rather than the source's. On Linear, `m` moves the issue to another team instead — see the [Linear backend](#linear-backend) table for what that remaps. Not available on Jira — see the [Jira backend](#jira-backend) section.
 
 The selection does not follow the moved issue after the refetch — GitHub does not document whether a transferred issue keeps its id, so the cursor falls back to the same clamped-index behaviour as any issue that vanishes from view. The status line names the destination instead (`moved to <repo>`).
 

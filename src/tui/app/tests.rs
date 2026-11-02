@@ -2966,7 +2966,11 @@ fn filter_picker_interleaves_inferred_labels_by_rank_convention_first_on_a_tie()
         ("bug", None),
     ]);
     // Give repo b a rank-1 label so the tie-break with `low` is exercised.
-    app.repos[1].issues.push(labelled(6, &["P3"]));
+    // Pushed by hand, so it must reach the picker vocabulary by hand too
+    // (#230): real data arrives through `set_data`, which does both.
+    let extra = labelled(6, &["P3"]);
+    app.vocab.absorb_issue(&extra);
+    app.repos[1].issues.push(extra);
     app.merge_label_ranks([("P3".to_string(), Some(1))].into());
 
     assert_eq!(

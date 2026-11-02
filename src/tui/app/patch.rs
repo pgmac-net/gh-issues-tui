@@ -32,6 +32,7 @@ impl App {
             return false;
         };
         let id = issue.id.clone();
+        self.vocab.absorb_issue(&issue);
         *slot = issue;
         // The judgement was derived from the old title/body/labels.
         self.invalidate_readiness(&id);
