@@ -136,24 +136,37 @@ pub enum AppEvent {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    client: Provider,
-    org: String,
-    initial_repo: Option<String>,
-    include_closed: bool,
-    default_collapsed: bool,
-    refresh_interval: u64,
-    hide_empty_repos: bool,
-    copy_format: String,
-    theme: Theme,
-    harness: HarnessSettings,
-    typesafe: crate::typesafe::Consents,
-) -> Result<()> {
+/// Everything startup hands the event loop, resolved from flags and config in
+/// `main` (#232). One struct instead of eleven forwarded arguments.
+pub struct RunConfig {
+    pub org: String,
+    /// Repo filter detected from the clone the app was started in.
+    pub initial_repo: Option<String>,
+    /// `--all`: want closed issues from the first fetch.
+    pub include_closed: bool,
+    pub default_collapsed: bool,
+    /// Auto-refresh period in seconds; 0 disables it.
+    pub refresh_interval: u64,
+    pub hide_empty_repos: bool,
+    pub copy_format: String,
+    pub theme: Theme,
+    pub harness: HarnessSettings,
+    pub typesafe: crate::typesafe::Consents,
+}
+
+pub async fn run(client: Provider, config: RunConfig) -> Result<()> {
     let terminal = ratatui::init();
-    let result = event_loop(
-        terminal,
-        client,
+    let result = event_loop(terminal, client, config).await;
+    ratatui::restore();
+    result
+}
+
+async fn event_loop(
+    mut terminal: DefaultTerminal,
+    client: Provider,
+    config: RunConfig,
+) -> Result<()> {
+    let RunConfig {
         org,
         initial_repo,
         include_closed,
@@ -162,29 +175,9 @@ pub async fn run(
         hide_empty_repos,
         copy_format,
         theme,
-        harness,
+        harness: harness_settings,
         typesafe,
-    )
-    .await;
-    ratatui::restore();
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn event_loop(
-    mut terminal: DefaultTerminal,
-    client: Provider,
-    org: String,
-    initial_repo: Option<String>,
-    include_closed: bool,
-    default_collapsed: bool,
-    refresh_interval: u64,
-    hide_empty_repos: bool,
-    copy_format: String,
-    theme: Theme,
-    harness_settings: HarnessSettings,
-    typesafe: crate::typesafe::Consents,
-) -> Result<()> {
+    } = config;
     let mut app = App::new(
         org,
         initial_repo,
