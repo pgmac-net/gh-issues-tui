@@ -209,13 +209,17 @@ code_keyword = "#fb4934"  # keywords, and json/yaml/toml keys
 code_string  = "#b8bb26"  # string literals
 code_comment = "#928374"  # comments
 code_number  = "#d3869b"  # numeric literals
+runs_eta      = "#fabd2f" # runs tab: time left and ETA clock (default: warning)
+runs_eta_bold = true      # runs tab: bold forecast (default: true)
+runs_elapsed  = "#928374" # runs tab: time taken (default: dim)
+runs_progress = "#b8bb26" # runs tab: done/total counts, 1/2 jobs (default: open)
 
 [color_profiles.mono]
 accent = "white"
 selected_bg = "8"
 ```
 
-Every entry is optional — unset entries keep the built-in colour. Values accept ratatui colour names (`"cyan"`, `"lightgreen"`, `"dark gray"`), hex (`"#2d5aa0"`), or ANSI indexes (`"8"`). Naming a profile that isn't defined is a startup error listing the profiles that are.
+Every entry is optional — unset entries keep the built-in colour. The four `runs_*` entries follow the colour named in their comment as your profile sets it, so a profile that recolours `warning`, `dim` or `open` gets a matching runs tab without setting them. Values accept ratatui colour names (`"cyan"`, `"lightgreen"`, `"dark gray"`), hex (`"#2d5aa0"`), or ANSI indexes (`"8"`). Naming a profile that isn't defined is a startup error listing the profiles that are.
 
 #### Syntax highlighting
 

@@ -42,6 +42,16 @@ pub struct Theme {
     pub code_comment: Color,
     /// Numeric literals in a fenced block.
     pub code_number: Color,
+    /// The runs tab's forecast figures: time remaining and the ETA clock
+    /// (#240). Follows `warning` unless set.
+    pub runs_eta: Color,
+    /// Whether the forecast is also bold.
+    pub runs_eta_bold: bool,
+    /// The runs tab's time-taken figures. Follows `dim` unless set.
+    pub runs_elapsed: Color,
+    /// The runs tab's done/total counts (`1/2` jobs, `3/5` steps). Follows
+    /// `open` unless set.
+    pub runs_progress: Color,
 }
 
 impl Default for Theme {
@@ -66,6 +76,12 @@ impl Default for Theme {
             code_string: Color::Rgb(0x98, 0xc3, 0x79),
             code_comment: Color::Rgb(0x7f, 0x84, 0x8e),
             code_number: Color::Rgb(0xd1, 0x9a, 0x66),
+            // Each follows the colour it is named for, so a profile that
+            // recolours `warning`, `dim` or `open` carries these along.
+            runs_eta: Color::Yellow,
+            runs_eta_bold: true,
+            runs_elapsed: Color::DarkGray,
+            runs_progress: Color::Green,
         }
     }
 }
@@ -93,23 +109,34 @@ pub struct ColorProfile {
     pub code_string: Option<Color>,
     pub code_comment: Option<Color>,
     pub code_number: Option<Color>,
+    /// Runs tab forecast colour (#240); defaults to the profile's `warning`.
+    pub runs_eta: Option<Color>,
+    /// Whether the forecast is bold; defaults to true.
+    pub runs_eta_bold: Option<bool>,
+    /// Runs tab time-taken colour; defaults to the profile's `dim`.
+    pub runs_elapsed: Option<Color>,
+    /// Runs tab done/total counts; defaults to the profile's `open`.
+    pub runs_progress: Option<Color>,
 }
 
 impl Theme {
     /// The default theme with a profile's overrides applied.
     pub fn with_profile(profile: &ColorProfile) -> Self {
         let d = Theme::default();
+        let warning = profile.warning.unwrap_or(d.warning);
+        let dim = profile.dim.unwrap_or(d.dim);
+        let open = profile.open.unwrap_or(d.open);
         Self {
             accent: profile.accent.unwrap_or(d.accent),
-            dim: profile.dim.unwrap_or(d.dim),
+            dim,
             selected_bg: profile.selected_bg.unwrap_or(d.selected_bg),
             selected_bg_unfocused: profile
                 .selected_bg_unfocused
                 .unwrap_or(d.selected_bg_unfocused),
-            open: profile.open.unwrap_or(d.open),
+            open,
             closed: profile.closed.unwrap_or(d.closed),
             assignee: profile.assignee.unwrap_or(d.assignee),
-            warning: profile.warning.unwrap_or(d.warning),
+            warning,
             error: profile.error.unwrap_or(d.error),
             label_fallback: profile.label_fallback.unwrap_or(d.label_fallback),
             code_bg: profile.code_bg.unwrap_or(d.code_bg),
@@ -118,6 +145,10 @@ impl Theme {
             code_string: profile.code_string.unwrap_or(d.code_string),
             code_comment: profile.code_comment.unwrap_or(d.code_comment),
             code_number: profile.code_number.unwrap_or(d.code_number),
+            runs_eta: profile.runs_eta.unwrap_or(warning),
+            runs_eta_bold: profile.runs_eta_bold.unwrap_or(d.runs_eta_bold),
+            runs_elapsed: profile.runs_elapsed.unwrap_or(dim),
+            runs_progress: profile.runs_progress.unwrap_or(open),
         }
     }
 }
@@ -183,6 +214,55 @@ mod tests {
         // Untouched code keys keep their defaults.
         assert_eq!(theme.code_fg, d.code_fg);
         assert_eq!(theme.code_bg, d.code_bg);
+    }
+
+    /// #240: the runs figures start as the colours they are named for.
+    #[test]
+    fn runs_colours_default_to_the_colours_they_follow() {
+        let t = Theme::default();
+        assert_eq!(t.runs_eta, t.warning);
+        assert_eq!(t.runs_elapsed, t.dim);
+        assert_eq!(t.runs_progress, t.open);
+        assert!(t.runs_eta_bold);
+    }
+
+    #[test]
+    fn runs_colours_follow_a_profile_that_recolours_what_they_follow() {
+        let profile: ColorProfile = toml::from_str(
+            "warning = \"#fabd2f\"\n\
+             dim     = \"#928374\"\n\
+             open    = \"#b8bb26\"\n",
+        )
+        .unwrap();
+        let t = Theme::with_profile(&profile);
+        assert_eq!(t.runs_eta, Color::Rgb(0xfa, 0xbd, 0x2f));
+        assert_eq!(t.runs_elapsed, Color::Rgb(0x92, 0x83, 0x74));
+        assert_eq!(t.runs_progress, Color::Rgb(0xb8, 0xbb, 0x26));
+    }
+
+    #[test]
+    fn runs_colours_override_independently_and_bold_turns_off() {
+        let profile: ColorProfile = toml::from_str(
+            "warning       = \"#fabd2f\"\n\
+             runs_eta      = \"#ff0000\"\n\
+             runs_eta_bold = false\n\
+             runs_progress = \"#00ff00\"\n",
+        )
+        .unwrap();
+        let t = Theme::with_profile(&profile);
+        assert_eq!(t.runs_eta, Color::Rgb(0xff, 0x00, 0x00));
+        assert_eq!(
+            t.warning,
+            Color::Rgb(0xfa, 0xbd, 0x2f),
+            "warning is its own"
+        );
+        assert!(!t.runs_eta_bold);
+        assert_eq!(t.runs_progress, Color::Rgb(0x00, 0xff, 0x00));
+        assert_eq!(
+            t.runs_elapsed,
+            Theme::default().dim,
+            "untouched key keeps its fallback"
+        );
     }
 
     #[test]

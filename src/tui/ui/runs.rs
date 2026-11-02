@@ -102,12 +102,78 @@ fn footnote(app: &App) -> Option<String> {
         .map(|e| format!(" refresh failed: {e} "))
 }
 
+/// What a right-hand figure is, which decides its colour (#240).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fig {
+    /// Everything that is not one of the below: conclusion words, `?`,
+    /// `no ETA`, PR summaries. Also the separators between figures.
+    Dim,
+    /// `blocked +1m` and `overdue`: a problem, not a forecast.
+    Warning,
+    /// Time remaining and the ETA clock: the forecast.
+    Eta,
+    /// A time taken, live or finished.
+    Elapsed,
+    /// A done/total count: `1/2` jobs, `3/5` steps.
+    Progress,
+}
+
+/// One figure on the right of a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seg {
+    fig: Fig,
+    text: String,
+}
+
+fn seg(fig: Fig, text: impl Into<String>) -> Seg {
+    Seg {
+        fig,
+        text: text.into(),
+    }
+}
+
+/// Drawn between figures, always dim so the figures stand out from it.
+const SEP: &str = " · ";
+
+/// The figures as the text they draw: joined by [`SEP`].
+fn flat(figures: &[Seg]) -> String {
+    figures
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(SEP)
+}
+
+/// The figures as styled spans, with dim separators between them.
+fn spans(figures: &[Seg], t: &Theme) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    for (i, s) in figures.iter().enumerate() {
+        if i > 0 {
+            out.push(Span::styled(SEP, fig_style(Fig::Dim, t)));
+        }
+        out.push(Span::styled(s.text.clone(), fig_style(s.fig, t)));
+    }
+    out
+}
+
+fn fig_style(fig: Fig, t: &Theme) -> Style {
+    let fg = |c: Color| Style::default().fg(c);
+    match fig {
+        Fig::Dim => fg(t.dim),
+        Fig::Warning => fg(t.warning),
+        Fig::Elapsed => fg(t.runs_elapsed),
+        Fig::Progress => fg(t.runs_progress),
+        Fig::Eta if t.runs_eta_bold => fg(t.runs_eta).add_modifier(Modifier::BOLD),
+        Fig::Eta => fg(t.runs_eta),
+    }
+}
+
 /// A row's text, before fitting it to the width.
 struct RowText {
     glyph: &'static str,
     colour: Color,
     name: String,
-    right: String,
+    right: Vec<Seg>,
 }
 
 fn row_line(
@@ -125,7 +191,7 @@ fn row_line(
         (true, true) => "▾ ",
         (true, false) => "▸ ",
     };
-    let right_w = text.right.chars().count();
+    let right_w = flat(&text.right).chars().count();
     let used = indent.len() + 2 + text.glyph.chars().count() + 1;
     let name_w = width.saturating_sub(used + right_w + 1);
     let name = fit(&text.name, name_w);
@@ -137,13 +203,14 @@ fn row_line(
         Highlight::Focused => name_style = name_style.add_modifier(Modifier::REVERSED),
         Highlight::Unfocused => name_style = name_style.bg(t.selected_bg_unfocused),
     }
-    Line::from(vec![
+    let mut line = vec![
         Span::raw(format!("{indent}{marker}")),
         Span::styled(format!("{} ", text.glyph), Style::default().fg(text.colour)),
         Span::styled(name, name_style),
         Span::raw(" ".repeat(pad)),
-        Span::styled(text.right, Style::default().fg(t.dim)),
-    ])
+    ];
+    line.extend(spans(&text.right, t));
+    Line::from(line)
 }
 
 fn row_text(data: &RunsData, row: &RunRow, current_repo: Option<&str>, t: &Theme) -> RowText {
@@ -151,7 +218,7 @@ fn row_text(data: &RunsData, row: &RunRow, current_repo: Option<&str>, t: &Theme
         glyph: " ",
         colour,
         name,
-        right: String::new(),
+        right: Vec::new(),
     };
     let runs_of = |pr: usize| data.prs[pr].runs.as_deref().unwrap_or(&[]);
     match row.kind {
@@ -206,7 +273,7 @@ fn pr_text(entry: &PrRuns, data: &RunsData, current_repo: Option<&str>, t: &Them
             glyph: "✗",
             colour: t.error,
             name,
-            right: "unreadable".into(),
+            right: vec![seg(Fig::Dim, "unreadable")],
         };
     };
     let active = runs.iter().filter(|r| r.is_active()).count();
@@ -226,16 +293,18 @@ fn pr_text(entry: &PrRuns, data: &RunsData, current_repo: Option<&str>, t: &Them
         .filter(|e| e.history_runs > 0)
         .map(|e| e.remaining)
         .max();
+    // Only a forecast is styled as one; counts like `2/3 failed` stay dim,
+    // because the glyph already says the PR's state (#240).
     let summary = match (active, failed, longest) {
-        (0, 0, _) => plural(runs.len(), "run"),
-        (0, _, _) => format!("{failed}/{} failed", runs.len()),
-        (_, _, Some(left)) => format!("~{}", fmt_dur(left)),
-        (_, _, None) => format!("{active}/{} running", runs.len()),
+        (0, 0, _) => seg(Fig::Dim, plural(runs.len(), "run")),
+        (0, _, _) => seg(Fig::Dim, format!("{failed}/{} failed", runs.len())),
+        (_, _, Some(left)) => seg(Fig::Eta, format!("~{}", fmt_dur(left))),
+        (_, _, None) => seg(Fig::Dim, format!("{active}/{} running", runs.len())),
     };
     let right = if pr.merged() {
-        format!("merged · {summary}")
+        vec![seg(Fig::Dim, "merged"), summary]
     } else {
-        summary
+        vec![summary]
     };
     RowText {
         glyph,
@@ -258,8 +327,12 @@ fn run_text(run: &ActionsRun, estimate: Option<&RunEstimate>, t: &Theme) -> RowT
     let right = match estimate {
         Some(e) => {
             let done = run.jobs.iter().filter(|j| j.status == "completed").count();
-            let progress = format!("{done}/{}", run.jobs.len());
-            format!("{progress} · {} · {}", fmt_dur(e.elapsed), eta_text(e))
+            let mut right = vec![
+                seg(Fig::Progress, format!("{done}/{}", run.jobs.len())),
+                seg(Fig::Elapsed, fmt_dur(e.elapsed)),
+            ];
+            right.extend(eta_figures(e));
+            right
         }
         None => {
             let took = run
@@ -278,32 +351,39 @@ fn run_text(run: &ActionsRun, estimate: Option<&RunEstimate>, t: &Theme) -> RowT
     }
 }
 
-/// The run's forecast, in gh-eta's vocabulary.
-fn eta_text(e: &RunEstimate) -> String {
+/// The run's forecast, in gh-eta's vocabulary: remaining time and the ETA
+/// clock are forecasts (`Eta`); `blocked` is a problem (`Warning`); having no
+/// history to forecast from is neither (`Dim`).
+fn eta_figures(e: &RunEstimate) -> Vec<Seg> {
     if e.history_runs == 0 {
-        return "no ETA".into();
+        return vec![seg(Fig::Dim, "no ETA")];
     }
     if e.blocked {
-        return match e.remaining > TimeDelta::zero() {
-            true => format!("blocked +{}", fmt_dur(e.remaining)),
-            false => "blocked".into(),
-        };
+        return vec![seg(
+            Fig::Warning,
+            match e.remaining > TimeDelta::zero() {
+                true => format!("blocked +{}", fmt_dur(e.remaining)),
+                false => "blocked".into(),
+            },
+        )];
     }
     let partial = if e.partial { "+" } else { "" };
-    format!(
-        "~{}{partial} · ETA {}",
-        fmt_dur(e.remaining),
-        crate::localtime::fmt_time(e.eta)
-    )
+    vec![
+        seg(Fig::Eta, format!("~{}{partial}", fmt_dur(e.remaining))),
+        seg(
+            Fig::Eta,
+            format!("ETA {}", crate::localtime::fmt_time(e.eta)),
+        ),
+    ]
 }
 
-/// A finished item's figures: how long it took, and its conclusion unless the
-/// glyph already says all there is.
-fn finished(conclusion: Option<&str>, took: &str) -> String {
+/// A finished item's figures: its conclusion unless the glyph already says all
+/// there is, then how long it took.
+fn finished(conclusion: Option<&str>, took: &str) -> Vec<Seg> {
+    let took = (!took.is_empty()).then(|| seg(Fig::Elapsed, took));
     match conclusion {
-        Some("success") | None => took.to_string(),
-        Some(c) if took.is_empty() => c.to_string(),
-        Some(c) => format!("{c} · {took}"),
+        Some("success") | None => took.into_iter().collect(),
+        Some(c) => std::iter::once(seg(Fig::Dim, c)).chain(took).collect(),
     }
 }
 
@@ -314,23 +394,32 @@ fn job_text(
     t: &Theme,
 ) -> RowText {
     let (glyph, colour) = status_mark(&job.status, job.conclusion.as_deref(), t);
+    let elapsed = |e: &JobEstimate| seg(Fig::Elapsed, fmt_dur(e.elapsed));
     let right = match estimate.map(|e| (e, e.state)) {
         Some((e, JobState::Running)) => {
-            let steps = if !job.steps.is_empty() {
+            let mut right = Vec::new();
+            if !job.steps.is_empty() {
                 let done = job.steps.iter().filter(|s| s.status == "completed").count();
-                format!("{done}/{} · ", job.steps.len())
-            } else {
-                String::new()
-            };
-            format!("{steps}{} · ~{}", fmt_dur(e.elapsed), fmt_dur(e.remaining))
+                right.push(seg(Fig::Progress, format!("{done}/{}", job.steps.len())));
+            }
+            right.push(elapsed(e));
+            right.push(seg(Fig::Eta, format!("~{}", fmt_dur(e.remaining))));
+            right
         }
-        Some((e, JobState::Overdue)) => format!("{} · overdue", fmt_dur(e.elapsed)),
+        Some((e, JobState::Overdue)) => vec![elapsed(e), seg(Fig::Warning, "overdue")],
         Some((e, JobState::Unknown)) if job.status == "in_progress" => {
-            format!("{} · ?", fmt_dur(e.elapsed))
+            vec![elapsed(e), seg(Fig::Dim, "?")]
         }
-        Some((_, JobState::Unknown)) => "?".into(),
-        Some((e, JobState::Blocked)) => format!("blocked +{}", fmt_dur(e.remaining)),
-        Some((e, JobState::Pending)) => format!("~{}", fmt_dur(e.remaining)),
+        Some((_, JobState::Unknown)) => vec![seg(Fig::Dim, "?")],
+        Some((e, JobState::Blocked)) => {
+            vec![seg(
+                Fig::Warning,
+                format!("blocked +{}", fmt_dur(e.remaining)),
+            )]
+        }
+        Some((e, JobState::Pending)) => {
+            vec![seg(Fig::Eta, format!("~{}", fmt_dur(e.remaining)))]
+        }
         Some((_, JobState::Done)) | None => times(
             job.started_at,
             job.completed_at,
@@ -368,7 +457,7 @@ fn times(
     completed: Option<chrono::DateTime<chrono::Utc>>,
     conclusion: Option<&str>,
     data: &RunsData,
-) -> String {
+) -> Vec<Seg> {
     let took = started
         .map(|start| fmt_dur(completed.unwrap_or(data.as_of) - start))
         .unwrap_or_default();
@@ -592,23 +681,23 @@ mod tests {
             &Default::default(),
             at(),
         );
-        assert_eq!(eta_text(&e), "no ETA");
+        assert_eq!(flat(&eta_figures(&e)), "no ETA");
         e.history_runs = 3;
         e.remaining = TimeDelta::seconds(90);
         e.eta = at() + e.remaining;
         let time = crate::localtime::fmt_time(e.eta);
-        assert_eq!(eta_text(&e), format!("~1m30s · ETA {time}"));
+        assert_eq!(flat(&eta_figures(&e)), format!("~1m30s · ETA {time}"));
         e.partial = true;
-        assert_eq!(eta_text(&e), format!("~1m30s+ · ETA {time}"));
+        assert_eq!(flat(&eta_figures(&e)), format!("~1m30s+ · ETA {time}"));
         e.blocked = true;
-        assert_eq!(eta_text(&e), "blocked +1m30s");
+        assert_eq!(flat(&eta_figures(&e)), "blocked +1m30s");
     }
 
     #[test]
     fn a_failed_job_says_how_and_a_good_one_only_how_long() {
-        assert_eq!(finished(Some("success"), "12s"), "12s");
-        assert_eq!(finished(Some("timed_out"), "12s"), "timed_out · 12s");
-        assert_eq!(finished(Some("skipped"), ""), "skipped");
+        assert_eq!(flat(&finished(Some("success"), "12s")), "12s");
+        assert_eq!(flat(&finished(Some("timed_out"), "12s")), "timed_out · 12s");
+        assert_eq!(flat(&finished(Some("skipped"), "")), "skipped");
     }
 
     #[test]
@@ -623,7 +712,7 @@ mod tests {
         };
         let mut running = job(1, "test", "in_progress", None);
         assert_eq!(
-            job_text(&running, Some(&estimate), &data, &t).right,
+            flat(&job_text(&running, Some(&estimate), &data, &t).right),
             "1m58s · ~1m30s",
             "no steps reported yet"
         );
@@ -640,7 +729,7 @@ mod tests {
             step("queued", None),
         ];
         assert_eq!(
-            job_text(&running, Some(&estimate), &data, &t).right,
+            flat(&job_text(&running, Some(&estimate), &data, &t).right),
             "1/3 · 1m58s · ~1m30s"
         );
     }
@@ -657,12 +746,12 @@ mod tests {
         };
         let running = job(1, "test", "in_progress", None);
         assert_eq!(
-            job_text(&running, Some(&estimate), &data, &t).right,
+            flat(&job_text(&running, Some(&estimate), &data, &t).right),
             "10m00s · overdue"
         );
         estimate.state = JobState::Unknown;
         assert_eq!(
-            job_text(&running, Some(&estimate), &data, &t).right,
+            flat(&job_text(&running, Some(&estimate), &data, &t).right),
             "10m00s · ?"
         );
     }
@@ -679,7 +768,194 @@ mod tests {
             &data,
             &Theme::default(),
         );
-        assert_eq!(text.right, "30s");
+        assert_eq!(flat(&text.right), "30s");
+    }
+
+    /// The style of the first span whose text is exactly `text`.
+    fn span_style(spans: &[Span<'static>], text: &str) -> Style {
+        spans
+            .iter()
+            .find(|s| s.content == text)
+            .unwrap_or_else(|| panic!("no span {text:?} in {spans:?}"))
+            .style
+    }
+
+    fn fg(c: Color) -> Style {
+        Style::default().fg(c)
+    }
+
+    /// A running run with one of two jobs done, 1m58s in, 1m30s to go.
+    fn forecast_run() -> (ActionsRun, RunEstimate) {
+        let r = run(
+            10,
+            "in_progress",
+            None,
+            vec![
+                job(100, "fmt", "completed", Some("success")),
+                job(101, "test", "in_progress", None),
+            ],
+        );
+        let mut e = forecast(&r, &Default::default(), at());
+        e.history_runs = 3;
+        e.partial = false;
+        e.blocked = false;
+        e.elapsed = TimeDelta::seconds(118);
+        e.remaining = TimeDelta::seconds(90);
+        e.eta = at() + e.remaining;
+        (r, e)
+    }
+
+    /// #240: progress, time taken and forecast are three different colours,
+    /// the forecast alone is bold, and the separators stay dim.
+    #[test]
+    fn a_run_row_colours_progress_elapsed_and_forecast_apart() {
+        let t = Theme::default();
+        let (r, e) = forecast_run();
+        let time = crate::localtime::fmt_time(e.eta);
+        let sp = spans(&run_text(&r, Some(&e), &t).right, &t);
+
+        let eta = fg(t.runs_eta).add_modifier(Modifier::BOLD);
+        assert_eq!(span_style(&sp, "1/2"), fg(t.runs_progress));
+        assert_eq!(span_style(&sp, "1m58s"), fg(t.runs_elapsed));
+        assert_eq!(span_style(&sp, "~1m30s"), eta);
+        assert_eq!(span_style(&sp, &format!("ETA {time}")), eta);
+        assert_eq!(span_style(&sp, " · "), fg(t.dim));
+        assert_ne!(t.runs_progress, t.runs_elapsed);
+        assert_ne!(t.runs_eta, t.runs_elapsed);
+    }
+
+    #[test]
+    fn the_default_elapsed_colour_is_the_one_it_always_had() {
+        let t = Theme::default();
+        assert_eq!(t.runs_elapsed, t.dim);
+        let (r, e) = forecast_run();
+        let sp = spans(&run_text(&r, Some(&e), &t).right, &t);
+        assert_eq!(span_style(&sp, "1m58s"), fg(t.dim));
+    }
+
+    /// #240: every one of the three colours, and the bold, is configurable.
+    #[test]
+    fn a_profile_recolours_the_figures_and_can_turn_the_bold_off() {
+        let profile: crate::tui::theme::ColorProfile = toml::from_str(
+            "runs_eta      = \"#ff0000\"\n\
+             runs_elapsed  = \"#00ff00\"\n\
+             runs_progress = \"#0000ff\"\n\
+             runs_eta_bold = false\n",
+        )
+        .unwrap();
+        let t = Theme::with_profile(&profile);
+        let (r, e) = forecast_run();
+        let sp = spans(&run_text(&r, Some(&e), &t).right, &t);
+        assert_eq!(span_style(&sp, "1/2"), fg(Color::Rgb(0, 0, 255)));
+        assert_eq!(span_style(&sp, "1m58s"), fg(Color::Rgb(0, 255, 0)));
+        assert_eq!(
+            span_style(&sp, "~1m30s"),
+            fg(Color::Rgb(255, 0, 0)),
+            "no bold when runs_eta_bold is false"
+        );
+    }
+
+    #[test]
+    fn problems_are_warnings_and_the_absence_of_a_forecast_is_dim() {
+        let t = Theme::default();
+        let (_, mut e) = forecast_run();
+        let r = run(10, "in_progress", None, vec![]);
+
+        e.blocked = true;
+        let sp = spans(&run_text(&r, Some(&e), &t).right, &t);
+        assert_eq!(span_style(&sp, "blocked +1m30s"), fg(t.warning));
+
+        e.blocked = false;
+        e.history_runs = 0;
+        let sp = spans(&run_text(&r, Some(&e), &t).right, &t);
+        assert_eq!(span_style(&sp, "no ETA"), fg(t.dim));
+
+        let data = RunsData::default();
+        let running = job(1, "test", "in_progress", None);
+        let overdue = JobEstimate {
+            state: JobState::Overdue,
+            elapsed: TimeDelta::seconds(600),
+            remaining: TimeDelta::zero(),
+            basis: None,
+        };
+        let sp = spans(&job_text(&running, Some(&overdue), &data, &t).right, &t);
+        assert_eq!(span_style(&sp, "10m00s"), fg(t.runs_elapsed));
+        assert_eq!(span_style(&sp, "overdue"), fg(t.warning));
+        let unknown = JobEstimate {
+            state: JobState::Unknown,
+            ..overdue
+        };
+        let sp = spans(&job_text(&running, Some(&unknown), &data, &t).right, &t);
+        assert_eq!(span_style(&sp, "?"), fg(t.dim));
+    }
+
+    #[test]
+    fn a_job_row_colours_its_step_count_and_a_finished_one_its_time_taken() {
+        let t = Theme::default();
+        let data = RunsData::default();
+        let mut running = job(1, "test", "in_progress", None);
+        running.steps = vec![
+            ActionsStep {
+                name: "a".into(),
+                status: "completed".into(),
+                conclusion: Some("success".into()),
+                started_at: None,
+                completed_at: None,
+            },
+            ActionsStep {
+                name: "b".into(),
+                status: "in_progress".into(),
+                conclusion: None,
+                started_at: None,
+                completed_at: None,
+            },
+        ];
+        let estimate = JobEstimate {
+            state: JobState::Running,
+            elapsed: TimeDelta::seconds(118),
+            remaining: TimeDelta::seconds(90),
+            basis: Some(Basis::Steps),
+        };
+        let sp = spans(&job_text(&running, Some(&estimate), &data, &t).right, &t);
+        assert_eq!(span_style(&sp, "1/2"), fg(t.runs_progress));
+        assert_eq!(
+            span_style(&sp, "~1m30s"),
+            fg(t.runs_eta).add_modifier(Modifier::BOLD)
+        );
+
+        let sp = spans(&finished(Some("timed_out"), "12s"), &t);
+        assert_eq!(
+            span_style(&sp, "timed_out"),
+            fg(t.dim),
+            "conclusion words stay dim"
+        );
+        assert_eq!(span_style(&sp, "12s"), fg(t.runs_elapsed));
+    }
+
+    /// A PR row's summary is a count, not a forecast, unless it is the
+    /// remaining time of its longest run.
+    #[test]
+    fn a_pr_summary_stays_dim_unless_it_is_a_forecast() {
+        let t = Theme::default();
+        let failed = PrRuns {
+            pr: linked(301, "r"),
+            runs: Ok(vec![run(10, "completed", Some("failure"), vec![])]),
+        };
+        let sp = spans(&pr_text(&failed, &RunsData::default(), None, &t).right, &t);
+        assert_eq!(span_style(&sp, "1/1 failed"), fg(t.dim));
+
+        let active = PrRuns {
+            pr: linked(301, "r"),
+            runs: Ok(vec![run(10, "in_progress", None, vec![])]),
+        };
+        let (_, e) = forecast_run();
+        let mut data = RunsData::default();
+        data.estimates.insert(10, e);
+        let sp = spans(&pr_text(&active, &data, None, &t).right, &t);
+        assert_eq!(
+            span_style(&sp, "~1m30s"),
+            fg(t.runs_eta).add_modifier(Modifier::BOLD)
+        );
     }
 
     #[test]

@@ -26,6 +26,8 @@ Terms used across this repo's code and docs.
 
 **ETA history**: the last 10 successful runs of the same workflow and trigger event, which a forecast is learned from. *Avoid*: "cache", which is how it is held, not what it is.
 
+**Forecast**: the figures that look ahead: time remaining (`~2m54s`, `~2m54s+`) and the ETA clock (`ETA 13:01`). Drawn in `runs_eta`, bold by default. *Avoid*: "ETA" for the whole group, since the clock time is only one part. `blocked` and `overdue` are problems, not forecasts, and use `warning`.
+
 **Load** and **poll**: a load finds the PRs from scratch; a poll re-reads the PRs already known. *Avoid*: "refresh" for either. `r` is a refresh, and it does a load.
 
 ## Detail pane

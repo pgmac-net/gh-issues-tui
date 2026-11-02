@@ -64,6 +64,20 @@ Checks from outside Actions do not appear.
 | `?` | a job that has never succeeded before |
 | `no ETA` | no successful past runs to compare with |
 
+## Colours (#240)
+
+The figures on the right of each row are coloured by what they are, so the forecast stands out from the time taken. All of it is set in a `[color_profiles.<name>]` table (see the README), and each default follows an existing colour as your profile sets it.
+
+| Figure | Key | Default |
+|---|---|---|
+| Forecast: `~2m54s`, `~2m54s+`, `ETA 13:01`, on run, job and PR rows | `runs_eta`, plus `runs_eta_bold` | `warning` (yellow), bold |
+| Time taken, live or finished: `1m58s`, `12s` | `runs_elapsed` | `dim`, as before |
+| Done/total counts: `1/2` jobs, `3/5` steps | `runs_progress` | `open` (green) |
+| `blocked +19s`, `overdue` | `warning` | yellow |
+| `?`, `no ETA`, separators, conclusion words (`failure`, `cancelled`), PR summaries (`2 runs`, `1/3 running`, `2/3 failed`, `merged`) | `dim` | dark grey |
+
+Blocked and overdue are problems rather than forecasts, so they use `warning` itself and don't change with `runs_eta`. A PR row's counts stay dim: its glyph already shows its state, and a green `2/3 failed` would read wrong. The selected-row highlight is on the name only, so the figures keep their colours.
+
 Against `gh eta` on a live run of this repo's CI: `~3m45s` at 1m01s in the tab, `~3m41s` at 1m05s from `gh eta`, both ETA 13:01.
 
 ## Refresh and cost
