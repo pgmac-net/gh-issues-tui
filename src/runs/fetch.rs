@@ -243,6 +243,12 @@ mod tests {
         async fn org_issues(&self, _: &str, _: bool) -> Result<Vec<RepoIssues>> {
             unimplemented!()
         }
+        async fn issue(&self, _: &str) -> Result<Option<Issue>> {
+            unimplemented!()
+        }
+        async fn repo_issues(&self, _: &str, _: &str, _: bool) -> Result<Option<RepoIssues>> {
+            unimplemented!()
+        }
         async fn comments(&self, _: &str) -> Result<Vec<Comment>> {
             unimplemented!()
         }
