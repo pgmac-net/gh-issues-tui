@@ -169,9 +169,13 @@ Every one of these agents (`claude`, `codex` and `copilot` confirmed; `pi` only 
 
 A harness runs in the current directory's repo when that is the issue's repo; otherwise in the first `<root>/<repo>` that exists across `workspace_roots`. If none does, nothing launches and the message names every path tried.
 
+### Refreshing
+
+`r` refetches only what is selected: one issue (and its comment thread, if the detail pane is open), or one repo's issues when a repo header is selected. An issue or repo that no longer exists is removed from the list, and the status line says so. `Ctrl+R` refetches the filtered scope: just the repo when the repo filter names one exactly (as it does when you start inside a clone), otherwise the whole org. To refresh everything while a repo filter is on, clear the filters (`F` then `c`) first. A refresh key pressed while another refresh is running does nothing. Full detail: [docs/granular-refresh.md](docs/granular-refresh.md).
+
 ### Auto-refresh
 
-The issue list refetches from GitHub every `refresh_interval` seconds (default 5 minutes) so new and updated issues appear without pressing `r`. The `--refresh <SECS>` flag overrides the config value; `0` disables it. A background refresh keeps your selection on the same issue and skips a beat while a fetch is already running, the API is rate-limited, or you are mid-edit (typing in an input, a menu, or a confirmation).
+The issue list refetches the filtered scope (as `Ctrl+R` does) every `refresh_interval` seconds (default 5 minutes) so new and updated issues appear without a key press. The `--refresh <SECS>` flag overrides the config value; `0` disables it. A background refresh keeps your selection on the same issue and skips a beat while a fetch is already running, the API is rate-limited, or you are mid-edit (typing in an input, a menu, or a confirmation).
 
 ### Clipboard
 
@@ -258,7 +262,8 @@ code_number  = "#dcdcdc"
 | `A` | send the issue to a coding harness — starts it in that repo's clone in an embedded terminal pane; attaches if the issue already has a session |
 | `Z` | switch between harness sessions |
 | `n` | create a new issue in the selected repo (opens the form) |
-| `r` | reload all data |
+| `r` | refresh what is selected: the issue on an issue row, the repo's issues on a repo header (in the runs tab: refresh runs) |
+| `Ctrl+R` | refresh the filtered scope: the one repo an exact repo filter names, otherwise the whole org |
 | `?` / `F1` | contextual help for where you are — `?` in the list, `F1` from anywhere else, even mid-typed input (see [In-app help](#in-app-help)) |
 | `q` | quit |
 

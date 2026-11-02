@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{priority_int_to_value, priority_value_to_int, synthetic_priority_id_to_int};
-use crate::provider::error::{ProviderError, Result};
+use crate::provider::error::{ProviderError, Result, found};
 use crate::provider::http::{
     RateLimitStore, build_http_client, graphql_body, graphql_data, header_i64, join_error_messages,
     parse_at,
@@ -68,13 +68,76 @@ impl Client {
 
         let body: Value = resp.error_for_status()?.json().await?;
         graphql_data(&body, |errors| {
-            errors_contain_ratelimit(errors).then(|| {
-                ProviderError::RateLimited(format!(
+            if errors_contain_ratelimit(errors) {
+                return Some(ProviderError::RateLimited(format!(
                     "{} (Linear) — {}",
                     crate::provider::error::RATE_LIMIT_MSG_PREFIX,
                     join_error_messages(errors)
-                ))
-            })
+                )));
+            }
+            errors_all_not_found(errors)
+                .then(|| ProviderError::NotFound(join_error_messages(errors)))
+        })
+    }
+
+    /// One issue by id (#229); `Ok(None)` once Linear no longer finds it.
+    pub async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
+        let query = format!("{ISSUE_QUERY}{ISSUE_FIELDS}");
+        let Some(data) = found(self.graphql(&query, json!({ "id": issue_id })).await)? else {
+            return Ok(None);
+        };
+        let node: Option<IssueNode> = parse_at(&data, &["issue"])?;
+        Ok(node.map(|n| n.to_issue()))
+    }
+
+    /// One team's issues by team key — the group name `org_issues` reports
+    /// (#229). `Ok(None)` when no team has that key any more.
+    pub async fn repo_issues(
+        &self,
+        _org: &str,
+        team_key: &str,
+        include_closed: bool,
+    ) -> Result<Option<RepoIssues>> {
+        let data = self
+            .graphql(TEAM_BY_KEY_QUERY, json!({ "key": team_key }))
+            .await?;
+        let conn: TeamsConn = parse_at(&data, &["teams"])?;
+        let Some(team) = conn.nodes.into_iter().next() else {
+            return Ok(None);
+        };
+        Ok(Some(self.team_issues(team, include_closed).await?))
+    }
+
+    /// Page one team's issues into its group.
+    async fn team_issues(&self, team: TeamNode, include_closed: bool) -> Result<RepoIssues> {
+        let filter = issue_filter(include_closed);
+        let team_issues_query = format!("{TEAM_ISSUES_QUERY}{ISSUE_FIELDS}");
+        let mut issues: Vec<Issue> = Vec::new();
+        let mut issue_cursor: Option<String> = None;
+        loop {
+            let data = self
+                .graphql(
+                    &team_issues_query,
+                    json!({
+                        "teamId": team.id,
+                        "issuesFirst": ISSUES_PAGE,
+                        "issueCursor": issue_cursor,
+                        "filter": filter,
+                    }),
+                )
+                .await?;
+            let conn: IssuesConn = parse_at(&data, &["team", "issues"])?;
+            issues.extend(conn.nodes.iter().map(IssueNode::to_issue));
+            if !conn.page_info.has_next_page {
+                break;
+            }
+            issue_cursor = conn.page_info.end_cursor;
+        }
+        Ok(RepoIssues {
+            repo: team.key,
+            // Linear teams have no public URL field; groups open nothing.
+            repo_url: String::new(),
+            issues,
         })
     }
 
@@ -82,13 +145,6 @@ impl Client {
     /// the workspace is fixed by the API key. `include_closed` keeps
     /// completed/canceled issues; otherwise they are filtered server-side.
     pub async fn org_issues(&self, _org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
-        // An empty filter matches all issues; otherwise exclude done states.
-        let filter = if include_closed {
-            json!({})
-        } else {
-            json!({ "state": { "type": { "nin": ["completed", "canceled"] } } })
-        };
-
         // Phase 1: list teams (cheap — no nested issues). Fetching teams and
         // their issues in one query blows Linear's fixed complexity budget
         // (teams × issues × per-issue fields), so issues are paged per team.
@@ -110,36 +166,9 @@ impl Client {
         }
 
         // Phase 2: page each team's issues.
-        let team_issues_query = format!("{TEAM_ISSUES_QUERY}{ISSUE_FIELDS}");
         let mut out = Vec::new();
         for team in teams {
-            let mut issues: Vec<Issue> = Vec::new();
-            let mut issue_cursor: Option<String> = None;
-            loop {
-                let data = self
-                    .graphql(
-                        &team_issues_query,
-                        json!({
-                            "teamId": team.id,
-                            "issuesFirst": ISSUES_PAGE,
-                            "issueCursor": issue_cursor,
-                            "filter": filter,
-                        }),
-                    )
-                    .await?;
-                let conn: IssuesConn = parse_at(&data, &["team", "issues"])?;
-                issues.extend(conn.nodes.iter().map(IssueNode::to_issue));
-                if !conn.page_info.has_next_page {
-                    break;
-                }
-                issue_cursor = conn.page_info.end_cursor;
-            }
-            out.push(RepoIssues {
-                repo: team.key,
-                // Linear teams have no public URL field; groups open nothing.
-                repo_url: String::new(),
-                issues,
-            });
+            out.push(self.team_issues(team, include_closed).await?);
         }
         Ok(out)
     }
@@ -531,6 +560,44 @@ const TEAMS_QUERY: &str = "query($teamsFirst: Int!, $teamCursor: String) {
 }
 ";
 
+/// One team by key (#229). Keys are unique per workspace, so at most one node.
+const TEAM_BY_KEY_QUERY: &str = "query($key: String!) {
+  teams(first: 1, filter: { key: { eq: $key } }) {
+    nodes { id key name }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+";
+
+/// One issue by id; append [`ISSUE_FIELDS`].
+const ISSUE_QUERY: &str = "query($id: String!) {
+  issue(id: $id) { ...IssueFields }
+}
+";
+
+/// An empty filter matches all issues; otherwise exclude done states.
+fn issue_filter(include_closed: bool) -> Value {
+    if include_closed {
+        json!({})
+    } else {
+        json!({ "state": { "type": { "nin": ["completed", "canceled"] } } })
+    }
+}
+
+/// True when every error says the entity is missing — Linear answers an
+/// unknown id with `Entity not found: <Type>` (#229). Matched on the message,
+/// because Linear files these under a generic input-error code.
+fn errors_all_not_found(errors: &Value) -> bool {
+    errors.as_array().is_some_and(|arr| {
+        !arr.is_empty()
+            && arr.iter().all(|e| {
+                e.get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|m| m.starts_with("Entity not found"))
+            })
+    })
+}
+
 const TEAM_ISSUES_QUERY: &str =
     "query($teamId: String!, $issuesFirst: Int!, $issueCursor: String, $filter: IssueFilter) {
   team(id: $teamId) {
@@ -701,6 +768,17 @@ impl crate::provider::IssueProvider for Client {
     async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
         self.org_issues(org, include_closed).await
     }
+    async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
+        self.issue(issue_id).await
+    }
+    async fn repo_issues(
+        &self,
+        org: &str,
+        repo: &str,
+        include_closed: bool,
+    ) -> Result<Option<RepoIssues>> {
+        self.repo_issues(org, repo, include_closed).await
+    }
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.comments(issue_id).await
     }
@@ -759,6 +837,33 @@ mod tests {
 
     fn issue_node(v: Value) -> IssueNode {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// #229: Linear's answer for an unknown id. Not yet seen live (no
+    /// workspace to test against); shape from Linear's API docs.
+    #[test]
+    fn entity_not_found_errors_are_not_found() {
+        let gone = json!([{"message": "Entity not found: Issue",
+            "extensions": {"code": "INPUT_ERROR"}}]);
+        assert!(errors_all_not_found(&gone));
+        let other = json!([{"message": "Argument Validation Error"}]);
+        assert!(!errors_all_not_found(&other));
+        assert!(!errors_all_not_found(&json!([])));
+    }
+
+    #[test]
+    fn closed_filter_matches_org_issues() {
+        assert_eq!(issue_filter(true), json!({}));
+        assert_eq!(
+            issue_filter(false),
+            json!({ "state": { "type": { "nin": ["completed", "canceled"] } } })
+        );
+    }
+
+    #[test]
+    fn team_lookup_is_by_key() {
+        assert!(TEAM_BY_KEY_QUERY.contains("key: { eq: $key }"));
+        assert!(ISSUE_QUERY.contains("...IssueFields"));
     }
 
     #[test]

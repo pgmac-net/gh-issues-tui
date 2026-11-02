@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::provider::error::{ProviderError, Result};
+use crate::provider::error::{ProviderError, Result, found};
 use crate::provider::http::{
     RateLimitStore, build_http_client, graphql_body, graphql_data, header_i64, join_error_messages,
     parse_at,
@@ -139,6 +139,9 @@ impl Client {
             if errors_contain_resource_limited(errors) {
                 return Some(ProviderError::ResourceLimited(join_error_messages(errors)));
             }
+            if errors_all_not_found(errors) {
+                return Some(ProviderError::NotFound(join_error_messages(errors)));
+            }
             None
         })?;
 
@@ -179,11 +182,7 @@ impl Client {
     /// Iterates repositories with cursor pagination (avoids the 1000-result
     /// search API cap) and follows per-repo issue pagination where needed.
     pub async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
-        let states = if include_closed {
-            vec!["OPEN", "CLOSED"]
-        } else {
-            vec!["OPEN"]
-        };
+        let states = issue_states(include_closed);
         let mut out = Vec::new();
         let mut repo_cursor: Option<String> = None;
         let mut sizes = PageSizes {
@@ -219,39 +218,9 @@ impl Client {
                 if !repo.has_issues_enabled {
                     continue;
                 }
-                let mut issues: Vec<Issue> =
-                    repo.issues.nodes.iter().map(IssueNode::to_issue).collect();
-
-                // Follow issue pagination for repos with >ISSUES_PAGE issues.
-                let mut page = repo.issues.page_info;
-                while page.has_next_page {
-                    let data = self
-                        .graphql_with_backoff(
-                            REPO_ISSUES_QUERY,
-                            |sizes| {
-                                json!({
-                                    "owner": org,
-                                    "name": repo.name,
-                                    "issuesFirst": sizes.issues,
-                                    "issueCursor": page.end_cursor,
-                                    "states": states,
-                                })
-                            },
-                            &mut sizes,
-                        )
-                        .await?;
-                    let conn: IssuesConn = parse_at(&data, &["repository", "issues"])?;
-                    issues.extend(conn.nodes.iter().map(IssueNode::to_issue));
-                    page = conn.page_info;
-                }
-
                 // Empty repos are kept: the hide-empty-repos filter decides
                 // their visibility client-side, so toggling needs no refetch.
-                out.push(RepoIssues {
-                    repo: repo.name,
-                    repo_url: repo.url,
-                    issues,
-                });
+                out.push(self.finish_repo(org, repo, &states, &mut sizes).await?);
             }
 
             if !repos.page_info.has_next_page {
@@ -268,6 +237,109 @@ impl Client {
         self.hydrate_issues(&mut out).await?;
         self.rate_limit.end_fetch();
         Ok(out)
+    }
+
+    /// One repository's issues, shaped like its `org_issues` entry (#229).
+    /// `Ok(None)` for the repos `org_issues` skips (archived, issues
+    /// disabled) and for one that no longer exists.
+    pub async fn repo_issues(
+        &self,
+        org: &str,
+        repo: &str,
+        include_closed: bool,
+    ) -> Result<Option<RepoIssues>> {
+        let states = issue_states(include_closed);
+        let mut sizes = PageSizes {
+            repos: REPOS_PAGE,
+            issues: ISSUES_PAGE,
+        };
+        let data = found(
+            self.graphql_with_backoff(
+                REPO_QUERY,
+                |sizes| {
+                    json!({
+                        "owner": org,
+                        "name": repo,
+                        "issuesFirst": sizes.issues,
+                        "states": states,
+                    })
+                },
+                &mut sizes,
+            )
+            .await,
+        )?;
+        let Some(node) = data
+            .as_ref()
+            .and_then(|d| d.get("repository"))
+            .filter(|r| !r.is_null())
+        else {
+            return Ok(None);
+        };
+        let node: RepoNode = serde_json::from_value(node.clone())
+            .map_err(|e| ProviderError::Shape(e.to_string()))?;
+        if node.is_archived || !node.has_issues_enabled {
+            return Ok(None);
+        }
+        let mut out = vec![self.finish_repo(org, node, &states, &mut sizes).await?];
+        self.hydrate_issues(&mut out).await?;
+        Ok(out.pop())
+    }
+
+    /// One issue by node id with its labels and assignees (#229). `Ok(None)`
+    /// when GitHub no longer resolves the id (deleted, transferred, hidden).
+    pub async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
+        let data = found(
+            self.graphql(ISSUE_NODE_QUERY, json!({ "id": issue_id }))
+                .await,
+        )?;
+        match data
+            .as_ref()
+            .and_then(|d| d.get("node"))
+            .filter(|n| !n.is_null())
+        {
+            None => Ok(None),
+            Some(node) => serde_json::from_value::<MutatedIssue>(node.clone())
+                .map(|m| Some(m.into_issue()))
+                .map_err(|e| ProviderError::Shape(e.to_string())),
+        }
+    }
+
+    /// Turn a repository node from a bulk or single-repo page into its
+    /// `RepoIssues`, following issue pagination past the first page.
+    async fn finish_repo(
+        &self,
+        owner: &str,
+        repo: RepoNode,
+        states: &[&str],
+        sizes: &mut PageSizes,
+    ) -> Result<RepoIssues> {
+        let mut issues: Vec<Issue> = repo.issues.nodes.iter().map(IssueNode::to_issue).collect();
+        let mut page = repo.issues.page_info;
+        while page.has_next_page {
+            let data = self
+                .graphql_with_backoff(
+                    REPO_ISSUES_QUERY,
+                    |sizes| {
+                        json!({
+                            "owner": owner,
+                            "name": repo.name,
+                            "issuesFirst": sizes.issues,
+                            "issueCursor": page.end_cursor,
+                            "states": states,
+                        })
+                    },
+                    sizes,
+                )
+                .await?;
+            let conn: IssuesConn = parse_at(&data, &["repository", "issues"])?;
+            issues.extend(conn.nodes.iter().map(IssueNode::to_issue));
+            page = conn.page_info;
+        }
+        Ok(RepoIssues {
+            repo: repo.name,
+            repo_url: repo.url,
+            issues,
+        })
     }
 
     /// Fill in `labels` and `assignees`, which [`issue_fields`] deliberately
@@ -642,6 +714,26 @@ fn errors_contain_resource_limited(errors: &Value) -> bool {
     })
 }
 
+/// True when every GraphQL error is `NOT_FOUND`: the thing asked for is gone
+/// or hidden, and nothing else went wrong (#229).
+fn errors_all_not_found(errors: &Value) -> bool {
+    errors.as_array().is_some_and(|arr| {
+        !arr.is_empty()
+            && arr
+                .iter()
+                .all(|e| e.get("type").and_then(Value::as_str) == Some("NOT_FOUND"))
+    })
+}
+
+/// `["OPEN"]`, or both states once closed issues are wanted.
+fn issue_states(include_closed: bool) -> Vec<&'static str> {
+    if include_closed {
+        vec!["OPEN", "CLOSED"]
+    } else {
+        vec!["OPEN"]
+    }
+}
+
 fn login_at(v: &Value, ptr: &str) -> String {
     v.pointer(ptr)
         .and_then(Value::as_str)
@@ -672,6 +764,10 @@ struct RepoNode {
     url: String,
     #[serde(default = "default_true")]
     has_issues_enabled: bool,
+    /// Only the single-repo query asks; the bulk query excludes archived
+    /// repos with `isArchived: false` instead.
+    #[serde(default)]
+    is_archived: bool,
     issues: IssuesConn,
 }
 
@@ -846,14 +942,20 @@ macro_rules! issue_fields {
 /// Everything [`Issue`] holds, for the single issue a mutation reports back.
 /// The connection page sizes match [`ISSUE_HYDRATE_QUERY`], so a patched
 /// issue carries the same label/assignee window as a fetched one.
-macro_rules! mutated_issue_fields {
+macro_rules! full_issue_fields {
     () => {
         concat!(
-            "issue { ",
             issue_fields!(),
             " assignees(first: 10) { nodes { login } }
-              labels(first: 20) { nodes { name color } } }"
+              labels(first: 20) { nodes { name color } }"
         )
+    };
+}
+
+/// [`full_issue_fields`] under the `issue` field of a mutation payload.
+macro_rules! mutated_issue_fields {
+    () => {
+        concat!("issue { ", full_issue_fields!(), " }")
     };
 }
 
@@ -907,6 +1009,32 @@ const REPO_ISSUES_QUERY: &str = concat!(
          }
        }
      }"
+);
+
+/// One repository with its first page of issues (#229): the bulk query's
+/// repo node for a single named repo, plus `isArchived`, which the bulk query
+/// filters on instead of selecting. One connection, scalars only.
+const REPO_QUERY: &str = concat!(
+    "query($owner: String!, $name: String!, $issuesFirst: Int!, $states: [IssueState!]) {
+       rateLimit { cost }
+       repository(owner: $owner, name: $name) {
+         name url hasIssuesEnabled isArchived
+         issues(first: $issuesFirst, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
+           pageInfo { hasNextPage endCursor }
+           nodes { ",
+    issue_fields!(),
+    " }
+         }
+       }
+     }"
+);
+
+/// One issue as it stands, with the same label/assignee window as a hydrated
+/// bulk issue (#229). Connections on a single node are not billed per slot.
+const ISSUE_NODE_QUERY: &str = concat!(
+    "query($id: ID!) { rateLimit { cost } node(id: $id) { ... on Issue { ",
+    full_issue_fields!(),
+    " } } }"
 );
 
 /// Labels and assignees for up to 100 issues at a time. `nodes(ids:)` is a
@@ -1338,6 +1466,17 @@ impl crate::provider::IssueProvider for Client {
         self.org_issues(org, include_closed).await
     }
 
+    async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
+        self.issue(issue_id).await
+    }
+    async fn repo_issues(
+        &self,
+        org: &str,
+        repo: &str,
+        include_closed: bool,
+    ) -> Result<Option<RepoIssues>> {
+        self.repo_issues(org, repo, include_closed).await
+    }
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.comments(issue_id).await
     }
@@ -1709,9 +1848,69 @@ mod tests {
 
     #[test]
     fn bulk_queries_report_their_cost() {
-        for query in [ORG_ISSUES_QUERY, REPO_ISSUES_QUERY, ISSUE_HYDRATE_QUERY] {
+        for query in [
+            ORG_ISSUES_QUERY,
+            REPO_ISSUES_QUERY,
+            ISSUE_HYDRATE_QUERY,
+            REPO_QUERY,
+            ISSUE_NODE_QUERY,
+        ] {
             assert!(query.contains("rateLimit { cost }"));
         }
+    }
+
+    /// #229: the payload GitHub returned live for a deleted node / missing repo.
+    #[test]
+    fn not_found_is_only_an_all_not_found_error_list() {
+        let gone = serde_json::json!([{"type": "NOT_FOUND", "path": ["node"],
+            "message": "Could not resolve to a node with the global id of 'I_x'."}]);
+        assert!(errors_all_not_found(&gone));
+        let mixed = serde_json::json!([
+            {"type": "NOT_FOUND", "message": "a"},
+            {"type": "FORBIDDEN", "message": "b"}
+        ]);
+        assert!(!errors_all_not_found(&mixed));
+        assert!(!errors_all_not_found(&serde_json::json!([])));
+    }
+
+    /// The single-repo query mirrors the bulk repo node, with `isArchived`
+    /// selected because there is no `isArchived: false` argument to filter on.
+    #[test]
+    fn repo_query_selects_what_the_bulk_query_filters_on() {
+        assert!(REPO_QUERY.contains("hasIssuesEnabled isArchived"));
+        assert!(REPO_QUERY.contains("states: $states"));
+        assert!(REPO_QUERY.contains(issue_fields!()));
+    }
+
+    #[test]
+    fn single_issue_read_carries_what_hydration_adds() {
+        assert!(ISSUE_NODE_QUERY.contains("node(id: $id)"));
+        assert!(ISSUE_NODE_QUERY.contains("assignees(first: 10)"));
+        assert!(ISSUE_NODE_QUERY.contains("labels(first: 20)"));
+    }
+
+    #[test]
+    fn single_issue_node_parses_like_a_mutation_payload() {
+        let node = serde_json::json!({
+            "id": "I_1", "number": 7, "title": "t", "body": "", "state": "OPEN",
+            "url": "u", "author": {"login": "a"}, "comments": {"totalCount": 2},
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-02T00:00:00Z",
+            "closedAt": null,
+            "assignees": {"nodes": [{"login": "pgmac"}]},
+            "labels": {"nodes": [{"name": "bug", "color": "d73a4a"}]}
+        });
+        let issue = serde_json::from_value::<MutatedIssue>(node)
+            .unwrap()
+            .into_issue();
+        assert_eq!(issue.number, 7);
+        assert_eq!(issue.assignees, vec!["pgmac"]);
+        assert_eq!(issue.labels[0].name, "bug");
+    }
+
+    #[test]
+    fn issue_states_widen_with_include_closed() {
+        assert_eq!(issue_states(false), vec!["OPEN"]);
+        assert_eq!(issue_states(true), vec!["OPEN", "CLOSED"]);
     }
 
     #[test]

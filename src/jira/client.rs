@@ -6,7 +6,7 @@ use super::{
     adf_to_text, key_to_number, priority_name_to_value, priority_value_to_name,
     synthetic_priority_id_to_name, text_to_adf,
 };
-use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result};
+use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result, found};
 use crate::provider::http::build_http_client;
 use crate::provider::types::{
     Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
@@ -79,6 +79,9 @@ impl Client {
             )));
         }
         let text = resp.text().await?;
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ProviderError::NotFound(parse_jira_errors(&text, status)));
+        }
         if !status.is_success() {
             return Err(ProviderError::Api(parse_jira_errors(&text, status)));
         }
@@ -135,6 +138,25 @@ impl Client {
             });
         }
         Ok(out)
+    }
+
+    /// One project's issues, shaped like its `org_issues` group (#229).
+    /// `Ok(None)` when the project no longer exists or is no longer visible.
+    pub async fn repo_issues(
+        &self,
+        _org: &str,
+        key: &str,
+        include_closed: bool,
+    ) -> Result<Option<RepoIssues>> {
+        if found(self.get(&format!("/project/{key}"), &[]).await)?.is_none() {
+            return Ok(None);
+        }
+        let issues = self.project_issues(key, include_closed).await?;
+        Ok(Some(RepoIssues {
+            repo: key.to_string(),
+            repo_url: format!("{}/browse/{key}", self.base_url),
+            issues,
+        }))
     }
 
     async fn project_issues(&self, key: &str, include_closed: bool) -> Result<Vec<Issue>> {
@@ -603,6 +625,17 @@ struct ProjectRef {
 impl crate::provider::IssueProvider for Client {
     async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
         self.org_issues(org, include_closed).await
+    }
+    async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
+        found(Client::issue(self, issue_id).await)
+    }
+    async fn repo_issues(
+        &self,
+        org: &str,
+        repo: &str,
+        include_closed: bool,
+    ) -> Result<Option<RepoIssues>> {
+        self.repo_issues(org, repo, include_closed).await
     }
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.comments(issue_id).await

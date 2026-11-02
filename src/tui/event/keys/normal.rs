@@ -53,12 +53,41 @@ pub(crate) fn handle_normal_key(
         }
         KeyCode::Tab | KeyCode::BackTab => app.cycle_focus(),
         KeyCode::Char('?') => app.open_help(app.context_topic()),
+        // Ctrl+R: the filtered scope — the exact-filtered repo, else the org
+        // (#229). A different key from `r`, not a focus guard (ADR 0006).
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if refresh_busy(app) {
+                return;
+            }
+            app.loading = true;
+            app.status = Some(match app.filtered_target() {
+                FetchTarget::Org => "refreshing org…".into(),
+                FetchTarget::Repo(repo) => format!("refreshing repo {repo}…"),
+            });
+            spawn_filtered_fetch(client, app, tx);
+        }
+        // r: whatever is selected — the issue, or the repo group (#229).
         KeyCode::Char('r') => match app.focus {
             Focus::Detail if app.runs_showing() => app.runs_refresh(std::time::Instant::now()),
             _ => {
+                if refresh_busy(app) {
+                    return;
+                }
                 app.loading = true;
-                app.status = Some("reloading…".into());
-                spawn_fetch(client, app, tx);
+                match app.refresh_target() {
+                    RefreshTarget::Issue { id, number } => {
+                        app.status = Some(format!("refreshing #{number}…"));
+                        spawn_issue_refresh(client, id, number, tx);
+                    }
+                    RefreshTarget::Repo(repo) => {
+                        app.status = Some(format!("refreshing repo {repo}…"));
+                        spawn_repo_refresh(client, app, repo, tx);
+                    }
+                    RefreshTarget::Filtered => {
+                        app.status = Some("refreshing…".into());
+                        spawn_filtered_fetch(client, app, tx);
+                    }
+                }
             }
         },
         // flip the lower detail region between comments and runs (#222)
@@ -319,5 +348,84 @@ fn tree_right(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<AppEv
         && let Some(issue_id) = app.enter_detail()
     {
         spawn_comments(client, issue_id, tx);
+    }
+}
+
+/// A refresh of any scope is already out: say so and start nothing, so two
+/// answers cannot race to settle the list (#229).
+fn refresh_busy(app: &mut App) -> bool {
+    if app.loading {
+        app.status = Some("a refresh is already running".into());
+    }
+    app.loading
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testutil::{app_with_issue, key, test_client};
+    use super::*;
+    use crate::config::builtin_harnesses;
+
+    /// Press `key` in Normal mode. Spawned fetches go nowhere: the receiver
+    /// is dropped and the runtime ends with the test.
+    fn press(app: &mut App, key: KeyEvent) {
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let mut registry = HarnessRegistry::default();
+        let settings = HarnessSettings {
+            default_harness: None,
+            harnesses: builtin_harnesses(),
+            workspace_roots: Vec::new(),
+            cwd_repo: None,
+            cwd: std::path::PathBuf::from("/"),
+        };
+        let mut hx = HarnessCtx {
+            registry: &mut registry,
+            settings: &settings,
+            tx: &tx,
+        };
+        handle_normal_key(app, key, &test_client(), &tx, &mut hx);
+    }
+
+    fn ctrl_r() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+    }
+
+    #[tokio::test]
+    async fn r_on_an_issue_refreshes_that_issue() {
+        let (mut app, _) = app_with_issue(&[]);
+        press(&mut app, key(KeyCode::Char('r')));
+        assert!(app.loading);
+        assert_eq!(app.status.as_deref(), Some("refreshing #1…"));
+    }
+
+    #[tokio::test]
+    async fn r_on_a_repo_header_refreshes_that_repo() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.selected = 0;
+        press(&mut app, key(KeyCode::Char('r')));
+        assert!(app.loading);
+        assert_eq!(app.status.as_deref(), Some("refreshing repo r…"));
+    }
+
+    #[tokio::test]
+    async fn ctrl_r_refreshes_the_org_unless_a_repo_is_named_exactly() {
+        let (mut app, _) = app_with_issue(&[]);
+        press(&mut app, ctrl_r());
+        assert_eq!(app.status.as_deref(), Some("refreshing org…"));
+
+        app.loading = false;
+        app.filters.repo = "R".into();
+        press(&mut app, ctrl_r());
+        assert_eq!(app.status.as_deref(), Some("refreshing repo r…"));
+    }
+
+    #[tokio::test]
+    async fn no_refresh_starts_while_one_is_running() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = true;
+        press(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(app.status.as_deref(), Some("a refresh is already running"));
+        press(&mut app, ctrl_r());
+        assert_eq!(app.status.as_deref(), Some("a refresh is already running"));
     }
 }

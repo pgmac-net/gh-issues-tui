@@ -16,6 +16,63 @@ pub(crate) fn spawn_fetch(client: &Provider, app: &App, tx: &mpsc::UnboundedSend
     });
 }
 
+/// Refetch the filtered scope (#229): the one repo an exact repo filter names,
+/// otherwise the org. `Ctrl+R` and the auto-refresh ticker both land here.
+pub(crate) fn spawn_filtered_fetch(
+    client: &Provider,
+    app: &App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    match app.filtered_target() {
+        FetchTarget::Org => spawn_fetch(client, app, tx),
+        FetchTarget::Repo(repo) => spawn_repo_refresh(client, app, repo, tx),
+    }
+}
+
+/// Refetch one repo's issues (#229), at the loaded `include_closed` scope so
+/// the group stays consistent with the rest of the list.
+pub(crate) fn spawn_repo_refresh(
+    client: &Provider,
+    app: &App,
+    repo: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let org = app.org.clone();
+    let include_closed = app.include_closed;
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client
+            .repo_issues(&org, &repo, include_closed)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::RepoRefreshed { repo, result });
+    });
+}
+
+/// Refetch one issue (#229). `number` only labels the status line.
+pub(crate) fn spawn_issue_refresh(
+    client: &Provider,
+    id: String,
+    number: u64,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client
+            .issue(&id)
+            .await
+            .map(|i| i.map(Box::new))
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::IssueRefreshed {
+            issue_id: id,
+            number,
+            result,
+        });
+    });
+}
+
 /// Rank any loaded labels that have not been ranked yet (#156). A no-op
 /// without a `ranker` (feature off, or no key), when there is nothing new to
 /// ask, when a request is already out, and after a failure this session.

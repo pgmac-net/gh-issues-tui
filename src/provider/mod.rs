@@ -28,6 +28,19 @@ pub trait IssueProvider: Send + Sync {
     /// Fetch all issues for every repository (or the provider's nearest
     /// grouping concept) owned by `org`.
     async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>>;
+    /// One issue as the backend holds it now, by the id `org_issues` gave it
+    /// (#229). `Ok(None)` when it no longer exists or can no longer be seen —
+    /// deleted, transferred, access lost.
+    async fn issue(&self, issue_id: &str) -> Result<Option<Issue>>;
+    /// One group's issues, shaped exactly like the matching `org_issues`
+    /// entry (#229). `Ok(None)` when the group is gone, archived, or cannot
+    /// hold issues — the same groups `org_issues` leaves out.
+    async fn repo_issues(
+        &self,
+        org: &str,
+        repo: &str,
+        include_closed: bool,
+    ) -> Result<Option<RepoIssues>>;
 
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>>;
 
@@ -198,6 +211,12 @@ mod tests {
     impl IssueProvider for Minimal {
         async fn org_issues(&self, _: &str, _: bool) -> Result<Vec<RepoIssues>> {
             Ok(vec![])
+        }
+        async fn issue(&self, _: &str) -> Result<Option<Issue>> {
+            Ok(None)
+        }
+        async fn repo_issues(&self, _: &str, _: &str, _: bool) -> Result<Option<RepoIssues>> {
+            Ok(None)
         }
         async fn comments(&self, _: &str) -> Result<Vec<Comment>> {
             Ok(vec![])

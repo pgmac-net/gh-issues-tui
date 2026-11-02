@@ -28,12 +28,24 @@ mod spawn;
 
 use keys::{HarnessCtx, handle_key};
 use spawn::{
-    AfterMutation, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks,
-    spawn_readiness, spawn_runs, spawn_semantic_search,
+    AfterMutation, spawn_comments, spawn_fetch, spawn_filtered_fetch, spawn_label_ranks,
+    spawn_priority_ranks, spawn_readiness, spawn_runs, spawn_semantic_search,
 };
 
 pub enum AppEvent {
     Data(Result<Vec<RepoIssues>, String>),
+    /// One issue refetched by `r` (#229); `Ok(None)` means it is gone.
+    IssueRefreshed {
+        issue_id: String,
+        number: u64,
+        result: Result<Option<Box<Issue>>, String>,
+    },
+    /// One repo refetched by `r` on its header, or as the filtered scope
+    /// (#229); `Ok(None)` means it is gone, archived or has issues disabled.
+    RepoRefreshed {
+        repo: String,
+        result: Result<Option<RepoIssues>, String>,
+    },
     Comments {
         issue_id: String,
         result: Result<Vec<Comment>, String>,
@@ -272,7 +284,7 @@ async fn event_loop(
                 if app.should_auto_refresh() {
                     app.loading = true;
                     app.auto_refreshing = true;
-                    spawn_fetch(&client, &app, &tx);
+                    spawn_filtered_fetch(&client, &app, &tx);
                 }
             }
             _ = runs_timer, if runs_due.is_some() => {
@@ -364,6 +376,19 @@ pub(crate) fn nav(
 
 /// The issue id whose comment thread should be refetched after a mutation
 /// completes, when the detail pane is open and showing an issue.
+/// A fetch of any scope failed: clear the in-flight flags and say so. A rate
+/// limit also sets `rate_limit_error`, which pauses auto-refresh.
+fn refresh_failed(app: &mut App, what: &str, e: &str) {
+    app.loading = false;
+    app.auto_refreshing = false;
+    if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
+        app.rate_limit_error = Some(e.to_string());
+        app.status = Some(format!("{what} failed — {e}"));
+    } else {
+        app.status = Some(format!("{what} failed: {e}"));
+    }
+}
+
 pub(crate) fn comments_refresh_target(app: &App) -> Option<String> {
     if !app.detail.open {
         return None;
@@ -446,11 +471,16 @@ pub(crate) fn handle_app_event(
         ),
         AppEvent::Data(Ok(repos)) => {
             app.rate_limit_error = None;
+            // First load of an org says "loaded"; every later one names its
+            // scope like the one-repo and one-issue refreshes do (#229).
+            let first = app.repos.is_empty();
             nav(app, client, tx, |app| app.set_data(repos));
             let verb = if app.auto_refreshing {
-                "auto-refreshed"
-            } else {
+                "auto-refreshed org:"
+            } else if first {
                 "loaded"
+            } else {
+                "refreshed org:"
             };
             app.auto_refreshing = false;
             app.status = Some(format!(
@@ -464,16 +494,60 @@ pub(crate) fn handle_app_event(
         AppEvent::SemanticSearch { generation, result } => {
             app.apply_semantic_search(generation, result)
         }
-        AppEvent::Data(Err(e)) => {
-            app.loading = false;
-            app.auto_refreshing = false;
-            if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
-                app.rate_limit_error = Some(e.clone());
-                app.status = Some(format!("load failed — {e}"));
-            } else {
-                app.status = Some(format!("load failed: {e}"));
+        AppEvent::Data(Err(e)) => refresh_failed(app, "load", &e),
+        AppEvent::IssueRefreshed {
+            issue_id,
+            number,
+            result,
+        } => match result {
+            Ok(Some(issue)) => {
+                app.loading = false;
+                app.rate_limit_error = None;
+                let mut listed = false;
+                nav(app, client, tx, |app| listed = app.patch_issue(*issue));
+                app.status = Some(if listed {
+                    format!("refreshed #{number}")
+                } else {
+                    format!("refreshed #{number} (no longer listed)")
+                });
+                // The thread may have moved on too; reload it if it is showing.
+                if comments_refresh_target(app).as_deref() == Some(issue_id.as_str()) {
+                    app.invalidate_comments(&issue_id);
+                    spawn_comments(client, issue_id, tx);
+                }
+                spawn_label_ranks(app, ranker, tx);
             }
-        }
+            Ok(None) => {
+                app.loading = false;
+                app.rate_limit_error = None;
+                nav(app, client, tx, |app| {
+                    app.remove_issue(&issue_id);
+                });
+                app.status = Some(format!("#{number} no longer exists, removed"));
+            }
+            Err(e) => refresh_failed(app, "refresh", &e),
+        },
+        AppEvent::RepoRefreshed { repo, result } => match result {
+            Ok(fresh) => {
+                app.loading = false;
+                app.rate_limit_error = None;
+                let verb = if app.auto_refreshing {
+                    "auto-refreshed"
+                } else {
+                    "refreshed"
+                };
+                app.auto_refreshing = false;
+                let gone = fresh.is_none();
+                nav(app, client, tx, |app| app.replace_repo(&repo, fresh));
+                app.status = Some(if gone {
+                    format!("repo {repo} is gone, archived or has issues off, removed")
+                } else {
+                    format!("{verb} repo {repo} ({})", app.repo_issue_count(&repo))
+                });
+                spawn_label_ranks(app, ranker, tx);
+            }
+            Err(e) => refresh_failed(app, "refresh", &e),
+        },
         AppEvent::Comments { issue_id, result } => {
             let is_selected = app.selected_issue().map(|i| i.id.clone()) == Some(issue_id.clone());
             match result {
@@ -715,10 +789,10 @@ pub(crate) mod prelude {
     pub use crate::provider::types::{Issue, IssueState, PrRef, RepoLabel};
     pub use crate::tui::app::{
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailGeometry, EditorState, EditorTarget,
-        Focus, HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW,
+        FetchTarget, Focus, HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW,
         ISSUE_FORM_LABEL_WIDTH, InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove,
-        PendingPriority, RunsFetch, RunsWork, SessionId, StateFilter, TreeRight, issue_form_width,
-        options_are_convention, priority_label_set, ranked_label_set,
+        PendingPriority, RefreshTarget, RunsFetch, RunsWork, SessionId, StateFilter, TreeRight,
+        issue_form_width, options_are_convention, priority_label_set, ranked_label_set,
     };
     pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};
     pub use crate::tui::{layout, ui};
@@ -759,6 +833,142 @@ mod tests {
             created_at: chrono::Utc::now(),
             body: body.into(),
         }
+    }
+
+    fn send(app: &mut App, event: AppEvent) {
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        handle_app_event(app, event, &client, None, &tx);
+    }
+
+    #[test]
+    fn org_data_says_loaded_first_and_refreshed_org_after() {
+        let mut app = App::new("org".into(), None, false, false, String::new());
+        let data = || {
+            AppEvent::Data(Ok(vec![RepoIssues {
+                repo: "r".into(),
+                repo_url: "u".into(),
+                issues: vec![stub_issue("I_1", 1)],
+            }]))
+        };
+        send(&mut app, data());
+        assert_eq!(
+            app.status.as_deref(),
+            Some("loaded 1 issues across 1 repos")
+        );
+        send(&mut app, data());
+        assert_eq!(
+            app.status.as_deref(),
+            Some("refreshed org: 1 issues across 1 repos")
+        );
+    }
+
+    #[test]
+    fn issue_refreshed_patches_the_issue_in_place() {
+        let (mut app, id) = app_with_issue(&[]);
+        app.loading = true;
+        let mut fresh = stub_issue(&id, 1);
+        fresh.title = "renamed".into();
+        send(
+            &mut app,
+            AppEvent::IssueRefreshed {
+                issue_id: id,
+                number: 1,
+                result: Ok(Some(Box::new(fresh))),
+            },
+        );
+        assert!(!app.loading);
+        assert_eq!(app.repos[0].issues[0].title, "renamed");
+        assert_eq!(app.status.as_deref(), Some("refreshed #1"));
+    }
+
+    #[test]
+    fn issue_refreshed_as_gone_removes_it() {
+        let (mut app, id) = app_with_issue(&[]);
+        app.loading = true;
+        send(
+            &mut app,
+            AppEvent::IssueRefreshed {
+                issue_id: id,
+                number: 1,
+                result: Ok(None),
+            },
+        );
+        assert!(!app.loading);
+        assert!(app.repos[0].issues.is_empty());
+        assert_eq!(app.status.as_deref(), Some("#1 no longer exists, removed"));
+    }
+
+    #[test]
+    fn repo_refreshed_replaces_that_repo_and_reports_its_count() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = true;
+        send(
+            &mut app,
+            AppEvent::RepoRefreshed {
+                repo: "r".into(),
+                result: Ok(Some(RepoIssues {
+                    repo: "r".into(),
+                    repo_url: "u".into(),
+                    issues: vec![stub_issue("I_1", 1), stub_issue("I_2", 2)],
+                })),
+            },
+        );
+        assert!(!app.loading);
+        assert_eq!(app.repos[0].issues.len(), 2);
+        assert_eq!(app.status.as_deref(), Some("refreshed repo r (2)"));
+    }
+
+    #[test]
+    fn auto_refresh_of_a_repo_says_so_and_clears_the_flag() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = true;
+        app.auto_refreshing = true;
+        send(
+            &mut app,
+            AppEvent::RepoRefreshed {
+                repo: "r".into(),
+                result: Ok(Some(RepoIssues {
+                    repo: "r".into(),
+                    repo_url: "u".into(),
+                    issues: vec![],
+                })),
+            },
+        );
+        assert!(!app.auto_refreshing);
+        assert_eq!(app.status.as_deref(), Some("auto-refreshed repo r (0)"));
+    }
+
+    #[test]
+    fn a_failed_partial_refresh_clears_loading_and_reports() {
+        let (mut app, id) = app_with_issue(&[]);
+        app.loading = true;
+        send(
+            &mut app,
+            AppEvent::IssueRefreshed {
+                issue_id: id,
+                number: 1,
+                result: Err("boom".into()),
+            },
+        );
+        assert!(!app.loading);
+        assert_eq!(app.status.as_deref(), Some("refresh failed: boom"));
+        assert_eq!(app.repos[0].issues.len(), 1, "a failure removes nothing");
+    }
+
+    #[test]
+    fn a_rate_limited_partial_refresh_pauses_auto_refresh() {
+        let (mut app, _) = app_with_issue(&[]);
+        let e = format!("{RATE_LIMIT_MSG_PREFIX} (GraphQL)");
+        send(
+            &mut app,
+            AppEvent::RepoRefreshed {
+                repo: "r".into(),
+                result: Err(e.clone()),
+            },
+        );
+        assert_eq!(app.rate_limit_error.as_deref(), Some(e.as_str()));
+        assert!(!app.should_auto_refresh());
     }
 
     #[test]
