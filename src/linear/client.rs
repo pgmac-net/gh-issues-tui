@@ -9,8 +9,8 @@ use crate::provider::http::{
 };
 use crate::provider::scope::FetchScope;
 use crate::provider::types::{
-    Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
-    RepoIssues, RepoLabel,
+    Comment, FormOptions, IdName, Issue, IssueState, IssueStub, Label, NewIssueParams,
+    RateLimitData, RepoIssues, RepoLabel,
 };
 
 const API_URL: &str = "https://api.linear.app/graphql";
@@ -549,6 +549,7 @@ const ISSUE_FIELDS: &str = "fragment IssueFields on Issue {
   creator { displayName }
   assignee { displayName }
   labels(first: 20) { nodes { id name } }
+  parent { id number title url state { type } team { key } }
 }";
 
 /// `issueUpdate` reporting the updated issue; append [`ISSUE_FIELDS`].
@@ -671,6 +672,25 @@ struct IssueNode {
     #[serde(default)]
     assignee: Option<PersonRef>,
     labels: LabelsConn,
+    /// The parent issue, one level only (#234): a deeper chain would add to
+    /// Linear's per-query complexity on every issue of every page.
+    #[serde(default)]
+    parent: Option<ParentRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParentRef {
+    id: String,
+    number: u64,
+    title: String,
+    url: String,
+    state: StateRef,
+    team: TeamKeyRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamKeyRef {
+    key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -767,6 +787,27 @@ impl IssueNode {
             created_at: self.created_at,
             updated_at: self.updated_at,
             closed_at: self.completed_at.or(self.canceled_at),
+            ancestors: self
+                .parent
+                .iter()
+                .map(|p| IssueStub {
+                    id: p.id.clone(),
+                    number: p.number,
+                    title: p.title.clone(),
+                    state: if is_closed_type(&p.state.state_type) {
+                        IssueState::Closed
+                    } else {
+                        IssueState::Open
+                    },
+                    url: p.url.clone(),
+                    repo: p.team.key.clone(),
+                    owner: String::new(),
+                })
+                .collect(),
+            // Linear reports children only as a connection, which would
+            // count against its complexity budget on every issue (#234).
+            sub_issues: None,
+            relations: None,
         }
     }
 }
@@ -888,6 +929,27 @@ mod tests {
         for query in [TEAMS_QUERY, TEAM_BY_KEY_QUERY] {
             assert!(query.contains("nodes { id key }"), "{query}");
         }
+    }
+
+    /// #234: a Linear parent becomes a one-level ancestry, grouped by team key.
+    #[test]
+    fn a_parent_maps_to_a_one_level_ancestry() {
+        assert!(
+            ISSUE_FIELDS.contains("parent { id number title url state { type } team { key } }")
+        );
+        let n = issue_node(json!({
+            "id": "iss_2", "number": 7, "title": "child", "url": "u",
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+            "state": {"type": "started"}, "labels": {"nodes": []},
+            "parent": {"id": "iss_1", "number": 3, "title": "root", "url": "pu",
+                       "state": {"type": "completed"}, "team": {"key": "ENG"}}
+        }));
+        let issue = n.to_issue();
+        assert_eq!(issue.ancestors.len(), 1);
+        let p = &issue.ancestors[0];
+        assert_eq!((p.number, p.repo.as_str()), (3, "ENG"));
+        assert_eq!(p.state, IssueState::Closed);
+        assert!(issue.sub_issues.is_none() && issue.relations.is_none());
     }
 
     #[test]
