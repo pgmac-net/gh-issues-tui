@@ -566,7 +566,7 @@ fn issue_from_payload(data: &Value) -> Result<Issue> {
 
 const TEAMS_QUERY: &str = "query($teamsFirst: Int!, $teamCursor: String) {
   teams(first: $teamsFirst, after: $teamCursor) {
-    nodes { id key name }
+    nodes { id key }
     pageInfo { hasNextPage endCursor }
   }
 }
@@ -575,7 +575,7 @@ const TEAMS_QUERY: &str = "query($teamsFirst: Int!, $teamCursor: String) {
 /// One team by key (#229). Keys are unique per workspace, so at most one node.
 const TEAM_BY_KEY_QUERY: &str = "query($key: String!) {
   teams(first: 1, filter: { key: { eq: $key } }) {
-    nodes { id key name }
+    nodes { id key }
     pageInfo { hasNextPage endCursor }
   }
 }
@@ -639,8 +639,6 @@ struct TeamsConn {
 struct TeamNode {
     id: String,
     key: String,
-    #[allow(dead_code)]
-    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -881,6 +879,15 @@ mod tests {
     fn team_lookup_is_by_key() {
         assert!(TEAM_BY_KEY_QUERY.contains("key: { eq: $key }"));
         assert!(ISSUE_QUERY.contains("...IssueFields"));
+    }
+
+    /// #231: teams are grouped and looked up by key; the name was fetched
+    /// and never read.
+    #[test]
+    fn team_queries_select_only_what_is_read() {
+        for query in [TEAMS_QUERY, TEAM_BY_KEY_QUERY] {
+            assert!(query.contains("nodes { id key }"), "{query}");
+        }
     }
 
     #[test]

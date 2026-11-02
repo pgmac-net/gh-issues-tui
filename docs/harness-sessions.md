@@ -95,7 +95,7 @@ the title is a secondary signal, which is exactly why the identity row exists.
 
 ### Provenance environment
 
-`set_provenance_env` stamps every child with `GH_ISSUES_TUI` (marker and version),
+`provenance_env` stamps every child with `GH_ISSUES_TUI` (marker and version),
 `_HARNESS`, `_OWNER`, `_REPO`, `_NUMBER`, `_ISSUE`, `_URL` and `_TITLE`. The README lists
 the values and a worked Claude Code `statusLine` recipe.
 
@@ -114,7 +114,7 @@ same property the argv array gives placeholder expansion (see [Security](#securi
 whenever the name it was `--bg --name`'d with parses as `owner/repo#number` — that shape
 alone, nothing else. It has no way to tell whether *this* `gh-issues-tui` process was the
 one that dispatched it: `claude agents --json` reports pid, name and state, not the
-provenance environment `set_provenance_env` stamped at launch. An adopted session is
+provenance environment `provenance_env` stamped at launch. An adopted session is
 therefore not necessarily one this tool started — any `--bg` session anyone named
 `owner/repo#N` qualifies, including one launched by a different terminal, a different
 tool, or an entirely different Claude Code harness. It reads `↗` in the session picker

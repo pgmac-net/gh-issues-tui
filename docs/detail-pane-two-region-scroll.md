@@ -10,6 +10,17 @@ Redesign of the issue detail pane's navigation, tracking
 > comment edge-scrolls instead of snapping its header to the top, and the
 > comments scrollbar shows position in the whole thread. `scroll_comment`,
 > `snap_comment` and the per-comment clamp below are gone.
+>
+> Names below are as of #59. The `detail_card*` names belong to the card
+> cursor this design replaced. Since renamed (#90 grouped detail state into
+> `DetailState`):
+> - `detail_sel` → `DetailState.sel`
+> - `select_detail` → `DetailState::select`
+> - `clamp_detail_sel` → `DetailState::clamp_sel`
+> - `reset_detail_scroll` → `DetailState::reset_scroll`
+> - `scroll_body` → `DetailState.body_scroll`
+>
+> `snap_after_select` went with the snapping.
 
 ## Motivation
 

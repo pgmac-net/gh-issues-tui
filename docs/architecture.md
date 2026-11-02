@@ -10,14 +10,20 @@ Built for [pgmac-net/homelabia#128](https://github.com/pgmac-net/homelabia/issue
 src/
 ├── main.rs          CLI (clap), panic hook, wiring
 ├── config.rs        ~/.config/gh-issues/config.toml (default_org, provider, copy_format, ...)
-├── typesafe/        optional priority-rank inference for non-`priority:` labels (#156)
+├── cwd_repo.rs      owner/repo of the git clone the app was started in
+├── codespan.rs      fence and code-span rules, shared by the renderer and PR-link scanning (#157)
+├── localtime.rs     UTC in, local days and times out
 ├── provider/
 │   ├── mod.rs       IssueProvider trait, Provider alias (Arc<dyn>), name → provider factory
 │   ├── types.rs     backend-neutral domain types: Issue / RepoIssues / Comment / IssueState / ...
-│   └── error.rs     ProviderError (thiserror), incl. Unsupported for capability gaps
+│   ├── scope.rs     FetchScope: what a fetch pushes down to the backend (#230)
+│   ├── error.rs     ProviderError (thiserror), incl. Unsupported and NotFound; found()
+│   ├── http.rs      HTTP plumbing shared by every backend (rate limits, GraphQL envelope)
+│   └── priority.rs  synthetic priority:* labels for backends with a native priority
 ├── github/
 │   ├── auth.rs      token chain: --token → GITHUB_TOKEN → GH_TOKEN → gh auth token
-│   └── client.rs    GraphQL v4 client: org-wide fetch + mutations; impl IssueProvider
+│   ├── client.rs    GraphQL v4 client: org/repo/issue reads, mutations, PR summaries; impl IssueProvider
+│   └── actions.rs   linked PRs and their Actions runs over REST (#222)
 ├── linear/
 │   ├── auth.rs      key chain: --token → LINEAR_API_KEY → LINEAR_TOKEN
 │   ├── client.rs    Linear GraphQL client; impl IssueProvider
@@ -26,10 +32,18 @@ src/
 │   ├── auth.rs      env creds: JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN (Basic auth)
 │   ├── client.rs    Jira Cloud REST client; impl IssueProvider
 │   └── mod.rs       priority name ↔ priority:* mapping, ADF flatten/wrap, Jira datetime parse
+├── runs/            workflow runs for an issue's linked PRs, and their ETAs (#222; estimate.rs ports gh-eta)
+├── typesafe/        optional model features: label-rank inference (#156), semantic search (#158), readiness (#160)
 └── tui/
-    ├── app.rs       all state + pure logic (filters, sort, rows, input)
-    ├── event.rs     async event loop, background tasks (talks to Provider, never a concrete client)
-    └── ui.rs        pure render
+    ├── app/         all state + pure logic, one file per concern (no I/O, no screen geometry)
+    ├── event/       async event loop, key handlers (keys/), background tasks (spawn.rs)
+    ├── ui/          pure render
+    ├── layout.rs    screen geometry, computed once; shared by ui and the key handlers
+    ├── linkmap.rs   detail-pane word wrap and URL positions (OSC 8 links)
+    ├── markdown/    line-oriented markdown renderer for the detail pane
+    ├── harness/     coding-harness PTY sessions (#23)
+    ├── theme.rs     colours, overridable per profile
+    └── title.rs     the outer terminal's window title (#132)
 ```
 
 ## Provider abstraction ([#63](https://github.com/pgmac-net/gh-issues-tui/issues/63))
@@ -116,7 +130,13 @@ Including closed issues can push a single request's combined repo/issue page siz
 - **Async**: all GitHub calls run in `tokio::spawn`ed tasks that report back over an mpsc channel (`AppEvent`); the event loop `select!`s over keys and app events. The UI never blocks on the network.
 - **Consistency (#196)**: issue-level mutations (state, title, description, assignees, labels/priority) return the issue as the backend holds it after the write — GitHub and Linear from the mutation payload, Jira from one follow-up `GET /issue/{key}` since its writes answer 204 — and `AppEvent::IssuePatched` replaces that one list entry in place (`App::patch_issue`). They used to trigger a full org refetch, which could read a replica that had not seen the write yet (or lose a race to an older auto-refresh), leaving stale labels and an "open" marker on a just-closed issue until the next refresh. `set_data` closes the same window from the refetch side: a loaded issue whose `updated_at` is strictly newer than the incoming copy is kept (`keep_newer_loaded`). Only create and move — which change which issues exist or where they live — still refetch the org (`AfterMutation::RefetchOrg`). Comment mutations refetch only the open issue's thread (invalidating its cache entry first); adding one bumps the listed count locally. See `docs/adr/0005-*` and `docs/tree-view-in-place-updates.md`.
 - **Comment threads are cached per issue** (`App::comment_cache`, keyed by issue id). `App::load_comments` returns an issue id only when a request is genuinely needed: a thread already fetched this cycle, or an issue whose `comment_count` is zero, resolves with no API call — navigating the list with the detail pane open used to cost one request per row. Both cases settle `detail.comments` to a loaded (possibly empty) thread so the pane never waits on a response that will never arrive. The cache is cleared wholesale by `set_data` and `switch_org`.
-- **Two-region detail pane & inline editing**: the pane splits vertically (`detail_split`, body ≈45%) into a body region (issue metadata + description, scrolled by `body_scroll`) pinned above a comments region (comment cards — author · timestamp header rule, body, bottom rule — scrolled by `comments_scroll`). Each region draws its own right-edge `Scrollbar` when its content overflows. The selection is `DetailSel { Body, Comment(i) }` (`detail_sel`): `Tab`/`Shift+Tab` (`select_detail`, wrapping) move it and `←` returns focus to the list; `j`/`k` scroll only the selected region (`scroll_body` / `scroll_comment`), and selecting a comment snaps its header to the top (`snap_comment` + `comment_offset`) so scrolling then walks that one comment's own extent, its scrollbar tracking position within it. Wrapped heights are measured with ratatui's `Paragraph::line_count` (`unstable-rendered-line-info` feature) via shared `body_lines` / `comment_card_lines` builders, so measured and drawn geometry match exactly (the key handler recovers live dimensions from the terminal size in `detail_metrics`). `e` edits the selected region. The single `CommentEditor` mode serves add-comment, edit-comment, and edit-description via `EditorTarget` on `App`; `submit_comment` branches to the matching mutation and an empty save is discarded except for the description.
+- **Two-region detail pane & inline editing**: the pane splits vertically (`detail_split` in `ui/detail.rs`, body ≈45%) into a body region (issue metadata + description, scrolled by `body_scroll`) pinned above a comments region (comment cards — author · timestamp header rule, body, bottom rule — scrolled by `comments_scroll`). Each region draws its own right-edge `Scrollbar` when its content overflows; the comments one covers the whole thread. The selection is `DetailSel { Body, Comment(i) }` (`DetailState.sel`). The pane follows the same tree keys as every nested pane (#217, [ADR 0006](adr/0006-pane-keys-are-tree-semantics-and-the-comments-viewport-edge-scrolls.md)):
+- `↑`/`↓` move a row cursor (`DetailState::step`), `PgUp`/`PgDn` page, `g`/`G` jump.
+- `Tab`/`Shift+Tab` move header to header (`DetailState::select`, wrapping).
+- `←` folds a comment or hands focus back to the list.
+- The comments viewport only edge-scrolls to keep the selection in view (`DetailState::reveal_selected` over `layout::scroll_into_view`).
+
+Wrapping is owned by `tui::linkmap`, not ratatui: lines are pre-wrapped with `linkmap::wrap`, and `linkmap::wrapped_height` counts rows the same way. The handler measures a `DetailGeometry` with `ui::comment_height`/`body_content_height` (via `detail_metrics`), so measured and drawn geometry match exactly. Folded comments count as one row (#210). `e` edits the selected region. The single `CommentEditor` mode serves add-comment, edit-comment, and edit-description via `EditorTarget` on `App`; `submit_comment` branches to the matching mutation and an empty save is discarded except for the description.
 
 ## Mutations
 
@@ -147,7 +167,7 @@ The confirmed target doesn't ride inside `Mode` the way `HarnessConfirm::Kill(Se
 
 `P` in the detail pane scans the selected issue's body and loaded comment thread for explicit `github.com/{owner}/{repo}/pull/{N}` links (`parse_pr_links` in `provider/types.rs`) — bare `#N` is deliberately not matched, since in an issues tool it's ambiguous between an issue and a PR. Zero links reports a status message; one link fetches the summary directly; several open `Mode::PrPicker` first (reusing the filter-editor's picker machinery).
 
-`Client::pull_request` fetches everything in one GraphQL query: title/body/state/draft, base/head refs, diffstat, `reviewDecision` plus the review list (deduped to each reviewer's latest state), comment/review-thread counts, the head commit's `statusCheckRollup` (the `CheckRun`/`StatusContext` union flattened into one DTO via `__typename`), the head commit's `checkSuites` (the PR's own Actions runs), and `defaultBranchRef`'s recent commits' `checkSuites` (the "merge to main" runs). `App::pr_target` guards the async response against a stale PR (the popup closed or retargeted before it landed) — the same pattern as `priority_pick_issue`/`label_pick_issue`.
+`Client::pull_request` fetches everything in one GraphQL query: title/body/state/draft, base/head refs, diffstat, `reviewDecision` plus the review list (deduped to each reviewer's latest state), comment/review-thread counts, the head commit's `statusCheckRollup` (the `CheckRun`/`StatusContext` union flattened into one DTO via `__typename`), the head commit's `checkSuites` (the PR's own Actions runs), and `defaultBranchRef`'s recent commits' `checkSuites` (the "merge to main" runs). `PrState.target` guards the async response against a stale PR (the popup closed or retargeted before it landed) — the same pattern as `PickerState.priority_issue`/`label_issue`.
 
 ## Security decisions
 
