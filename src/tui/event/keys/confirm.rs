@@ -6,26 +6,13 @@ pub(crate) fn handle_confirm_key(
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    match key.code {
-        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Char('h') | KeyCode::Char('l') => {
-            app.confirm_choice = match app.confirm_choice {
-                ConfirmChoice::Yes => ConfirmChoice::No,
-                ConfirmChoice::No => ConfirmChoice::Yes,
-            };
-        }
-        KeyCode::Char('y') => confirm_toggle_state(app, client, tx),
-        KeyCode::Char('n') | KeyCode::Esc => {
+    match super::shared::confirm_decision(app, key) {
+        Some(true) => confirm_toggle_state(app, client, tx),
+        Some(false) => {
             app.mode = Mode::Normal;
             app.status = Some("cancelled".into());
         }
-        KeyCode::Enter => match app.confirm_choice {
-            ConfirmChoice::Yes => confirm_toggle_state(app, client, tx),
-            ConfirmChoice::No => {
-                app.mode = Mode::Normal;
-                app.status = Some("cancelled".into());
-            }
-        },
-        _ => {}
+        None => {}
     }
 }
 
