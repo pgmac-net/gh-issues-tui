@@ -58,18 +58,40 @@ pub(crate) fn refetch_if_widened(
     spawn_filtered_fetch(client, app, tx);
 }
 
+/// Run one provider call on a background task and send its answer back as
+/// the event `wrap` builds (#232). Errors cross the channel as strings, as
+/// every fetch event carries them. `call` owns what it needs; anything `wrap`
+/// also needs is cloned for it by the caller.
+fn spawn_call<T, Fut>(
+    client: &Provider,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    call: impl FnOnce(Provider) -> Fut + Send + 'static,
+    wrap: impl FnOnce(Result<T, String>) -> AppEvent + Send + 'static,
+) where
+    T: Send + 'static,
+    Fut: Future<Output = crate::provider::error::Result<T>> + Send + 'static,
+{
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = call(client).await.map_err(|e| e.to_string());
+        let _ = tx.send(wrap(result));
+    });
+}
+
 /// Fetch the org's repo names for the move picker (#230).
 pub(crate) fn spawn_repo_names(
     client: &Provider,
     org: String,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client.repo_names(&org).await.map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::RepoNames { org, result });
-    });
+    let key = org.clone();
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.repo_names(&key).await },
+        move |result| AppEvent::RepoNames { org, result },
+    );
 }
 
 fn send_org_fetch(
@@ -78,15 +100,12 @@ fn send_org_fetch(
     scope: FetchScope,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client
-            .org_issues(&org, &scope)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::Data(result));
-    });
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.org_issues(&org, &scope).await },
+        AppEvent::Data,
+    );
 }
 
 fn send_repo_fetch(
@@ -96,15 +115,13 @@ fn send_repo_fetch(
     scope: FetchScope,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client
-            .repo_issues(&org, &repo, &scope)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::RepoRefreshed { repo, result });
-    });
+    let name = repo.clone();
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.repo_issues(&org, &name, &scope).await },
+        move |result| AppEvent::RepoRefreshed { repo, result },
+    );
 }
 
 /// Refetch one issue (#229). `number` only labels the status line.
@@ -114,20 +131,17 @@ pub(crate) fn spawn_issue_refresh(
     number: u64,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client
-            .issue(&id)
-            .await
-            .map(|i| i.map(Box::new))
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::IssueRefreshed {
+    let key = id.clone();
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.issue(&key).await.map(|i| i.map(Box::new)) },
+        move |result| AppEvent::IssueRefreshed {
             issue_id: id,
             number,
             result,
-        });
-    });
+        },
+    );
 }
 
 /// Rank any loaded labels that have not been ranked yet (#156). A no-op
@@ -247,15 +261,31 @@ pub(crate) fn spawn_form_options(
     repo: String,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client
-            .repo_form_options(&org, &repo)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::FormOptions { repo, result });
-    });
+    let name = repo.clone();
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.repo_form_options(&org, &name).await },
+        move |result| AppEvent::FormOptions { repo, result },
+    );
+}
+
+/// Fetch a repo's labels for one of the two label pickers. `into` names the
+/// event, which is the only difference between the priority and label paths.
+fn spawn_repo_labels(
+    client: &Provider,
+    org: String,
+    repo: String,
+    issue_id: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    into: fn(String, Result<Vec<RepoLabel>, String>) -> AppEvent,
+) {
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.repo_labels(&org, &repo).await },
+        move |result| into(issue_id, result),
+    );
 }
 
 pub(crate) fn spawn_priority_options(
@@ -265,14 +295,8 @@ pub(crate) fn spawn_priority_options(
     issue_id: String,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client
-            .repo_labels(&org, &repo)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::PriorityOptions { issue_id, result });
+    spawn_repo_labels(client, org, repo, issue_id, tx, |issue_id, result| {
+        AppEvent::PriorityOptions { issue_id, result }
     });
 }
 
@@ -283,14 +307,8 @@ pub(crate) fn spawn_label_options(
     issue_id: String,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client
-            .repo_labels(&org, &repo)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::LabelOptions { issue_id, result });
+    spawn_repo_labels(client, org, repo, issue_id, tx, |issue_id, result| {
+        AppEvent::LabelOptions { issue_id, result }
     });
 }
 
@@ -299,24 +317,26 @@ pub(crate) fn spawn_comments(
     issue_id: String,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client.comments(&issue_id).await.map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::Comments { issue_id, result });
-    });
+    let key = issue_id.clone();
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.comments(&key).await },
+        move |result| AppEvent::Comments { issue_id, result },
+    );
 }
 
 pub(crate) fn spawn_pr_summary(client: &Provider, pr: PrRef, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let client = client.clone();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client.pull_request(&pr).await.map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::PrSummary {
+    let key = pr.clone();
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.pull_request(&key).await },
+        move |result| AppEvent::PrSummary {
             pr,
             result: Box::new(result),
-        });
-    });
+        },
+    );
 }
 
 /// Run the workflow-runs fetch the tab asked for (#222). Tagged with the
@@ -384,23 +404,10 @@ pub(crate) fn with_issue<F, Fut>(
     F: FnOnce(Provider, String) -> Fut + Send + 'static,
     Fut: Future<Output = crate::provider::error::Result<()>> + Send,
 {
-    let Some(issue) = app.selected_issue() else {
-        return;
-    };
-    let id = issue.id.clone();
-    let client = client.clone();
-    let tx = tx.clone();
-    app.status = Some("working…".into());
-    tokio::spawn(async move {
-        let msg = match op(client, id.clone()).await {
-            Ok(()) => AppEvent::MutationDone {
-                msg: done_msg.into(),
-                issue_id: Some(id),
-                after,
-            },
-            Err(e) => AppEvent::MutationFailed(e.to_string()),
-        };
-        let _ = tx.send(msg);
+    mutate_selected(app, client, tx, op, move |id, ()| AppEvent::MutationDone {
+        msg: done_msg.into(),
+        issue_id: Some(id),
+        after,
     });
 }
 
@@ -418,6 +425,28 @@ pub(crate) fn with_issue_patch<F, Fut>(
     F: FnOnce(Provider, String) -> Fut + Send + 'static,
     Fut: Future<Output = crate::provider::error::Result<Issue>> + Send,
 {
+    mutate_selected(app, client, tx, op, move |_, issue| {
+        AppEvent::IssuePatched {
+            msg: done_msg.into(),
+            issue: Box::new(issue),
+        }
+    });
+}
+
+/// The shared half of [`with_issue`] and [`with_issue_patch`] (#232): run
+/// `op` against the selected issue's id, then report `done(id, value)` or
+/// `MutationFailed`. A no-op with nothing selected.
+fn mutate_selected<T, F, Fut>(
+    app: &mut App,
+    client: &Provider,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    op: F,
+    done: impl FnOnce(String, T) -> AppEvent + Send + 'static,
+) where
+    T: Send + 'static,
+    F: FnOnce(Provider, String) -> Fut + Send + 'static,
+    Fut: Future<Output = crate::provider::error::Result<T>> + Send,
+{
     let Some(issue) = app.selected_issue() else {
         return;
     };
@@ -426,11 +455,8 @@ pub(crate) fn with_issue_patch<F, Fut>(
     let tx = tx.clone();
     app.status = Some("working…".into());
     tokio::spawn(async move {
-        let msg = match op(client, id).await {
-            Ok(issue) => AppEvent::IssuePatched {
-                msg: done_msg.into(),
-                issue: Box::new(issue),
-            },
+        let msg = match op(client, id.clone()).await {
+            Ok(value) => done(id, value),
             Err(e) => AppEvent::MutationFailed(e.to_string()),
         };
         let _ = tx.send(msg);
