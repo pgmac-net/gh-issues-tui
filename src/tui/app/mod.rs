@@ -19,6 +19,7 @@ mod pr;
 mod ranks;
 pub mod readiness;
 mod rows;
+mod run_tree;
 pub mod runs;
 pub mod search;
 
@@ -36,7 +37,8 @@ pub use picker::PickerState;
 pub use pr::PrState;
 pub use ranks::RankState;
 pub use rows::TreeRight;
-pub use runs::{DetailTab, RunRow, RunRowKind, RunsData, RunsFetch, RunsState, RunsWork};
+pub use run_tree::{RunRow, RunRowKind, RunsData};
+pub use runs::{DetailTab, RunsFetch, RunsState, RunsWork};
 
 use prelude::*;
 
