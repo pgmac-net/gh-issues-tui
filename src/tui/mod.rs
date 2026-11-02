@@ -8,4 +8,4 @@ pub mod theme;
 pub mod title;
 pub mod ui;
 
-pub use event::run;
+pub use event::{RunConfig, run};

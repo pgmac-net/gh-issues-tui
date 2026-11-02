@@ -11,16 +11,10 @@ use chrono::TimeZone;
 
 fn issue(number: u64, title: &str, state: IssueState) -> Issue {
     Issue {
-        id: format!("I_{number}"),
-        number,
         title: title.into(),
-        body: String::new(),
         state,
         url: format!("https://github.com/o/r/issues/{number}"),
         author: "pgmac".into(),
-        assignees: vec![],
-        labels: vec![],
-        comment_count: 0,
         // Local noon, so the local day (what filters compare) is the same on
         // every host timezone.
         created_at: chrono::Local
@@ -31,7 +25,7 @@ fn issue(number: u64, title: &str, state: IssueState) -> Issue {
             .with_ymd_and_hms(2026, 7, number as u32 % 28 + 1, 12, 0, 0)
             .unwrap()
             .with_timezone(&Utc),
-        closed_at: None,
+        ..Issue::fixture(&format!("I_{number}"), number)
     }
 }
 

@@ -158,19 +158,10 @@ mod tests {
 
     fn issue(id: &str, number: u64, updated: &str) -> Issue {
         Issue {
-            id: id.into(),
-            number,
             title: format!("t{number}"),
-            body: String::new(),
-            state: IssueState::Open,
-            url: "u".into(),
-            author: "a".into(),
-            assignees: vec![],
-            labels: vec![],
-            comment_count: 0,
             created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
             updated_at: updated.parse().unwrap(),
-            closed_at: None,
+            ..Issue::fixture(id, number)
         }
     }
 

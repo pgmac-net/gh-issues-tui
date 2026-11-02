@@ -121,6 +121,33 @@ impl Issue {
     }
 }
 
+#[cfg(test)]
+impl Issue {
+    /// A plain open issue for tests (#232): title `t`, url `u`, author `a`,
+    /// no labels, assignees or comments, created and updated now. Tests set
+    /// only what they assert on, with struct-update syntax:
+    /// `Issue { labels, ..Issue::fixture("I_1", 1) }`. A new field on
+    /// `Issue` is then added here once, not in every test.
+    pub fn fixture(id: &str, number: u64) -> Self {
+        let now = Utc::now();
+        Issue {
+            id: id.into(),
+            number,
+            title: "t".into(),
+            body: String::new(),
+            state: IssueState::Open,
+            url: "u".into(),
+            author: "a".into(),
+            assignees: vec![],
+            labels: vec![],
+            comment_count: 0,
+            created_at: now,
+            updated_at: now,
+            closed_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RepoIssues {
     pub repo: String,
@@ -588,19 +615,8 @@ mod tests {
 
     fn issue_with_labels(labels: Vec<Label>) -> Issue {
         Issue {
-            id: "id".into(),
-            number: 1,
-            title: "t".into(),
-            body: String::new(),
-            state: IssueState::Open,
-            url: String::new(),
-            author: String::new(),
-            assignees: vec![],
             labels,
-            comment_count: 0,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            closed_at: None,
+            ..Issue::fixture("id", 1)
         }
     }
 

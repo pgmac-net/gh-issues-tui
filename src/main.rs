@@ -108,16 +108,18 @@ async fn main() -> Result<()> {
     install_panic_hook();
     tui::run(
         client,
-        org,
-        initial_repo,
-        cli.all,
-        cfg.default_collapsed,
-        cli.refresh.unwrap_or(cfg.refresh_interval),
-        cfg.hide_empty_repos,
-        cfg.copy_format,
-        theme,
-        harness,
-        typesafe,
+        tui::RunConfig {
+            org,
+            initial_repo,
+            include_closed: cli.all,
+            default_collapsed: cfg.default_collapsed,
+            refresh_interval: cli.refresh.unwrap_or(cfg.refresh_interval),
+            hide_empty_repos: cfg.hide_empty_repos,
+            copy_format: cfg.copy_format,
+            theme,
+            harness,
+            typesafe,
+        },
     )
     .await
 }

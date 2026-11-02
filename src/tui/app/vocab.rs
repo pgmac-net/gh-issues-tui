@@ -64,12 +64,6 @@ mod tests {
 
     fn issue(author: &str, assignees: &[&str], labels: &[&str]) -> Issue {
         Issue {
-            id: "I".into(),
-            number: 1,
-            title: String::new(),
-            body: String::new(),
-            state: IssueState::Open,
-            url: String::new(),
             author: author.into(),
             assignees: assignees.iter().map(|s| (*s).to_string()).collect(),
             labels: labels
@@ -79,10 +73,7 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
-            comment_count: 0,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            closed_at: None,
+            ..Issue::fixture("I", 1)
         }
     }
 

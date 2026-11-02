@@ -136,24 +136,37 @@ pub enum AppEvent {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    client: Provider,
-    org: String,
-    initial_repo: Option<String>,
-    include_closed: bool,
-    default_collapsed: bool,
-    refresh_interval: u64,
-    hide_empty_repos: bool,
-    copy_format: String,
-    theme: Theme,
-    harness: HarnessSettings,
-    typesafe: crate::typesafe::Consents,
-) -> Result<()> {
+/// Everything startup hands the event loop, resolved from flags and config in
+/// `main` (#232). One struct instead of eleven forwarded arguments.
+pub struct RunConfig {
+    pub org: String,
+    /// Repo filter detected from the clone the app was started in.
+    pub initial_repo: Option<String>,
+    /// `--all`: want closed issues from the first fetch.
+    pub include_closed: bool,
+    pub default_collapsed: bool,
+    /// Auto-refresh period in seconds; 0 disables it.
+    pub refresh_interval: u64,
+    pub hide_empty_repos: bool,
+    pub copy_format: String,
+    pub theme: Theme,
+    pub harness: HarnessSettings,
+    pub typesafe: crate::typesafe::Consents,
+}
+
+pub async fn run(client: Provider, config: RunConfig) -> Result<()> {
     let terminal = ratatui::init();
-    let result = event_loop(
-        terminal,
-        client,
+    let result = event_loop(terminal, client, config).await;
+    ratatui::restore();
+    result
+}
+
+async fn event_loop(
+    mut terminal: DefaultTerminal,
+    client: Provider,
+    config: RunConfig,
+) -> Result<()> {
+    let RunConfig {
         org,
         initial_repo,
         include_closed,
@@ -162,29 +175,9 @@ pub async fn run(
         hide_empty_repos,
         copy_format,
         theme,
-        harness,
+        harness: harness_settings,
         typesafe,
-    )
-    .await;
-    ratatui::restore();
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn event_loop(
-    mut terminal: DefaultTerminal,
-    client: Provider,
-    org: String,
-    initial_repo: Option<String>,
-    include_closed: bool,
-    default_collapsed: bool,
-    refresh_interval: u64,
-    hide_empty_repos: bool,
-    copy_format: String,
-    theme: Theme,
-    harness_settings: HarnessSettings,
-    typesafe: crate::typesafe::Consents,
-) -> Result<()> {
+    } = config;
     let mut app = App::new(
         org,
         initial_repo,
@@ -858,24 +851,6 @@ mod tests {
     use crate::tui::app::{Loaded, Row};
     use keys::testutil::{app_with_issue, test_client};
 
-    fn stub_issue(id: &str, number: u64) -> Issue {
-        Issue {
-            id: id.into(),
-            number,
-            title: "t".into(),
-            body: String::new(),
-            state: IssueState::Open,
-            url: "u".into(),
-            author: "a".into(),
-            assignees: vec![],
-            labels: Vec::<Label>::new(),
-            comment_count: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            closed_at: None,
-        }
-    }
-
     fn stub_comment(body: &str) -> Comment {
         Comment {
             id: "C_1".into(),
@@ -898,7 +873,7 @@ mod tests {
             AppEvent::Data(Ok(vec![RepoIssues {
                 repo: "r".into(),
                 repo_url: "u".into(),
-                issues: vec![stub_issue("I_1", 1)],
+                issues: vec![Issue::fixture("I_1", 1)],
             }]))
         };
         send(&mut app, data());
@@ -917,7 +892,7 @@ mod tests {
     fn issue_refreshed_patches_the_issue_in_place() {
         let (mut app, id) = app_with_issue(&[]);
         app.loading = true;
-        let mut fresh = stub_issue(&id, 1);
+        let mut fresh = Issue::fixture(&id, 1);
         fresh.title = "renamed".into();
         send(
             &mut app,
@@ -960,7 +935,7 @@ mod tests {
                 result: Ok(Some(RepoIssues {
                     repo: "r".into(),
                     repo_url: "u".into(),
-                    issues: vec![stub_issue("I_1", 1), stub_issue("I_2", 2)],
+                    issues: vec![Issue::fixture("I_1", 1), Issue::fixture("I_2", 2)],
                 })),
             },
         );
@@ -1164,7 +1139,7 @@ mod tests {
     fn data_event_resyncs_detail_pane_when_the_selected_issue_vanishes() {
         let (mut app, _id) = app_with_issue(&[]);
         // A second issue survives the "close" below.
-        app.repos[0].issues.push(stub_issue("I_2", 2));
+        app.repos[0].issues.push(Issue::fixture("I_2", 2));
         app.rebuild_rows();
         app.selected = app
             .rows
@@ -1191,7 +1166,7 @@ mod tests {
             AppEvent::Data(Ok(vec![RepoIssues {
                 repo: "r".into(),
                 repo_url: "u".into(),
-                issues: vec![stub_issue("I_2", 2)],
+                issues: vec![Issue::fixture("I_2", 2)],
             }])),
             &client,
             None,
@@ -1234,7 +1209,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
 
         // Same issue comes back on refresh — just a title change.
-        let mut refreshed = stub_issue("I_1", 1);
+        let mut refreshed = Issue::fixture("I_1", 1);
         refreshed.title = "updated".into();
         handle_app_event(
             &mut app,
@@ -1384,7 +1359,7 @@ mod tests {
             &mut app,
             AppEvent::IssuePatched {
                 msg: "labels updated".into(),
-                issue: Box::new(stub_issue("I_gone", 9)),
+                issue: Box::new(Issue::fixture("I_gone", 9)),
             },
             &client,
             None,

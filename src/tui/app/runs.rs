@@ -322,7 +322,7 @@ mod tests {
 
     use super::super::run_tree::RunRowKind;
     use super::*;
-    use crate::provider::types::{IssueState, RepoIssues};
+    use crate::provider::types::RepoIssues;
     use crate::runs::estimate::build_history;
     use crate::runs::{ActionsJob, ActionsRun, ActionsStep, LinkedPr};
 
@@ -332,19 +332,10 @@ mod tests {
 
     fn issue(id: &str, number: u64) -> Issue {
         Issue {
-            id: id.into(),
-            number,
-            title: "t".into(),
             body: "see #7".into(),
-            state: IssueState::Open,
-            url: "u".into(),
-            author: "a".into(),
-            assignees: vec![],
-            labels: vec![],
-            comment_count: 0,
             created_at: now(),
             updated_at: now(),
-            closed_at: None,
+            ..Issue::fixture(id, number)
         }
     }
 
