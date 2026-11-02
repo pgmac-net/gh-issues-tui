@@ -19,15 +19,17 @@ The PR summary popup (`Mode::PrSummary`) was read-only — no way to open the PR
 
 ## Implementation
 
+Files and names below are where the code lives now. The change landed before the `tui/app/`, `tui/event/`, `tui/ui/` split and the `PrState` grouping (#88, #90), when it was all in `app.rs`, `event.rs` and `ui.rs`.
+
 | Area | File | Change |
 |---|---|---|
 | URLs on check/run data | `src/provider/types.rs` | `CheckContextInfo`/`WorkflowRunInfo` gain a `url` field; `PrRef::url()` derives the PR's own URL |
 | GraphQL fetch | `src/github/client.rs` | `detailsUrl`/`targetUrl`/`url` added to the existing PR-summary query and DTOs — one round-trip, no new fetch |
-| Selection model | `src/tui/app.rs` | `pr_sel` field; `App::pr_targets()` builds the ordered open-able rows with line offsets; `select_pr_target`/`pr_selected_url`/`refresh_pr_summary` |
-| Key handling | `src/tui/event.rs` | `Tab`/`BackTab`/`o`/`Enter`/`r` in `handle_pr_summary_key` (now takes `client`/`tx` for the refresh re-fetch) |
-| Rendering | `src/tui/ui.rs` | selected-row highlight (background patched onto each span, preserving fg/modifiers); updated title |
+| Selection model | `src/tui/app/pr.rs`, `src/tui/ui/pr.rs` | `PrState.sel`; `ui::pr_targets()` builds the ordered open-able rows with line offsets; `PrState::select` / `selected_url` / `refresh` |
+| Key handling | `src/tui/event/keys/pr.rs` | `Tab`/`BackTab`/`o`/`Enter`/`r` in `handle_pr_summary_key` (takes `client`/`tx` for the refresh re-fetch) |
+| Rendering | `src/tui/ui/pr.rs` | selected-row highlight (background patched onto each span, preserving fg/modifiers); updated title |
 
-`App::pr_targets()`'s line offsets mirror `draw_pr_summary_popup`'s line layout by hand — the same convention `detail_metrics` already uses for the detail pane's split arithmetic. This is pure state logic, so it's unit-tested directly: target ordering/line offsets, `Tab` wrap-around with scroll-snap, selected-URL resolution, and `pr_sel` reset on open/close/refresh.
+`pr_targets()`'s line offsets mirror `draw_pr_summary_popup`'s line layout by hand — the same convention `detail_metrics` uses for the detail pane's split arithmetic. The selection logic is pure state, so it's unit-tested directly: target ordering/line offsets, `Tab` wrap-around with scroll-snap, selected-URL resolution, and `PrState.sel` reset on open/close/refresh.
 
 ### Paging, Home/End and the scrollbar (#105)
 
