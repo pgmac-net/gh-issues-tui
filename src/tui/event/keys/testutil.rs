@@ -1,7 +1,7 @@
 //! Fixtures shared by the key-handler tests.
 
 use super::super::prelude::*;
-use crate::provider::types::{IssueState, RepoIssues, RepoLabel};
+use crate::provider::types::{RepoIssues, RepoLabel};
 
 pub(crate) fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::from(code)
@@ -42,26 +42,14 @@ pub(crate) fn app_with_issue(labels: &[&str]) -> (App, String) {
     use crate::provider::types::{Issue, Label};
 
     let issue = Issue {
-        id: "I_1".into(),
-        number: 1,
-        title: "t".into(),
-        body: String::new(),
-        state: IssueState::Open,
-        url: "u".into(),
-        author: "a".into(),
-        assignees: vec![],
         labels: labels
             .iter()
             .map(|n| Label {
                 name: (*n).to_string(),
-                color: String::new(),
                 ..Default::default()
             })
             .collect(),
-        comment_count: 0,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        closed_at: None,
+        ..Issue::fixture("I_1", 1)
     };
     let id = issue.id.clone();
     let mut app = App::new(

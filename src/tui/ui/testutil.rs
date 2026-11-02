@@ -12,19 +12,11 @@ use crate::tui::app::Mode;
 
 pub(super) fn issue(labels: Vec<Label>) -> Issue {
     Issue {
-        id: "id".into(),
-        number: 114,
         title: "Upgrade Calico".into(),
-        body: String::new(),
-        state: IssueState::Open,
         url: String::new(),
         author: String::new(),
-        assignees: vec![],
         labels,
-        comment_count: 0,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        closed_at: None,
+        ..Issue::fixture("id", 114)
     }
 }
 

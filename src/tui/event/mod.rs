@@ -851,24 +851,6 @@ mod tests {
     use crate::tui::app::{Loaded, Row};
     use keys::testutil::{app_with_issue, test_client};
 
-    fn stub_issue(id: &str, number: u64) -> Issue {
-        Issue {
-            id: id.into(),
-            number,
-            title: "t".into(),
-            body: String::new(),
-            state: IssueState::Open,
-            url: "u".into(),
-            author: "a".into(),
-            assignees: vec![],
-            labels: Vec::<Label>::new(),
-            comment_count: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            closed_at: None,
-        }
-    }
-
     fn stub_comment(body: &str) -> Comment {
         Comment {
             id: "C_1".into(),
@@ -891,7 +873,7 @@ mod tests {
             AppEvent::Data(Ok(vec![RepoIssues {
                 repo: "r".into(),
                 repo_url: "u".into(),
-                issues: vec![stub_issue("I_1", 1)],
+                issues: vec![Issue::fixture("I_1", 1)],
             }]))
         };
         send(&mut app, data());
@@ -910,7 +892,7 @@ mod tests {
     fn issue_refreshed_patches_the_issue_in_place() {
         let (mut app, id) = app_with_issue(&[]);
         app.loading = true;
-        let mut fresh = stub_issue(&id, 1);
+        let mut fresh = Issue::fixture(&id, 1);
         fresh.title = "renamed".into();
         send(
             &mut app,
@@ -953,7 +935,7 @@ mod tests {
                 result: Ok(Some(RepoIssues {
                     repo: "r".into(),
                     repo_url: "u".into(),
-                    issues: vec![stub_issue("I_1", 1), stub_issue("I_2", 2)],
+                    issues: vec![Issue::fixture("I_1", 1), Issue::fixture("I_2", 2)],
                 })),
             },
         );
@@ -1157,7 +1139,7 @@ mod tests {
     fn data_event_resyncs_detail_pane_when_the_selected_issue_vanishes() {
         let (mut app, _id) = app_with_issue(&[]);
         // A second issue survives the "close" below.
-        app.repos[0].issues.push(stub_issue("I_2", 2));
+        app.repos[0].issues.push(Issue::fixture("I_2", 2));
         app.rebuild_rows();
         app.selected = app
             .rows
@@ -1184,7 +1166,7 @@ mod tests {
             AppEvent::Data(Ok(vec![RepoIssues {
                 repo: "r".into(),
                 repo_url: "u".into(),
-                issues: vec![stub_issue("I_2", 2)],
+                issues: vec![Issue::fixture("I_2", 2)],
             }])),
             &client,
             None,
@@ -1227,7 +1209,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
 
         // Same issue comes back on refresh — just a title change.
-        let mut refreshed = stub_issue("I_1", 1);
+        let mut refreshed = Issue::fixture("I_1", 1);
         refreshed.title = "updated".into();
         handle_app_event(
             &mut app,
@@ -1377,7 +1359,7 @@ mod tests {
             &mut app,
             AppEvent::IssuePatched {
                 msg: "labels updated".into(),
-                issue: Box::new(stub_issue("I_gone", 9)),
+                issue: Box::new(Issue::fixture("I_gone", 9)),
             },
             &client,
             None,

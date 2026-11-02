@@ -406,7 +406,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
-    use crate::provider::types::{IssueState, PrRef, RepoIssues};
+    use crate::provider::types::{PrRef, RepoIssues};
     use crate::runs::LinkedPr;
     use crate::runs::estimate::{Basis, estimate as forecast};
     use crate::runs::fetch::RunsUpdate;
@@ -419,19 +419,10 @@ mod tests {
 
     fn issue() -> Issue {
         Issue {
-            id: "I_1".into(),
-            number: 1,
             title: "an issue".into(),
-            body: String::new(),
-            state: IssueState::Open,
-            url: "u".into(),
-            author: "a".into(),
-            assignees: vec![],
-            labels: vec![],
-            comment_count: 0,
             created_at: at(),
             updated_at: at(),
-            closed_at: None,
+            ..Issue::fixture("I_1", 1)
         }
     }
 

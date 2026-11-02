@@ -603,23 +603,12 @@ mod tests {
 
     // --- `A`'s decision, driven through a real App -----------------------
 
-    use crate::provider::types::{Issue, IssueState, Label, RepoIssues};
+    use crate::provider::types::{Issue, RepoIssues};
 
     fn app_with_one_issue() -> App {
         let issue = Issue {
-            id: "I_1".into(),
-            number: 7,
-            title: "t".into(),
-            body: String::new(),
-            state: IssueState::Open,
             url: "https://github.com/org/r/issues/7".into(),
-            author: "a".into(),
-            assignees: vec![],
-            labels: Vec::<Label>::new(),
-            comment_count: 0,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            closed_at: None,
+            ..Issue::fixture("I_1", 7)
         };
         let mut app = App::new(
             "org".into(),
