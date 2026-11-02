@@ -32,7 +32,18 @@ pub(super) fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             Row::Issue {
                 repo_idx,
                 issue_idx,
-            } => issue_item(&app.repos[*repo_idx].issues[*issue_idx], t),
+                depth,
+                branch,
+            } => {
+                let issue = &app.repos[*repo_idx].issues[*issue_idx];
+                issue_item(issue, &tree_lead(app, &issue.id, *depth, *branch), t)
+            }
+            Row::Context {
+                repo_idx,
+                depth,
+                branch,
+                ..
+            } => context_item(app, row, *repo_idx, *depth, *branch, t),
         })
         .collect();
 
@@ -62,7 +73,27 @@ pub(super) fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-pub(super) fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
+/// What goes before a list row's state dot (#234): a space, two per level of
+/// sub-issue nesting, then `▾`/`▸` on a parent or two spaces on a leaf. A
+/// top-level leaf gets the three spaces every issue row always had.
+fn tree_lead(app: &App, id: &str, depth: u8, branch: bool) -> String {
+    let marker = match (branch, app.collapsed_issues.contains(id)) {
+        (false, _) => "  ",
+        (true, false) => "▾ ",
+        (true, true) => "▸ ",
+    };
+    format!(" {}{marker}", "  ".repeat(depth as usize))
+}
+
+/// Sub-issue progress after a parent's title (#234): GitHub's own count, so it
+/// includes children that are closed, filtered out or in another repo.
+fn progress_span(issue: &Issue, style: Style) -> Option<Span<'static>> {
+    issue
+        .sub_issues
+        .map(|p| Span::styled(format!("  {}/{}", p.completed, p.total), style))
+}
+
+pub(super) fn issue_item(issue: &Issue, lead: &str, t: &Theme) -> ListItem<'static> {
     let state_span = match issue.state {
         crate::provider::types::IssueState::Open => Span::styled("●", Style::default().fg(t.open)),
         crate::provider::types::IssueState::Closed => {
@@ -70,11 +101,12 @@ pub(super) fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
         }
     };
     let mut spans = vec![
-        Span::raw("   "),
+        Span::raw(lead.to_string()),
         state_span,
         Span::styled(format!(" #{:<5}", issue.number), Style::default().fg(t.dim)),
         Span::styled(issue.title.clone(), title_style(issue, t)),
     ];
+    spans.extend(progress_span(issue, Style::default().fg(t.dim)));
     if !issue.assignees.is_empty() {
         spans.push(Span::styled(
             format!("  @{}", issue.assignees.join(",@")),
@@ -97,6 +129,53 @@ pub(super) fn issue_item(issue: &Issue, t: &Theme) -> ListItem<'static> {
         format!("  {}", crate::localtime::fmt_date(issue.updated_at)),
         Style::default().fg(t.dim),
     ));
+    ListItem::new(Line::from(spans))
+}
+
+/// A context row (#234): an ancestor drawn only so its descendants keep their
+/// place. All dim, with no labels, assignees or dates, so it reads as
+/// background. A repo prefix names where it lives when that isn't this group.
+fn context_item(
+    app: &App,
+    row: &Row,
+    group_idx: usize,
+    depth: u8,
+    branch: bool,
+    t: &Theme,
+) -> ListItem<'static> {
+    let dim = Style::default().fg(t.dim);
+    let group = &app.repos[group_idx].repo;
+    let (id, number, title, home, progress) = if let Some(issue) = app.context_issue(row) {
+        let home = app.issue_repo(&issue.id).unwrap_or(group).to_string();
+        (
+            issue.id.clone(),
+            issue.number,
+            issue.title.clone(),
+            home,
+            progress_span(issue, dim),
+        )
+    } else if let Some(stub) = app.row_stub(row) {
+        let home = if stub.owner.is_empty() || stub.owner.eq_ignore_ascii_case(&app.org) {
+            stub.repo.clone()
+        } else {
+            format!("{}/{}", stub.owner, stub.repo)
+        };
+        (stub.id.clone(), stub.number, stub.title.clone(), home, None)
+    } else {
+        return ListItem::new(Line::default());
+    };
+    let reference = if home == *group {
+        format!(" #{number:<5}")
+    } else {
+        format!(" {home}#{number} ")
+    };
+    let mut spans = vec![
+        Span::raw(tree_lead(app, &id, depth, branch)),
+        Span::styled("○", dim),
+        Span::styled(reference, dim),
+        Span::styled(title, dim.add_modifier(Modifier::ITALIC)),
+    ];
+    spans.extend(progress);
     ListItem::new(Line::from(spans))
 }
 

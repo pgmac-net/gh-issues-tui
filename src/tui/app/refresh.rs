@@ -30,15 +30,20 @@ pub enum FetchTarget {
 }
 
 impl App {
+    /// A context row refreshes its issue when it is loaded (#234). A stub has
+    /// nothing loaded to patch, so `r` there refreshes the group it is drawn
+    /// in, which is where the child that names it lives.
     pub fn refresh_target(&self) -> RefreshTarget {
         match self.rows.get(self.selected) {
-            Some(Row::Issue { .. }) => {
-                self.selected_issue()
-                    .map_or(RefreshTarget::Filtered, |i| RefreshTarget::Issue {
-                        id: i.id.clone(),
-                        number: i.number,
-                    })
-            }
+            Some(Row::Issue { .. } | Row::Context { .. }) => match self.selected_issue() {
+                Some(i) => RefreshTarget::Issue {
+                    id: i.id.clone(),
+                    number: i.number,
+                },
+                None => self.selected_repo().map_or(RefreshTarget::Filtered, |r| {
+                    RefreshTarget::Repo(r.repo.clone())
+                }),
+            },
             Some(Row::RepoHeader { .. }) => {
                 self.selected_repo().map_or(RefreshTarget::Filtered, |r| {
                     RefreshTarget::Repo(r.repo.clone())

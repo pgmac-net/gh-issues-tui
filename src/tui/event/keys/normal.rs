@@ -12,6 +12,22 @@ pub(crate) fn handle_normal_key(
     tx: &mpsc::UnboundedSender<AppEvent>,
     hx: &mut HarnessCtx,
 ) {
+    // A stub is an ancestor known only from a descendant (#234, ADR 0009):
+    // nothing is loaded to write to, so every write key says so here, once,
+    // instead of each arm failing silently.
+    if let Some(stub) = app.selected_stub()
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(
+            key.code,
+            KeyCode::Char('x' | 'e' | 'c' | 'a' | 'l' | 't' | 'p' | 'm' | 'A')
+        )
+    {
+        app.status = Some(format!(
+            "#{} isn't loaded, so it's read-only (o opens it)",
+            stub.number
+        ));
+        return;
+    }
     match key.code {
         KeyCode::Char('q') => {
             if app.detail.open {
@@ -149,8 +165,9 @@ pub(crate) fn handle_normal_key(
         },
         KeyCode::Char(' ') | KeyCode::Enter => match app.focus {
             Focus::Detail => detail_key_toggle(app),
-            // On an issue the toggle is `→`; on a header it opens or closes it.
-            Focus::List if app.selected_issue().is_some() => tree_right(app, client, tx),
+            // On an issue (or a context row, #234) the toggle is `→`; on a
+            // header it opens or closes the group.
+            Focus::List if !app.selected_is_header() => tree_right(app, client, tx),
             Focus::List => nav(app, client, tx, App::toggle_collapse),
         },
         // `[`/`]`: fold or unfold everything in the focused pane.
@@ -204,6 +221,12 @@ pub(crate) fn handle_normal_key(
             let url = app
                 .runs_selected_url()
                 .or_else(|| app.selected_issue().map(|i| i.url.clone()))
+                // A stub's own url (#234); empty for Jira, which falls through.
+                .or_else(|| {
+                    app.selected_stub()
+                        .map(|s| s.url.clone())
+                        .filter(|u| !u.is_empty())
+                })
                 .or_else(|| app.selected_repo().map(|r| r.repo_url.clone()));
             if let Some(url) = url {
                 match open::that(&url) {
@@ -384,6 +407,56 @@ mod tests {
 
     fn ctrl_r() -> KeyEvent {
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+    }
+
+    /// One issue whose parent #1 is not loaded, so it is drawn as a stub;
+    /// the stub row is selected.
+    fn stub_app() -> App {
+        use crate::provider::types::{IssueStub, RepoIssues};
+        let parent = IssueStub {
+            id: "I_1".into(),
+            number: 1,
+            title: "parent".into(),
+            state: IssueState::Open,
+            url: "https://github.com/org/r/issues/1".into(),
+            repo: "r".into(),
+            owner: "org".into(),
+        };
+        let mut app = App::new("org".into(), None, false, false, String::new());
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![Issue {
+                ancestors: vec![parent],
+                ..Issue::fixture("I_5", 5)
+            }],
+        }]);
+        app.selected = 1; // 0 = header, 1 = the stub, 2 = the child
+        assert!(app.selected_stub().is_some());
+        app
+    }
+
+    /// #234: a stub is read-only; every write key says so instead of acting.
+    #[tokio::test]
+    async fn write_keys_on_a_stub_say_it_is_not_loaded() {
+        for c in ['x', 'e', 'c', 'a', 'l', 't', 'p', 'm', 'A'] {
+            let mut app = stub_app();
+            press(&mut app, key(KeyCode::Char(c)));
+            assert_eq!(app.mode, Mode::Normal, "{c} opened something on a stub");
+            assert_eq!(
+                app.status.as_deref(),
+                Some("#1 isn't loaded, so it's read-only (o opens it)"),
+                "{c}"
+            );
+        }
+    }
+
+    /// #234: Space on a stub acts on the tree node, never the repo group.
+    #[tokio::test]
+    async fn space_on_a_stub_never_folds_the_repo_group() {
+        let mut app = stub_app();
+        press(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.collapsed.is_empty(), "the repo group stayed open");
     }
 
     #[tokio::test]

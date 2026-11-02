@@ -1,4 +1,5 @@
 use super::prelude::*;
+use super::subtree::{group_rows, loaded_index};
 
 /// The visible row list and everything that moves through it: rebuilding
 /// rows from data + filters + sort + collapse, the selection, and the
@@ -9,8 +10,9 @@ impl App {
         for repo in &mut self.repos {
             sort_issues(&mut repo.issues, self.sort_key, self.sort_desc);
         }
-        self.rows.clear();
         let repo_exact = self.repo_filter_exact();
+        let loaded = loaded_index(&self.repos);
+        let mut rows = Vec::new();
         for (ri, repo) in self.repos.iter().enumerate() {
             if !self.filters.repo_matches(&repo.repo, repo_exact) {
                 continue;
@@ -27,16 +29,19 @@ impl App {
             if visible.is_empty() && self.filters.hide_empty && !repo_exact {
                 continue;
             }
-            self.rows.push(Row::RepoHeader { repo_idx: ri });
+            rows.push(Row::RepoHeader { repo_idx: ri });
             if !self.collapsed.contains(&repo.repo) {
-                for ii in visible {
-                    self.rows.push(Row::Issue {
-                        repo_idx: ri,
-                        issue_idx: ii,
-                    });
-                }
+                // Issues nest under their sub-issue parents (#234).
+                rows.extend(group_rows(
+                    &self.repos,
+                    ri,
+                    &visible,
+                    &loaded,
+                    &self.collapsed_issues,
+                ));
             }
         }
+        self.rows = rows;
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
         }
@@ -46,36 +51,33 @@ impl App {
     /// the rows. A vanished (or absent) id leaves the index where
     /// `rebuild_rows` clamped it.
     pub(super) fn reselect(&mut self, id: Option<String>) {
-        if let Some(id) = id
-            && let Some(idx) = self.rows.iter().position(|row| match row {
-                Row::Issue {
-                    repo_idx,
-                    issue_idx,
-                } => self
-                    .repos
-                    .get(*repo_idx)
-                    .and_then(|r| r.issues.get(*issue_idx))
-                    .is_some_and(|i| i.id == id),
-                Row::RepoHeader { .. } => false,
+        let Some(id) = id else { return };
+        // A visible row first; failing that, the same issue as a context row
+        // (it was filtered out, but its descendants keep it on screen).
+        let at = |want_issue: bool| {
+            self.rows.iter().position(|row| {
+                matches!(row, Row::Issue { .. }) == want_issue
+                    && self.row_issue_id(row) == Some(id.as_str())
             })
-        {
+        };
+        if let Some(idx) = at(true).or_else(|| at(false)) {
             self.selected = idx;
         }
     }
 
+    /// The selected issue, when it is loaded: a visible issue, or a context
+    /// row for a loaded one (#234). `None` on a header or a stub.
     pub fn selected_issue(&self) -> Option<&Issue> {
-        match self.rows.get(self.selected)? {
-            Row::Issue {
-                repo_idx,
-                issue_idx,
-            } => self.repos.get(*repo_idx)?.issues.get(*issue_idx),
-            Row::RepoHeader { .. } => None,
-        }
+        self.row_issue(self.rows.get(self.selected)?)
     }
 
+    /// The repo group the selection is in. For a context row from another
+    /// repo this is the group it is drawn in, not its own repo.
     pub fn selected_repo(&self) -> Option<&RepoIssues> {
         match self.rows.get(self.selected)? {
-            Row::Issue { repo_idx, .. } | Row::RepoHeader { repo_idx } => self.repos.get(*repo_idx),
+            Row::Issue { repo_idx, .. }
+            | Row::Context { repo_idx, .. }
+            | Row::RepoHeader { repo_idx } => self.repos.get(*repo_idx),
         }
     }
 
@@ -124,12 +126,13 @@ impl App {
         }
     }
 
-    /// `←` in the tree (#217) — "out one level": from an issue, select its
-    /// repo header (the group stays open); on an expanded header, collapse
-    /// it; on a collapsed header, nothing.
+    /// `←` in the tree (#217) — "out one level". On an issue (#234): collapse
+    /// it if it is an expanded parent, else go to its parent row, else (top
+    /// level) to the repo header. On an expanded header, collapse it; on a
+    /// collapsed header, nothing.
     pub fn tree_left(&mut self) {
         match self.rows.get(self.selected) {
-            Some(Row::Issue { .. }) => self.select_repo_header(),
+            Some(Row::Issue { .. } | Row::Context { .. }) => self.tree_left_node(),
             Some(Row::RepoHeader { .. }) if !self.selected_group_collapsed() => {
                 self.set_current_collapsed(true);
             }
@@ -138,12 +141,13 @@ impl App {
     }
 
     /// `→` in the tree (#217) — "in one level": on a collapsed header, expand
-    /// it; on an expanded one, select its first issue. On an issue the next
-    /// level is the detail pane, which the caller opens (it may need a
-    /// comment fetch), so that case is only reported.
+    /// it; on an expanded one, select its first issue. On a collapsed parent
+    /// issue, expand it (#234). On any other issue the next level is the
+    /// detail pane, which the caller opens (it may need a comment fetch), so
+    /// that case is only reported.
     pub fn tree_right(&mut self) -> TreeRight {
         match self.rows.get(self.selected) {
-            Some(Row::Issue { .. }) => return TreeRight::EnterDetail,
+            Some(Row::Issue { .. } | Row::Context { .. }) => return self.tree_right_node(),
             Some(Row::RepoHeader { .. }) if self.selected_group_collapsed() => {
                 self.set_current_collapsed(false);
             }
@@ -161,7 +165,9 @@ impl App {
 
     /// Move the selection from an issue up to its repo's header row.
     pub fn select_repo_header(&mut self) {
-        if let Some(Row::Issue { repo_idx, .. }) = self.rows.get(self.selected) {
+        if let Some(Row::Issue { repo_idx, .. } | Row::Context { repo_idx, .. }) =
+            self.rows.get(self.selected)
+        {
             let repo_idx = *repo_idx;
             if let Some(idx) = self.rows[..self.selected]
                 .iter()
@@ -177,17 +183,21 @@ impl App {
     pub fn select_first_issue(&mut self) {
         if let Some(Row::RepoHeader { repo_idx }) = self.rows.get(self.selected)
             && matches!(self.rows.get(self.selected + 1),
-                Some(Row::Issue { repo_idx: r, .. }) if r == repo_idx)
+                Some(Row::Issue { repo_idx: r, .. } | Row::Context { repo_idx: r, .. })
+                    if r == repo_idx)
         {
             self.selected += 1;
         }
     }
 
+    /// `[` / `]`: every repo group and every sub-issue branch (#234).
     pub fn set_all_collapsed(&mut self, collapsed: bool) {
         if collapsed {
             self.collapsed = self.repos.iter().map(|r| r.repo.clone()).collect();
+            self.collapsed_issues = self.all_branch_ids();
         } else {
             self.collapsed.clear();
+            self.collapsed_issues.clear();
         }
         self.rebuild_rows();
     }
@@ -236,7 +246,11 @@ impl App {
         }
         // Start the search at the currently-selected repo group.
         let start = match self.rows.get(self.selected) {
-            Some(Row::Issue { repo_idx, .. }) | Some(Row::RepoHeader { repo_idx }) => *repo_idx,
+            Some(
+                Row::Issue { repo_idx, .. }
+                | Row::Context { repo_idx, .. }
+                | Row::RepoHeader { repo_idx },
+            ) => *repo_idx,
             None => 0,
         };
         let n = self.repos.len();
@@ -270,23 +284,34 @@ impl App {
             self.clear_filters();
             self.state_filter = StateFilter::All;
         }
-        // Expand the group so the issue row exists.
+        // Expand the group, and any collapsed sub-issue parents above the
+        // issue (#234), so its row exists.
         self.collapsed.remove(&repo_name);
+        let target_id = self.repos[repo_idx]
+            .issues
+            .iter()
+            .find(|i| i.number == number)
+            .map(|i| i.id.clone());
+        if let Some(id) = &target_id {
+            self.reveal_issue(id);
+        }
         self.rebuild_rows();
 
-        // Locate the row by repo name and number (number alone repeats across repos).
+        // Locate the issue's own row in that repo's group (number alone
+        // repeats across repos).
         let target = self.rows.iter().position(|row| match row {
             Row::Issue {
                 repo_idx: r,
                 issue_idx,
-            } => self.repos.get(*r).is_some_and(|repo| {
-                repo.repo == repo_name
-                    && repo
+                ..
+            } => {
+                *r == repo_idx
+                    && self.repos[*r]
                         .issues
                         .get(*issue_idx)
                         .is_some_and(|i| i.number == number)
-            }),
-            Row::RepoHeader { .. } => false,
+            }
+            _ => false,
         });
         if let Some(idx) = target {
             self.selected = idx;

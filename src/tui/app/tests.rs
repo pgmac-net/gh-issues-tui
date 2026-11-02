@@ -1645,6 +1645,7 @@ fn start_edit_body_card_prefills_and_targets_body() {
     if let Some(&Row::Issue {
         repo_idx,
         issue_idx,
+        ..
     }) = app.rows.get(app.selected)
     {
         app.repos[repo_idx].issues[issue_idx].body = "current description".into();
@@ -1700,8 +1701,9 @@ fn select_issue(app: &mut App, id: &str) {
             Row::Issue {
                 repo_idx,
                 issue_idx,
+                ..
             } => app.repos[*repo_idx].issues[*issue_idx].id == id,
-            Row::RepoHeader { .. } => false,
+            Row::RepoHeader { .. } | Row::Context { .. } => false,
         })
         .expect("issue row present");
     app.selected = idx;
@@ -2733,7 +2735,7 @@ fn a_rank_that_reorders_the_list_keeps_the_selection_on_the_same_issue() {
         .rows
         .iter()
         .position(|r| {
-            matches!(r, Row::Issue { repo_idx, issue_idx }
+            matches!(r, Row::Issue { repo_idx, issue_idx, .. }
                 if app.repos[*repo_idx].issues[*issue_idx].number == 3)
         })
         .unwrap();
@@ -3078,8 +3080,9 @@ fn selecting_an_inferred_label_filters_to_the_issues_carrying_it() {
             Row::Issue {
                 repo_idx,
                 issue_idx,
+                ..
             } => Some(app.repos[*repo_idx].issues[*issue_idx].number),
-            Row::RepoHeader { .. } => None,
+            Row::RepoHeader { .. } | Row::Context { .. } => None,
         })
         .collect();
     assert_eq!(visible, vec![3], "only the issue labelled P0");
@@ -3254,8 +3257,9 @@ fn shown(app: &App) -> Vec<u64> {
             Row::Issue {
                 repo_idx,
                 issue_idx,
+                ..
             } => Some(app.repos[*repo_idx].issues[*issue_idx].number),
-            Row::RepoHeader { .. } => None,
+            Row::RepoHeader { .. } | Row::Context { .. } => None,
         })
         .collect()
 }
@@ -3992,8 +3996,9 @@ fn patch_closing_under_the_open_filter_drops_the_row_and_clamps() {
             Row::Issue {
                 repo_idx,
                 issue_idx,
+                ..
             } => app.repos[*repo_idx].issues[*issue_idx].id != "I_1",
-            Row::RepoHeader { .. } => true,
+            Row::RepoHeader { .. } | Row::Context { .. } => true,
         }),
         "a closed issue leaves the `open` view at once"
     );

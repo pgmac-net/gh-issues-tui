@@ -1,11 +1,43 @@
 use super::harness::SessionId;
 use super::help::HelpTopic;
 
-/// A visible row in the main list: repo header or issue.
+/// A visible row in the main list: repo header, issue, or context ancestor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
-    RepoHeader { repo_idx: usize },
-    Issue { repo_idx: usize, issue_idx: usize },
+    RepoHeader {
+        repo_idx: usize,
+    },
+    /// An issue that passes the filters, `depth` levels below the top of its
+    /// sub-issue tree (#234). `branch` when it has children in this group.
+    Issue {
+        repo_idx: usize,
+        issue_idx: usize,
+        depth: u8,
+        branch: bool,
+    },
+    /// An ancestor drawn only so its descendants keep their place (#234):
+    /// filtered out, in another repo, or not loaded. Dim, and never counted.
+    /// `repo_idx` is the group it is drawn in, not necessarily its own repo.
+    Context {
+        repo_idx: usize,
+        depth: u8,
+        branch: bool,
+        of: ContextRef,
+    },
+}
+
+/// What a context row stands for (#234).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextRef {
+    /// A loaded issue, possibly in another repo's group.
+    Loaded { repo_idx: usize, issue_idx: usize },
+    /// Known only from a descendant's ancestry: the descendant, and how far up
+    /// its `ancestors` the stub is. Read-only.
+    Stub {
+        repo_idx: usize,
+        issue_idx: usize,
+        level: usize,
+    },
 }
 
 /// The filter-editor fields, in display order.

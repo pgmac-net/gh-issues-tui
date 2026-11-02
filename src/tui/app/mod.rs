@@ -24,6 +24,7 @@ mod run_tree;
 pub mod runs;
 mod scope;
 pub mod search;
+mod subtree;
 mod vocab;
 
 #[cfg(test)]
@@ -54,6 +55,9 @@ pub struct App {
     pub repos: Vec<RepoIssues>,
     /// Collapsed repo names (survives reload).
     pub collapsed: std::collections::HashSet<String>,
+    /// Collapsed sub-issue parents, by issue id (#234). Survives reloads;
+    /// cleared by `switch_org`.
+    pub collapsed_issues: std::collections::HashSet<String>,
     /// Repo names seen in any previous load; used to apply `default_collapsed`
     /// only to repos appearing for the first time.
     pub seen_repos: std::collections::HashSet<String>,
@@ -168,6 +172,7 @@ impl App {
             org,
             repos: Vec::new(),
             collapsed: Default::default(),
+            collapsed_issues: Default::default(),
             seen_repos: Default::default(),
             default_collapsed,
             hide_empty_default: true,
@@ -319,6 +324,7 @@ impl App {
         self.reset_search();
         self.rows.clear();
         self.collapsed.clear();
+        self.collapsed_issues.clear();
         self.seen_repos.clear();
         self.clear_filters();
         self.state_filter = StateFilter::Open;
