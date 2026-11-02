@@ -205,6 +205,41 @@ pub(crate) fn spawn_pr_summary(client: &Provider, pr: PrRef, tx: &mpsc::Unbounde
     });
 }
 
+/// Run the workflow-runs fetch the tab asked for (#222). Tagged with the
+/// generation it was sent under, so a response overtaken by a selection change
+/// or a refresh is dropped when it lands.
+pub(crate) fn spawn_runs(
+    client: &Provider,
+    fetch: RunsFetch,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let RunsFetch {
+            issue_id,
+            generation,
+            work,
+            known,
+        } = fetch;
+        let result = match work {
+            RunsWork::Load { text_refs } => {
+                crate::runs::fetch::load(client.as_ref(), &issue_id, &text_refs, &known)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            RunsWork::Poll { prs, hidden } => {
+                Ok(crate::runs::fetch::poll(client.as_ref(), prs, hidden, &known).await)
+            }
+        };
+        let _ = tx.send(AppEvent::Runs {
+            issue_id,
+            generation,
+            result: Box::new(result),
+        });
+    });
+}
+
 /// What has to follow a mutation that does not report the changed issue
 /// back. Issue-level mutations do report it and go through
 /// [`with_issue_patch`] instead, which patches the list in place (#196).

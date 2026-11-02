@@ -1,5 +1,8 @@
 use super::super::prelude::*;
-use super::detail::{detail_jump_end, detail_page, detail_select, detail_step, with_fold};
+use super::detail::{
+    detail_jump_end, detail_jump_top, detail_key_fold_all, detail_key_left, detail_key_right,
+    detail_key_toggle, detail_page, detail_select, detail_step,
+};
 use super::harness::{HarnessCtx, open_harness_picker, open_session_picker};
 
 pub(crate) fn handle_normal_key(
@@ -50,10 +53,30 @@ pub(crate) fn handle_normal_key(
         }
         KeyCode::Tab | KeyCode::BackTab => app.cycle_focus(),
         KeyCode::Char('?') => app.open_help(app.context_topic()),
-        KeyCode::Char('r') => {
-            app.loading = true;
-            app.status = Some("reloading…".into());
-            spawn_fetch(client, app, tx);
+        KeyCode::Char('r') => match app.focus {
+            Focus::Detail if app.runs_showing() => app.runs_refresh(std::time::Instant::now()),
+            _ => {
+                app.loading = true;
+                app.status = Some("reloading…".into());
+                spawn_fetch(client, app, tx);
+            }
+        },
+        // flip the lower detail region between comments and runs (#222)
+        KeyCode::Char('R') => {
+            if !app.runs.supported {
+                app.status = Some("workflow runs not supported by this provider".into());
+                return;
+            }
+            if !app.detail.open {
+                if let Some(issue_id) = app.enter_detail() {
+                    spawn_comments(client, issue_id, tx);
+                }
+                if !app.detail.open {
+                    app.status = Some("select an issue to see its runs".into());
+                    return;
+                }
+            }
+            app.toggle_runs_tab(std::time::Instant::now());
         }
 
         // navigation: ↑/↓ move a row cursor through whichever pane has focus
@@ -75,7 +98,7 @@ pub(crate) fn handle_normal_key(
             Focus::List => nav(app, client, tx, |a| a.move_selection(-15)),
         },
         KeyCode::Char('g') | KeyCode::Home => match app.focus {
-            Focus::Detail => app.detail.jump_top(),
+            Focus::Detail => detail_jump_top(app),
             Focus::List => nav(app, client, tx, |a| a.selected = 0),
         },
         KeyCode::Char('G') | KeyCode::End => match app.focus {
@@ -88,15 +111,15 @@ pub(crate) fn handle_normal_key(
         // nesting: ← out one level, → in one level, Space/Enter toggle — the
         // same meaning in the tree and the detail pane (#217, ADR 0006).
         KeyCode::Right => match app.focus {
-            Focus::Detail => with_fold(app, App::detail_right),
+            Focus::Detail => detail_key_right(app),
             Focus::List => tree_right(app, client, tx),
         },
         KeyCode::Left => match app.focus {
-            Focus::Detail => with_fold(app, App::detail_left),
+            Focus::Detail => detail_key_left(app),
             Focus::List => nav(app, client, tx, App::tree_left),
         },
         KeyCode::Char(' ') | KeyCode::Enter => match app.focus {
-            Focus::Detail => with_fold(app, App::toggle_selected_comment_fold),
+            Focus::Detail => detail_key_toggle(app),
             // On an issue the toggle is `→`; on a header it opens or closes it.
             Focus::List if app.selected_issue().is_some() => tree_right(app, client, tx),
             Focus::List => nav(app, client, tx, App::toggle_collapse),
@@ -105,10 +128,7 @@ pub(crate) fn handle_normal_key(
         KeyCode::Char('[') | KeyCode::Char(']') => {
             let folded = key.code == KeyCode::Char('[');
             match app.focus {
-                Focus::Detail => with_fold(app, |a| {
-                    a.set_all_comments_folded(folded);
-                    true
-                }),
+                Focus::Detail => detail_key_fold_all(app, folded),
                 Focus::List => nav(app, client, tx, |a| a.set_all_collapsed(folded)),
             }
         }
@@ -158,8 +178,8 @@ pub(crate) fn handle_normal_key(
         // open in browser
         KeyCode::Char('o') => {
             let url = app
-                .selected_issue()
-                .map(|i| i.url.clone())
+                .runs_selected_url()
+                .or_else(|| app.selected_issue().map(|i| i.url.clone()))
                 .or_else(|| app.selected_repo().map(|r| r.repo_url.clone()));
             if let Some(url) = url {
                 match open::that(&url) {
@@ -189,12 +209,19 @@ pub(crate) fn handle_normal_key(
 
         // mutations
         KeyCode::Char('c') => {
+            // The editor sits under the thread it adds to.
+            if app.runs_showing() {
+                app.toggle_runs_tab(std::time::Instant::now());
+            }
             if let Some(issue_id) = app.start_comment_editor() {
                 spawn_comments(client, issue_id, tx);
             }
         }
-        // Edit the highlighted detail card: the issue body or a comment.
-        KeyCode::Char('e') if app.detail.open => app.start_edit_selected_card(),
+        // Edit the highlighted detail card: the issue body or a comment. The
+        // runs tab highlights neither.
+        KeyCode::Char('e') if app.detail.open && !app.runs_showing() => {
+            app.start_edit_selected_card();
+        }
         KeyCode::Char('x') => {
             if app.selected_issue().is_some() {
                 app.confirm_choice = ConfirmChoice::No;

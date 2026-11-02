@@ -29,7 +29,7 @@ mod spawn;
 use keys::{HarnessCtx, handle_key};
 use spawn::{
     AfterMutation, spawn_comments, spawn_fetch, spawn_label_ranks, spawn_priority_ranks,
-    spawn_readiness, spawn_semantic_search,
+    spawn_readiness, spawn_runs, spawn_semantic_search,
 };
 
 pub enum AppEvent {
@@ -101,6 +101,13 @@ pub enum AppEvent {
         pr: PrRef,
         result: Box<Result<PrLookup, String>>,
     },
+    /// A workflow-runs fetch finished (#222), tagged with the generation it was
+    /// sent under so one overtaken by a newer fetch is dropped.
+    Runs {
+        issue_id: String,
+        generation: u64,
+        result: Box<Result<crate::runs::fetch::RunsUpdate, String>>,
+    },
     /// A harness session produced output. Payload-free by design: the bytes
     /// went straight into that session's parser on its reader thread, so a
     /// noisy agent cannot flood or stall this channel.
@@ -170,6 +177,7 @@ async fn event_loop(
     );
     app.set_hide_empty_default(hide_empty_repos);
     app.typesafe = typesafe.status;
+    app.runs.supported = client.supports_runs();
     // Adopt any background sessions still running from a previous run — the
     // fix for a session otherwise being lost the moment gh-issues-tui quits.
     // Best-effort: no `claude` on PATH, or the call failing, just means
@@ -210,6 +218,13 @@ async fn event_loop(
             terminal.draw(|f| ui::draw(f, &app, &theme, &registry))?;
         }
         redraw = true;
+
+        // The runs tab's one timer (#222): `App` says when, this branch asks it
+        // what. Gated off when nothing is due; the deadline is then unused.
+        let runs_due = app.runs.due;
+        let runs_timer = tokio::time::sleep_until(
+            runs_due.map_or_else(tokio::time::Instant::now, tokio::time::Instant::from_std),
+        );
 
         tokio::select! {
             Some(Ok(ev)) = keys.next() => {
@@ -258,6 +273,11 @@ async fn event_loop(
                     app.loading = true;
                     app.auto_refreshing = true;
                     spawn_fetch(&client, &app, &tx);
+                }
+            }
+            _ = runs_timer, if runs_due.is_some() => {
+                if let Some(fetch) = app.runs_tick(std::time::Instant::now()) {
+                    spawn_runs(&client, fetch, &tx);
                 }
             }
         }
@@ -326,6 +346,10 @@ pub(crate) fn nav(
         return;
     }
     app.detail.reset_scroll();
+    // Debounced, so walking the list only loads runs where it stops (#222).
+    if app.runs_showing() {
+        app.runs_follow_selection(std::time::Instant::now());
+    }
     // Holding j/k walks a row at a time; `load_comments` keeps that free for
     // issues already fetched this cycle and for issues with no comments (#107).
     match current {
@@ -406,8 +430,20 @@ pub(crate) fn handle_app_event(
 
     // Pull rate limit state from client after any API interaction.
     app.rate_limit = client.rate_limit();
+    app.runs.budget = client.runs_rate_limit();
 
     match msg {
+        AppEvent::Runs {
+            issue_id,
+            generation,
+            result,
+        } => app.apply_runs(
+            &issue_id,
+            generation,
+            *result,
+            chrono::Utc::now(),
+            std::time::Instant::now(),
+        ),
         AppEvent::Data(Ok(repos)) => {
             app.rate_limit_error = None;
             nav(app, client, tx, |app| app.set_data(repos));
@@ -681,7 +717,7 @@ pub(crate) mod prelude {
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailGeometry, EditorState, EditorTarget,
         Focus, HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW,
         ISSUE_FORM_LABEL_WIDTH, InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove,
-        PendingPriority, SessionId, StateFilter, TreeRight, issue_form_width,
+        PendingPriority, RunsFetch, RunsWork, SessionId, StateFilter, TreeRight, issue_form_width,
         options_are_convention, priority_label_set, ranked_label_set,
     };
     pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};

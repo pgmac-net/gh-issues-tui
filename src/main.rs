@@ -6,6 +6,7 @@ mod jira;
 mod linear;
 mod localtime;
 mod provider;
+mod runs;
 mod tui;
 mod typesafe;
 

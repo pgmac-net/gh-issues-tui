@@ -19,6 +19,8 @@ mod pr;
 mod ranks;
 pub mod readiness;
 mod rows;
+mod run_tree;
+pub mod runs;
 pub mod search;
 
 #[cfg(test)]
@@ -35,6 +37,8 @@ pub use picker::PickerState;
 pub use pr::PrState;
 pub use ranks::RankState;
 pub use rows::TreeRight;
+pub use run_tree::{RunRow, RunRowKind, RunsData};
+pub use runs::{DetailTab, RunsFetch, RunsState, RunsWork};
 
 use prelude::*;
 
@@ -100,6 +104,8 @@ pub struct App {
     pub rate_limit_error: Option<String>,
     /// The PR summary popup and the links that feed it.
     pub pr: PrState,
+    /// The workflow-runs tab of the detail pane (#222).
+    pub runs: RunsState,
     /// Inferred priority ranks for labels outside the `priority:` convention
     /// (#156). Read-only: it affects sort and title colour, never what is
     /// written back to a backend.
@@ -186,6 +192,7 @@ impl App {
             typesafe: Default::default(),
             help: HelpState::default(),
             pr: PrState::default(),
+            runs: RunsState::default(),
             label_rank: RankState::default(),
             harness: HarnessState::default(),
             should_quit: false,
@@ -301,6 +308,7 @@ impl App {
         self.detail.comments = None;
         self.detail.reset_scroll();
         self.pr = PrState::default();
+        self.runs.reset();
         self.label_rank = RankState::default();
         self.loading = true;
     }

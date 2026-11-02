@@ -49,7 +49,7 @@ How Linear concepts map onto the UI:
 | Move issue (`m`) | Moves the issue to another team; Linear remaps its workflow state and label set to the target team itself |
 | `--org` | Ignored — the workspace is fixed by the API key |
 
-Not available on Linear: the linked-PR summary (`P`) — Linear issues have no GitHub PR links, so the key reports "not supported". Linear has no milestones or issue types in the GitHub sense; those form fields stay empty. The list view does not show a comment count for Linear issues (the count appears once you open the detail pane).
+Not available on Linear: the linked-PR summary (`P`) and workflow runs (`R`) — Linear issues have no GitHub PR links, so the keys report "not supported". Linear has no milestones or issue types in the GitHub sense; those form fields stay empty. The list view does not show a comment count for Linear issues (the count appears once you open the detail pane).
 
 ### Jira backend
 
@@ -75,7 +75,7 @@ How Jira concepts map onto the UI:
 | Issue type | Required when creating an issue — the new-issue form's type picker is populated from the project |
 | `--org` | Ignored — the site is fixed by the credentials |
 
-Not available on Jira: the linked-PR summary (`P`, no GitHub PR links), milestones, and moving issues to another project (`m`) — Jira Cloud has no per-issue move, only a Beta bulk-move endpoint requiring an explicit issue-type/status mapping, so the key reports "not supported". Rich ADF formatting (tables, panels, media) is dropped when flattening to text.
+Not available on Jira: the linked-PR summary (`P`) and workflow runs (`R`), which need GitHub PR links, milestones, and moving issues to another project (`m`) — Jira Cloud has no per-issue move, only a Beta bulk-move endpoint requiring an explicit issue-type/status mapping, so the key reports "not supported". Rich ADF formatting (tables, panels, media) is dropped when flattening to text.
 
 ### Starting inside a repository clone
 
@@ -253,6 +253,7 @@ code_number  = "#dcdcdc"
 | `t` | edit the title |
 | `p` | set the priority (picker of the repo's `priority:*` labels, `—` clears) |
 | `P` | summarise a linked PR (detail pane only; picker if several links are found) |
+| `R` | flip the detail pane between comments and workflow runs (GitHub only) |
 | `m` | move the issue to another repo (picker of the org's other repos, then a confirmation popup) |
 | `A` | send the issue to a coding harness — starts it in that repo's clone in an embedded terminal pane; attaches if the issue already has a session |
 | `Z` | switch between harness sessions |
@@ -314,6 +315,12 @@ The selection does not follow the moved issue after the refetch — GitHub does 
 With the detail pane open, `P` scans the issue's body and its loaded comment thread for references in three forms: `github.com/<owner>/<repo>/pull/<N>` links, `<owner>/<repo>#<N>` shorthand, and bare `#<N>` (resolved against the repo the issue belongs to). One reference opens its summary directly; several open a picker to choose. The summary popup shows the PR's title/description, state (open/closed/merged/draft), base←head branches and diffstat, review status (GitHub's overall decision plus per-reviewer approve/changes-requested/comment counts), issue-comment and review-thread counts, the head commit's checks, the PR's own Actions runs, and recent Actions runs on the repo's default branch (the "merge to main" runs). `j`/`k` scroll it; `Esc`/`q` closes back to the detail pane.
 
 The shorthands cannot say whether a number is a PR or an issue — GitHub draws both from one per-repo sequence — so a candidate is only resolved when you open it. If it turns out to be an issue, the popup says so and `o`/Enter jumps the selector to it, falling back to opening it in a browser when it isn't in the loaded data. References inside code fences and inline code spans are ignored. See `docs/pr-url-matching.md`.
+
+### Workflow runs
+
+`R` shows the Actions runs of the PRs linked to the selected issue, as a tab in the lower detail region. Linked PRs come from the issue's timeline and from links in its text; open and merged ones show, up to 5. Each PR unfolds to its current head commit's runs, then jobs, then steps, with progress and an ETA worked out the way [gh-eta](https://github.com/pgmac/gh-eta) does it.
+
+The tab refreshes every 15 seconds while it is showing an active run, and stops when they finish. `r` refreshes on demand, `o` opens the selected row on GitHub, and the arrow keys fold and move as they do everywhere else. Viewing is all it does: there is no re-run or cancel. A fine-grained token needs Actions read. Full detail: [docs/workflow-runs.md](docs/workflow-runs.md).
 
 ### In-app help
 
