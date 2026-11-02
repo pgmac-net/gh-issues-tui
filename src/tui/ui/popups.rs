@@ -570,19 +570,36 @@ pub(super) fn draw_session_help(f: &mut Frame, t: &Theme) {
     );
 }
 
+/// The key column's narrowest width. Tables whose keys all fit keep the layout
+/// they always had (the `F12 ?` popup is sized around it).
+const KEY_COL_MIN: usize = 10;
+/// Columns between the widest key and its description.
+const KEY_GAP: usize = 2;
+
 /// One row per key: the key in accent, then what it does. A blank pair is a
 /// spacer between groups, not a key.
+///
+/// The key column is as wide as the table's widest key plus a gap, so a long
+/// key such as `Space / Enter` can never run into its description (#224).
+/// Measured in terminal columns, not bytes: `↑`/`↓` are multi-byte.
 pub(super) fn key_table_lines(
     rows: &[(&'static str, &'static str)],
     t: &Theme,
 ) -> Vec<Line<'static>> {
+    let col = rows
+        .iter()
+        .map(|(k, _)| k.width() + KEY_GAP)
+        .max()
+        .unwrap_or(0)
+        .max(KEY_COL_MIN);
     rows.iter()
         .map(|(k, v)| {
             if k.is_empty() && v.is_empty() {
                 return Line::raw("");
             }
+            let pad = " ".repeat(col - k.width());
             Line::from(vec![
-                Span::styled(format!(" {k:<10}"), Style::default().fg(t.accent).bold()),
+                Span::styled(format!(" {k}{pad}"), Style::default().fg(t.accent).bold()),
                 Span::raw(*v),
             ])
         })
@@ -672,6 +689,35 @@ mod tests {
     use crate::tui::app::HarnessConfirm;
     use crate::tui::app::IssueForm;
     use crate::tui::app::Mode;
+
+    /// Where each key row's description starts, in terminal columns.
+    fn description_columns(rows: &[(&'static str, &'static str)]) -> Vec<usize> {
+        key_table_lines(rows, &Theme::default())
+            .iter()
+            .filter(|l| l.spans.len() == 2)
+            .map(|l| l.spans[0].content.width())
+            .collect()
+    }
+
+    /// #224: `PgUp / PgDn`, `g G Home End` and `Space / Enter` used to run into
+    /// their descriptions, because the column was a fixed 10 wide.
+    #[test]
+    fn every_key_description_starts_in_one_column_clear_of_the_widest_key() {
+        let cols = description_columns(LIST_HELP);
+        assert!(cols.windows(2).all(|w| w[0] == w[1]), "{cols:?}");
+        let widest = LIST_HELP.iter().map(|(k, _)| k.width()).max().unwrap();
+        assert!(
+            cols[0] >= 1 + widest + KEY_GAP,
+            "col {} vs key {widest}",
+            cols[0]
+        );
+    }
+
+    #[test]
+    fn a_table_of_short_keys_keeps_its_old_layout() {
+        let cols = description_columns(HARNESS_HELP);
+        assert!(cols.iter().all(|c| *c == 1 + KEY_COL_MIN), "{cols:?}");
+    }
 
     #[test]
     fn confirm_popup_prompts_close_for_open_issue() {
