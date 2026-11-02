@@ -255,7 +255,7 @@ code_number  = "#dcdcdc"
 | `w` | switch org/owner (free-text; resets filters and view state) |
 | `c` | add a comment: opens the detail pane (if closed) and its inline editor section (`Ctrl+S` submits, `Esc` discards) |
 | `e` | edit the selected detail region inline — the issue description (body) or the selected comment — in the same editor section |
-| `x` | close or reopen the issue (confirmation popup: `←`/`→`/`Tab` moves focus, `Enter` picks, or `y`/`n`/`Esc` shortcuts) |
+| `x` | close or reopen the issue (confirmation popup: `←`/`→`/`h`/`l`/`Tab` move focus, `Enter` picks, or `y`/`n`/`Esc` shortcuts; every Yes/No popup takes the same keys) |
 | `a` | edit assignees (comma-separated logins) |
 | `l` | edit labels (picker of the repo's labels, current labels pre-checked) |
 | `t` | edit the title |

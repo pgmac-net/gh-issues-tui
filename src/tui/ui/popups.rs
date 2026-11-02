@@ -677,6 +677,7 @@ pub(super) const LIST_HELP: &[(&str, &str)] = &[
     ("m", "move issue to another repo"),
     ("n", "new issue"),
     ("A", "start a coding harness (F12 ? for its keys)"),
+    ("Z", "switch between harness sessions"),
     ("r", "refresh selected issue / repo (runs tab: runs)"),
     ("Ctrl+R", "refresh filtered repo, else whole org"),
     ("q", "back / quit"),

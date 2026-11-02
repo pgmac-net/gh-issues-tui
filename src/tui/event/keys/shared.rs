@@ -1,5 +1,31 @@
 use super::super::prelude::*;
 
+/// One key in a Yes/No confirm popup. Every confirm popup takes the same keys
+/// (#233): `←`/`→`/`h`/`l`/`Tab`/`Shift+Tab` move the highlight and return
+/// `None`; `y`/`Y` and `Enter` on Yes return `Some(true)`; `n`/`N`, `Esc` and
+/// `Enter` on No return `Some(false)`. Any other key is ignored (`None`).
+/// The popup decides what Yes and No do, and keeps defaulting to No.
+pub(crate) fn confirm_decision(app: &mut App, key: KeyEvent) -> Option<bool> {
+    match key.code {
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Char('h')
+        | KeyCode::Char('l') => {
+            app.confirm_choice = match app.confirm_choice {
+                ConfirmChoice::Yes => ConfirmChoice::No,
+                ConfirmChoice::No => ConfirmChoice::Yes,
+            };
+            None
+        }
+        KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(false),
+        KeyCode::Enter => Some(app.confirm_choice == ConfirmChoice::Yes),
+        _ => None,
+    }
+}
+
 pub(crate) fn picker_common_key(app: &mut App, key: KeyEvent, space_filters: bool) -> bool {
     let visible = app.picker.filtered().len();
     match key.code {
@@ -167,4 +193,40 @@ pub(crate) fn pr_scroll_max(app: &App) -> u16 {
         ui::pr_summary_inner_width(cols),
         ui::pr_summary_inner_height(rows),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testutil::{app_with_issue, key};
+    use super::*;
+
+    /// #233: one key table for every Yes/No popup.
+    #[test]
+    fn confirm_keys_toggle_or_decide() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.confirm_choice = ConfirmChoice::No;
+        for toggle in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+        ] {
+            let before = app.confirm_choice;
+            assert_eq!(confirm_decision(&mut app, key(toggle)), None, "{toggle:?}");
+            assert_ne!(app.confirm_choice, before, "{toggle:?} moves the highlight");
+        }
+        for yes in [KeyCode::Char('y'), KeyCode::Char('Y')] {
+            assert_eq!(confirm_decision(&mut app, key(yes)), Some(true));
+        }
+        for no in [KeyCode::Char('n'), KeyCode::Char('N'), KeyCode::Esc] {
+            assert_eq!(confirm_decision(&mut app, key(no)), Some(false));
+        }
+        app.confirm_choice = ConfirmChoice::No;
+        assert_eq!(confirm_decision(&mut app, key(KeyCode::Enter)), Some(false));
+        app.confirm_choice = ConfirmChoice::Yes;
+        assert_eq!(confirm_decision(&mut app, key(KeyCode::Enter)), Some(true));
+        assert_eq!(confirm_decision(&mut app, key(KeyCode::Char('x'))), None);
+    }
 }

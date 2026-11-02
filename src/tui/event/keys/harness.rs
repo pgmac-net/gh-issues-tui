@@ -319,40 +319,20 @@ pub(crate) fn handle_session_picker_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Movement, type-ahead and cancel, shared by both harness pickers. Returns
-/// `true` when the key was consumed.
+/// Cancel, then the movement and type-ahead every picker shares
+/// (`picker_common_key`, #233). Returns `true` when the key was consumed.
 fn picker_nav(app: &mut App, key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Esc => {
-            // Cancelling from a session leaves you back in it, not on the list.
-            app.mode = if app.harness.active.is_some() {
-                Mode::Harness
-            } else {
-                Mode::Normal
-            };
-            true
-        }
-        KeyCode::Down => {
-            let len = app.picker.filtered().len();
-            if app.picker.idx + 1 < len {
-                app.picker.idx += 1;
-            }
-            true
-        }
-        KeyCode::Up => {
-            app.picker.idx = app.picker.idx.saturating_sub(1);
-            true
-        }
-        KeyCode::Backspace => {
-            app.picker.filter_backspace();
-            true
-        }
-        KeyCode::Char(c) => {
-            app.picker.filter_push(c);
-            true
-        }
-        _ => false,
+    if key.code == KeyCode::Esc {
+        // Cancelling from a session leaves you back in it, not on the list.
+        app.mode = if app.harness.active.is_some() {
+            Mode::Harness
+        } else {
+            Mode::Normal
+        };
+        return true;
     }
+    // Space types into the filter, as it always has here.
+    super::shared::picker_common_key(app, key, true)
 }
 
 /// `Mode::ConfirmHarness`: the Yes/No popup in front of an irreversible
@@ -363,18 +343,8 @@ pub(crate) fn handle_confirm_harness_key(
     what: HarnessConfirm,
     hx: &mut HarnessCtx,
 ) {
-    let confirmed = match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => true,
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => false,
-        KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
-            app.confirm_choice = match app.confirm_choice {
-                ConfirmChoice::Yes => ConfirmChoice::No,
-                ConfirmChoice::No => ConfirmChoice::Yes,
-            };
-            return;
-        }
-        KeyCode::Enter => app.confirm_choice == ConfirmChoice::Yes,
-        _ => return,
+    let Some(confirmed) = super::shared::confirm_decision(app, key) else {
+        return;
     };
 
     // Where the popup returns to depends on what it was covering.
@@ -618,6 +588,33 @@ mod tests {
         assert_eq!(app.harness.active, Some(second));
     }
 
+    /// #233: the harness pickers move like every other picker — wrap at the
+    /// ends, `End` jumps, `Ctrl+U` clears the type-ahead, Ctrl-chords are
+    /// not typed.
+    #[test]
+    fn the_session_picker_shares_the_common_picker_keys() {
+        let (mut app, _) = app_with_issue(&[]);
+        for n in 1..=3 {
+            app.harness
+                .register(format!("org/r#{n}"), "claude".into(), String::new());
+        }
+        open_session_picker(&mut app);
+        handle_session_picker_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.picker.idx, 2, "Up from the top wraps to the bottom");
+        handle_session_picker_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.picker.idx, 0, "Down from the bottom wraps to the top");
+        handle_session_picker_key(&mut app, key(KeyCode::End));
+        assert_eq!(app.picker.idx, 2);
+
+        handle_session_picker_key(&mut app, key(KeyCode::Char('x')));
+        handle_session_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        assert!(app.picker.filter.is_empty(), "Ctrl+U clears the filter");
+        assert_eq!(app.mode, Mode::SessionPicker);
+    }
+
     #[test]
     fn confirming_a_kill_removes_the_session() {
         let mut app = attached_app();
@@ -631,6 +628,23 @@ mod tests {
         );
         assert!(app.harness.sessions.is_empty());
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// #233: the harness popup takes the same keys as the other confirms,
+    /// so `l` moves the highlight here too (it used to be ignored).
+    #[test]
+    fn the_harness_confirm_takes_the_shared_confirm_keys() {
+        let mut app = attached_app();
+        let mut h = fixture(None);
+        app.confirm_choice = ConfirmChoice::No;
+        handle_confirm_harness_key(
+            &mut app,
+            key(KeyCode::Char('l')),
+            HarnessConfirm::Kill(0),
+            &mut h.ctx(),
+        );
+        assert_eq!(app.confirm_choice, ConfirmChoice::Yes);
+        assert_eq!(app.harness.sessions.len(), 1, "a toggle decides nothing");
     }
 
     #[test]

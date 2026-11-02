@@ -38,20 +38,10 @@ pub(crate) fn handle_confirm_move_key(
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    match key.code {
-        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Char('h') | KeyCode::Char('l') => {
-            app.confirm_choice = match app.confirm_choice {
-                ConfirmChoice::Yes => ConfirmChoice::No,
-                ConfirmChoice::No => ConfirmChoice::Yes,
-            };
-        }
-        KeyCode::Char('y') => confirm_move(app, client, tx),
-        KeyCode::Char('n') | KeyCode::Esc => cancel_move(app),
-        KeyCode::Enter => match app.confirm_choice {
-            ConfirmChoice::Yes => confirm_move(app, client, tx),
-            ConfirmChoice::No => cancel_move(app),
-        },
-        _ => {}
+    match confirm_decision(app, key) {
+        Some(true) => confirm_move(app, client, tx),
+        Some(false) => cancel_move(app),
+        None => {}
     }
 }
 

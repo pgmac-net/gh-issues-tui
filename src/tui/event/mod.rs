@@ -648,7 +648,7 @@ pub(crate) fn handle_app_event(
             if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
                 app.rate_limit_error = Some(e.clone());
             }
-            app.status = Some(format!("failed: {e}"));
+            app.status = Some(format!("update failed: {e}"));
         }
         AppEvent::FormOptions { repo, result } => match result {
             Ok(options) => app.set_form_options(&repo, options),
@@ -979,6 +979,14 @@ mod tests {
         assert!(!app.loading);
         assert_eq!(app.status.as_deref(), Some("refresh failed: boom"));
         assert_eq!(app.repos[0].issues.len(), 1, "a failure removes nothing");
+    }
+
+    /// #233: like every other failure, a failed mutation names its subject.
+    #[test]
+    fn a_failed_mutation_says_what_failed() {
+        let (mut app, _) = app_with_issue(&[]);
+        send(&mut app, AppEvent::MutationFailed("boom".into()));
+        assert_eq!(app.status.as_deref(), Some("update failed: boom"));
     }
 
     #[test]

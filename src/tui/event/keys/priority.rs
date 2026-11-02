@@ -14,20 +14,10 @@ pub(crate) fn handle_confirm_priority_key(
     client: &Provider,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    match key.code {
-        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Char('h') | KeyCode::Char('l') => {
-            app.confirm_choice = match app.confirm_choice {
-                ConfirmChoice::Yes => ConfirmChoice::No,
-                ConfirmChoice::No => ConfirmChoice::Yes,
-            };
-        }
-        KeyCode::Char('y') => confirm_priority(app, client, tx),
-        KeyCode::Char('n') | KeyCode::Esc => cancel_priority(app),
-        KeyCode::Enter => match app.confirm_choice {
-            ConfirmChoice::Yes => confirm_priority(app, client, tx),
-            ConfirmChoice::No => cancel_priority(app),
-        },
-        _ => {}
+    match super::shared::confirm_decision(app, key) {
+        Some(true) => confirm_priority(app, client, tx),
+        Some(false) => cancel_priority(app),
+        None => {}
     }
 }
 
