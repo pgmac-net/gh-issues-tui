@@ -8,6 +8,7 @@ use super::{
 };
 use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result, found};
 use crate::provider::http::build_http_client;
+use crate::provider::scope::FetchScope;
 use crate::provider::types::{
     Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
     RepoIssues, RepoLabel,
@@ -94,9 +95,26 @@ impl Client {
     /// Fetch every project as a group, each with its issues. `org` is ignored —
     /// the site is fixed by the credentials. `include_closed` keeps Done issues;
     /// otherwise they are filtered out via JQL.
-    pub async fn org_issues(&self, _org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
+    pub async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
         // Phase 1: list projects (paged).
-        let mut projects: Vec<ProjectRef> = Vec::new();
+        let projects = self.repo_names(org).await?;
+
+        // Phase 2: page each project's issues.
+        let mut out = Vec::new();
+        for key in projects {
+            let issues = self.project_issues(&key, include_closed).await?;
+            out.push(RepoIssues {
+                repo_url: format!("{}/browse/{key}", self.base_url),
+                repo: key,
+                issues,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Every project key: the group names `org_issues` reports (#230).
+    pub async fn repo_names(&self, _org: &str) -> Result<Vec<String>> {
+        let mut projects: Vec<String> = Vec::new();
         let mut start = 0u32;
         loop {
             let data = self
@@ -113,31 +131,18 @@ impl Client {
                 .and_then(Value::as_array)
                 .ok_or_else(|| ProviderError::Shape("project search: missing values".into()))?;
             for v in values {
-                projects.push(ProjectRef {
-                    key: v
-                        .get("key")
+                projects.push(
+                    v.get("key")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                });
+                );
             }
             if data.get("isLast").and_then(Value::as_bool).unwrap_or(true) {
-                break;
+                return Ok(projects);
             }
             start += PROJECTS_PAGE;
         }
-
-        // Phase 2: page each project's issues.
-        let mut out = Vec::new();
-        for project in projects {
-            let issues = self.project_issues(&project.key, include_closed).await?;
-            out.push(RepoIssues {
-                repo: project.key.clone(),
-                repo_url: format!("{}/browse/{}", self.base_url, project.key),
-                issues,
-            });
-        }
-        Ok(out)
     }
 
     /// One project's issues, shaped like its `org_issues` group (#229).
@@ -615,16 +620,13 @@ fn map_issue(raw: &Value) -> Issue {
     }
 }
 
-struct ProjectRef {
-    key: String,
-}
-
 /// Thin adapter over the inherent methods — inherent methods win name
 /// resolution inside this impl, so each call reaches the real implementation.
+/// Jira honours only the state part of a `FetchScope` (#230).
 #[async_trait::async_trait]
 impl crate::provider::IssueProvider for Client {
-    async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
-        self.org_issues(org, include_closed).await
+    async fn org_issues(&self, org: &str, scope: &FetchScope) -> Result<Vec<RepoIssues>> {
+        self.org_issues(org, scope.include_closed).await
     }
     async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
         found(Client::issue(self, issue_id).await)
@@ -633,9 +635,12 @@ impl crate::provider::IssueProvider for Client {
         &self,
         org: &str,
         repo: &str,
-        include_closed: bool,
+        scope: &FetchScope,
     ) -> Result<Option<RepoIssues>> {
-        self.repo_issues(org, repo, include_closed).await
+        self.repo_issues(org, repo, scope.include_closed).await
+    }
+    async fn repo_names(&self, org: &str) -> Result<Vec<String>> {
+        self.repo_names(org).await
     }
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.comments(issue_id).await

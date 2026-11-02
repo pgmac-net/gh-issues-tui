@@ -2,48 +2,105 @@
 
 use super::prelude::*;
 
-pub(crate) fn spawn_fetch(client: &Provider, app: &App, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let client = client.clone();
-    let org = app.org.clone();
-    let include_closed = app.include_closed;
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = client
-            .org_issues(&org, include_closed)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::Data(result));
+/// Refetch the whole org at the wanted scope: create and move, which change
+/// which issues exist or where. Becomes the loaded scope when it lands.
+pub(crate) fn spawn_fetch(client: &Provider, app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let scope = app.wanted_scope();
+    app.begin_fetch(Loaded {
+        scope: scope.clone(),
+        repo: None,
     });
+    send_org_fetch(client, app.org.clone(), scope, tx);
 }
 
-/// Refetch the filtered scope (#229): the one repo an exact repo filter names,
-/// otherwise the org. `Ctrl+R` and the auto-refresh ticker both land here.
+/// Refetch the filtered scope at the wanted scope (#229, #230): the one repo
+/// an exact repo filter names, otherwise the org. Startup, org switch,
+/// `Ctrl+R`, auto-refresh and auto-widen all land here.
 pub(crate) fn spawn_filtered_fetch(
     client: &Provider,
-    app: &App,
+    app: &mut App,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    match app.filtered_target() {
-        FetchTarget::Org => spawn_fetch(client, app, tx),
-        FetchTarget::Repo(repo) => spawn_repo_refresh(client, app, repo, tx),
+    let target = app.wanted();
+    app.begin_fetch(target.clone());
+    let org = app.org.clone();
+    match target.repo {
+        None => send_org_fetch(client, org, target.scope, tx),
+        Some(repo) => send_repo_fetch(client, org, repo, target.scope, tx),
     }
 }
 
-/// Refetch one repo's issues (#229), at the loaded `include_closed` scope so
-/// the group stays consistent with the rest of the list.
+/// Refetch one repo's issues (#229) for `r` on its header, at the *loaded*
+/// scope so the group stays consistent with the rest of the list. Not a
+/// change of loaded scope, so no `begin_fetch`.
 pub(crate) fn spawn_repo_refresh(
     client: &Provider,
     app: &App,
     repo: String,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
+    send_repo_fetch(client, app.org.clone(), repo, app.loaded_scope(), tx);
+}
+
+/// Refetch the filtered scope when the filters have widened past the loaded
+/// data (#230). Called after every key and every event; a no-op unless
+/// [`App::widened`] says a fetch is due and nothing is in the way.
+pub(crate) fn refetch_if_widened(
+    client: &Provider,
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    if !app.widened() {
+        return;
+    }
+    app.loading = true;
+    app.status = Some("filters widened, refreshing…".into());
+    spawn_filtered_fetch(client, app, tx);
+}
+
+/// Fetch the org's repo names for the move picker (#230).
+pub(crate) fn spawn_repo_names(
+    client: &Provider,
+    org: String,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
     let client = client.clone();
-    let org = app.org.clone();
-    let include_closed = app.include_closed;
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client.repo_names(&org).await.map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::RepoNames { org, result });
+    });
+}
+
+fn send_org_fetch(
+    client: &Provider,
+    org: String,
+    scope: FetchScope,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
         let result = client
-            .repo_issues(&org, &repo, include_closed)
+            .org_issues(&org, &scope)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::Data(result));
+    });
+}
+
+fn send_repo_fetch(
+    client: &Provider,
+    org: String,
+    repo: String,
+    scope: FetchScope,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = client
+            .repo_issues(&org, &repo, &scope)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::RepoRefreshed { repo, result });

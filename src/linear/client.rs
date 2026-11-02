@@ -7,6 +7,7 @@ use crate::provider::http::{
     RateLimitStore, build_http_client, graphql_body, graphql_data, header_i64, join_error_messages,
     parse_at,
 };
+use crate::provider::scope::FetchScope;
 use crate::provider::types::{
     Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
     RepoIssues, RepoLabel,
@@ -148,6 +149,23 @@ impl Client {
         // Phase 1: list teams (cheap — no nested issues). Fetching teams and
         // their issues in one query blows Linear's fixed complexity budget
         // (teams × issues × per-issue fields), so issues are paged per team.
+        let teams = self.teams().await?;
+
+        // Phase 2: page each team's issues.
+        let mut out = Vec::new();
+        for team in teams {
+            out.push(self.team_issues(team, include_closed).await?);
+        }
+        Ok(out)
+    }
+
+    /// Every team key: the group names `org_issues` reports (#230).
+    pub async fn repo_names(&self, _org: &str) -> Result<Vec<String>> {
+        Ok(self.teams().await?.into_iter().map(|t| t.key).collect())
+    }
+
+    /// Every team in the workspace, paged.
+    async fn teams(&self) -> Result<Vec<TeamNode>> {
         let mut teams: Vec<TeamNode> = Vec::new();
         let mut team_cursor: Option<String> = None;
         loop {
@@ -164,13 +182,7 @@ impl Client {
             }
             team_cursor = conn.page_info.end_cursor;
         }
-
-        // Phase 2: page each team's issues.
-        let mut out = Vec::new();
-        for team in teams {
-            out.push(self.team_issues(team, include_closed).await?);
-        }
-        Ok(out)
+        Ok(teams)
     }
 
     pub async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
@@ -765,8 +777,10 @@ impl IssueNode {
 /// resolution inside this impl, so each call reaches the real implementation.
 #[async_trait::async_trait]
 impl crate::provider::IssueProvider for Client {
-    async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>> {
-        self.org_issues(org, include_closed).await
+    // Linear honours only the state part of a `FetchScope` (#230); the
+    // client-side filters cover the rest.
+    async fn org_issues(&self, org: &str, scope: &FetchScope) -> Result<Vec<RepoIssues>> {
+        self.org_issues(org, scope.include_closed).await
     }
     async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
         self.issue(issue_id).await
@@ -775,9 +789,12 @@ impl crate::provider::IssueProvider for Client {
         &self,
         org: &str,
         repo: &str,
-        include_closed: bool,
+        scope: &FetchScope,
     ) -> Result<Option<RepoIssues>> {
-        self.repo_issues(org, repo, include_closed).await
+        self.repo_issues(org, repo, scope.include_closed).await
+    }
+    async fn repo_names(&self, org: &str) -> Result<Vec<String>> {
+        self.repo_names(org).await
     }
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.comments(issue_id).await

@@ -28,8 +28,8 @@ mod spawn;
 
 use keys::{HarnessCtx, handle_key};
 use spawn::{
-    AfterMutation, spawn_comments, spawn_fetch, spawn_filtered_fetch, spawn_label_ranks,
-    spawn_priority_ranks, spawn_readiness, spawn_runs, spawn_semantic_search,
+    AfterMutation, refetch_if_widened, spawn_comments, spawn_fetch, spawn_filtered_fetch,
+    spawn_label_ranks, spawn_priority_ranks, spawn_readiness, spawn_runs, spawn_semantic_search,
 };
 
 pub enum AppEvent {
@@ -45,6 +45,11 @@ pub enum AppEvent {
     RepoRefreshed {
         repo: String,
         result: Result<Option<RepoIssues>, String>,
+    },
+    /// The org's repo names, fetched for the move picker (#230).
+    RepoNames {
+        org: String,
+        result: Result<Vec<String>, String>,
     },
     Comments {
         issue_id: String,
@@ -208,7 +213,9 @@ async fn event_loop(
     let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    spawn_fetch(&client, &app, &tx);
+    // Startup fetches the filtered scope: just the clone's repo when started
+    // inside one (#230), otherwise the org.
+    spawn_filtered_fetch(&client, &mut app, &tx);
 
     // A detached agent producing output must not force a re-render of the
     // issue list on every chunk it writes — its bytes are already in its
@@ -255,6 +262,9 @@ async fn event_loop(
                         // Submitting `/`, the filter editor's text field, or a
                         // change that exposes unjudged issues all land here.
                         spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
+                        // A filter change that reaches past the loaded data
+                        // refetches once (#230).
+                        refetch_if_widened(&client, &mut app, &tx);
                     }
                     // Children need the new size too, or their own TUI keeps
                     // drawing to the old one.
@@ -279,12 +289,14 @@ async fn event_loop(
                 spawn_readiness(&mut app, typesafe.issue_text.as_ref(), &tx);
                 // Fresh data can bring issues not yet judged for an active query.
                 spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
+                // A widen held back by a fetch in flight goes out once it lands.
+                refetch_if_widened(&client, &mut app, &tx);
             }
             _ = refresh.tick(), if refresh_enabled => {
                 if app.should_auto_refresh() {
                     app.loading = true;
                     app.auto_refreshing = true;
-                    spawn_filtered_fetch(&client, &app, &tx);
+                    spawn_filtered_fetch(&client, &mut app, &tx);
                 }
             }
             _ = runs_timer, if runs_due.is_some() => {
@@ -381,11 +393,24 @@ pub(crate) fn nav(
 fn refresh_failed(app: &mut App, what: &str, e: &str) {
     app.loading = false;
     app.auto_refreshing = false;
+    // The loaded scope stays what the last *successful* fetch asked for.
+    app.finish_fetch(false);
     if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
         app.rate_limit_error = Some(e.to_string());
         app.status = Some(format!("{what} failed — {e}"));
     } else {
         app.status = Some(format!("{what} failed: {e}"));
+    }
+}
+
+/// Open the move picker over [`App::move_targets`], or say there is nowhere
+/// to move to. Shared by `m` and the repo-list answer it may wait for.
+pub(crate) fn open_move_targets(app: &mut App) {
+    let targets = app.move_targets();
+    if targets.is_empty() {
+        app.status = Some("no other repo to move this issue to".into());
+    } else {
+        app.open_move_picker(targets);
     }
 }
 
@@ -474,6 +499,7 @@ pub(crate) fn handle_app_event(
             // First load of an org says "loaded"; every later one names its
             // scope like the one-repo and one-issue refreshes do (#229).
             let first = app.repos.is_empty();
+            app.finish_fetch(true);
             nav(app, client, tx, |app| app.set_data(repos));
             let verb = if app.auto_refreshing {
                 "auto-refreshed org:"
@@ -533,9 +559,14 @@ pub(crate) fn handle_app_event(
                 app.rate_limit_error = None;
                 let verb = if app.auto_refreshing {
                     "auto-refreshed"
+                } else if app.repos.is_empty() {
+                    "loaded"
                 } else {
                     "refreshed"
                 };
+                // A filtered fetch narrowed to this repo becomes the loaded
+                // scope; `r` on a header began no fetch, so this is a no-op.
+                app.finish_fetch(true);
                 app.auto_refreshing = false;
                 let gone = fresh.is_none();
                 nav(app, client, tx, |app| app.replace_repo(&repo, fresh));
@@ -548,6 +579,23 @@ pub(crate) fn handle_app_event(
             }
             Err(e) => refresh_failed(app, "refresh", &e),
         },
+        AppEvent::RepoNames { org, result } => {
+            if org != app.org {
+                return;
+            }
+            let waiting = app.picker.move_issue.take();
+            match result {
+                Ok(names) => app.org_repo_names = Some(names),
+                // Not fatal: the loaded and seen repos still make targets.
+                Err(e) => app.status = Some(format!("repo list failed: {e}")),
+            }
+            if waiting.is_some()
+                && app.mode == Mode::Normal
+                && app.selected_issue().map(|i| i.id.clone()) == waiting
+            {
+                open_move_targets(app);
+            }
+        }
         AppEvent::Comments { issue_id, result } => {
             let is_selected = app.selected_issue().map(|i| i.id.clone()) == Some(issue_id.clone());
             match result {
@@ -786,26 +834,28 @@ pub(crate) mod prelude {
     pub use tokio::sync::mpsc;
 
     pub use crate::provider::Provider;
+    pub use crate::provider::scope::FetchScope;
     pub use crate::provider::types::{Issue, IssueState, PrRef, RepoLabel};
     pub use crate::tui::app::{
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailGeometry, EditorState, EditorTarget,
         FetchTarget, Focus, HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW,
-        ISSUE_FORM_LABEL_WIDTH, InputKind, InputState, IssueForm, LaunchAction, Mode, PendingMove,
-        PendingPriority, RefreshTarget, RunsFetch, RunsWork, SessionId, StateFilter, TreeRight,
+        ISSUE_FORM_LABEL_WIDTH, InputKind, InputState, IssueForm, LaunchAction, Loaded, Mode,
+        PendingMove, PendingPriority, RefreshTarget, RunsFetch, RunsWork, SessionId, TreeRight,
         issue_form_width, options_are_convention, priority_label_set, ranked_label_set,
     };
     pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};
     pub use crate::tui::{layout, ui};
 
     pub(crate) use super::spawn::*;
-    pub(crate) use super::{AppEvent, nav, osc52_copy, split_csv};
+    pub(crate) use super::{AppEvent, nav, open_move_targets, osc52_copy, split_csv};
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::scope::FetchScope;
     use crate::provider::types::{Comment, Issue, IssueState, Label, RepoIssues};
-    use crate::tui::app::Row;
+    use crate::tui::app::{Loaded, Row};
     use keys::testutil::{app_with_issue, test_client};
 
     fn stub_issue(id: &str, number: u64) -> Issue {
@@ -969,6 +1019,145 @@ mod tests {
         );
         assert_eq!(app.rate_limit_error.as_deref(), Some(e.as_str()));
         assert!(!app.should_auto_refresh());
+    }
+
+    fn one_repo(issues: Vec<Issue>) -> Vec<RepoIssues> {
+        vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues,
+        }]
+    }
+
+    #[test]
+    fn a_landed_fetch_becomes_the_loaded_scope() {
+        let mut app = App::new("org".into(), None, false, false, String::new());
+        let target = Loaded {
+            scope: FetchScope {
+                assignee: Some("pgmac".into()),
+                ..FetchScope::default()
+            },
+            repo: None,
+        };
+        app.begin_fetch(target.clone());
+        send(&mut app, AppEvent::Data(Ok(one_repo(vec![]))));
+        assert_eq!(app.loaded, Some(target));
+        assert!(app.pending_fetch.is_none());
+    }
+
+    #[test]
+    fn a_failed_fetch_leaves_the_loaded_scope_alone() {
+        let mut app = App::new("org".into(), None, false, false, String::new());
+        app.begin_fetch(Loaded {
+            scope: FetchScope::default(),
+            repo: None,
+        });
+        send(&mut app, AppEvent::Data(Err("boom".into())));
+        assert_eq!(app.loaded, None);
+        assert!(app.pending_fetch.is_none());
+    }
+
+    #[test]
+    fn a_filtered_repo_fetch_loads_that_repo_but_r_on_a_header_does_not() {
+        let (mut app, _) = app_with_issue(&[]);
+        let fresh = || {
+            Ok(Some(RepoIssues {
+                repo: "r".into(),
+                repo_url: "u".into(),
+                issues: vec![],
+            }))
+        };
+        // `r` on the header: no fetch begun, loaded scope untouched.
+        send(
+            &mut app,
+            AppEvent::RepoRefreshed {
+                repo: "r".into(),
+                result: fresh(),
+            },
+        );
+        assert_eq!(app.loaded, None);
+        // Ctrl+R with an exact filter: begun, so it lands as loaded.
+        let target = Loaded {
+            scope: FetchScope::default(),
+            repo: Some("r".into()),
+        };
+        app.begin_fetch(target.clone());
+        send(
+            &mut app,
+            AppEvent::RepoRefreshed {
+                repo: "r".into(),
+                result: fresh(),
+            },
+        );
+        assert_eq!(app.loaded, Some(target));
+    }
+
+    #[test]
+    fn the_repo_list_opens_the_move_picker_it_was_fetched_for() {
+        let (mut app, id) = app_with_issue(&[]);
+        app.picker.move_issue = Some(id);
+        send(
+            &mut app,
+            AppEvent::RepoNames {
+                org: "org".into(),
+                result: Ok(vec!["r".into(), "other".into()]),
+            },
+        );
+        assert_eq!(app.mode, Mode::MovePicker);
+        assert_eq!(app.picker.options, vec!["other".to_string()]);
+        assert!(app.picker.move_issue.is_none());
+    }
+
+    #[test]
+    fn a_repo_list_for_another_org_or_a_moved_selection_opens_nothing() {
+        let (mut app, id) = app_with_issue(&[]);
+        app.picker.move_issue = Some(id);
+        send(
+            &mut app,
+            AppEvent::RepoNames {
+                org: "elsewhere".into(),
+                result: Ok(vec!["x".into()]),
+            },
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.org_repo_names.is_none());
+
+        app.picker.move_issue = Some("I_moved_on".into());
+        send(
+            &mut app,
+            AppEvent::RepoNames {
+                org: "org".into(),
+                result: Ok(vec!["r".into(), "other".into()]),
+            },
+        );
+        assert_eq!(app.mode, Mode::Normal, "the selection is not that issue");
+        assert!(app.org_repo_names.is_some(), "the list is still cached");
+    }
+
+    #[tokio::test]
+    async fn widening_the_filters_refetches_once() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = false;
+        app.loaded = Some(Loaded {
+            scope: FetchScope {
+                assignee: Some("pgmac".into()),
+                ..FetchScope::default()
+            },
+            repo: None,
+        });
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        refetch_if_widened(&client, &mut app, &tx);
+        assert!(app.loading);
+        assert_eq!(app.status.as_deref(), Some("filters widened, refreshing…"));
+        assert_eq!(
+            app.pending_fetch.as_ref().map(|t| t.scope.clone()),
+            Some(FetchScope::default())
+        );
+        // Still loading: a second check starts nothing more.
+        app.status = None;
+        refetch_if_widened(&client, &mut app, &tx);
+        assert_eq!(app.status, None);
     }
 
     #[test]

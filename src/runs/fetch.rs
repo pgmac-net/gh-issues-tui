@@ -186,6 +186,7 @@ mod tests {
 
     use super::*;
     use crate::provider::error::ProviderError;
+    use crate::provider::scope::FetchScope;
     use crate::provider::types::{
         Comment, FormOptions, Issue, IssueState, NewIssueParams, RateLimitData, RepoIssues,
         RepoLabel,
@@ -240,13 +241,18 @@ mod tests {
             Err(ProviderError::Api("no history".into()))
         }
 
-        async fn org_issues(&self, _: &str, _: bool) -> Result<Vec<RepoIssues>> {
+        async fn org_issues(&self, _: &str, _: &FetchScope) -> Result<Vec<RepoIssues>> {
             unimplemented!()
         }
         async fn issue(&self, _: &str) -> Result<Option<Issue>> {
             unimplemented!()
         }
-        async fn repo_issues(&self, _: &str, _: &str, _: bool) -> Result<Option<RepoIssues>> {
+        async fn repo_issues(
+            &self,
+            _: &str,
+            _: &str,
+            _: &FetchScope,
+        ) -> Result<Option<RepoIssues>> {
             unimplemented!()
         }
         async fn comments(&self, _: &str) -> Result<Vec<Comment>> {

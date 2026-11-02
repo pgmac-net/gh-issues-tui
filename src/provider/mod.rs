@@ -1,6 +1,7 @@
 pub mod error;
 pub mod http;
 pub mod priority;
+pub mod scope;
 pub mod types;
 
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use error::{ProviderError, Result};
+use scope::FetchScope;
 use types::{
     Comment, FormOptions, Issue, IssueState, NewIssueParams, PrLookup, PrRef, RateLimitData,
     RepoIssues, RepoLabel,
@@ -26,8 +28,9 @@ use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
 #[async_trait]
 pub trait IssueProvider: Send + Sync {
     /// Fetch all issues for every repository (or the provider's nearest
-    /// grouping concept) owned by `org`.
-    async fn org_issues(&self, org: &str, include_closed: bool) -> Result<Vec<RepoIssues>>;
+    /// grouping concept) owned by `org`, narrowed by `scope` (#230). Every
+    /// group is returned even when the scope leaves it with no issues.
+    async fn org_issues(&self, org: &str, scope: &FetchScope) -> Result<Vec<RepoIssues>>;
     /// One issue as the backend holds it now, by the id `org_issues` gave it
     /// (#229). `Ok(None)` when it no longer exists or can no longer be seen —
     /// deleted, transferred, access lost.
@@ -39,8 +42,16 @@ pub trait IssueProvider: Send + Sync {
         &self,
         org: &str,
         repo: &str,
-        include_closed: bool,
+        scope: &FetchScope,
     ) -> Result<Option<RepoIssues>>;
+
+    /// Names of every group `org_issues` would return, without their issues
+    /// (#230). Feeds the move-target and repo-filter pickers when the loaded
+    /// data covers fewer repos than the org has. The default reports
+    /// `Unsupported`, and callers fall back to the loaded groups.
+    async fn repo_names(&self, _org: &str) -> Result<Vec<String>> {
+        Err(ProviderError::Unsupported("repo names"))
+    }
 
     async fn comments(&self, issue_id: &str) -> Result<Vec<Comment>>;
 
@@ -209,13 +220,18 @@ mod tests {
 
     #[async_trait]
     impl IssueProvider for Minimal {
-        async fn org_issues(&self, _: &str, _: bool) -> Result<Vec<RepoIssues>> {
+        async fn org_issues(&self, _: &str, _: &FetchScope) -> Result<Vec<RepoIssues>> {
             Ok(vec![])
         }
         async fn issue(&self, _: &str) -> Result<Option<Issue>> {
             Ok(None)
         }
-        async fn repo_issues(&self, _: &str, _: &str, _: bool) -> Result<Option<RepoIssues>> {
+        async fn repo_issues(
+            &self,
+            _: &str,
+            _: &str,
+            _: &FetchScope,
+        ) -> Result<Option<RepoIssues>> {
             Ok(None)
         }
         async fn comments(&self, _: &str) -> Result<Vec<Comment>> {

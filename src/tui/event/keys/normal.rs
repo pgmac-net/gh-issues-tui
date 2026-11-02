@@ -173,14 +173,9 @@ pub(crate) fn handle_normal_key(
             app.mode = Mode::Input(InputKind::GotoNumber);
         }
         KeyCode::Char('f') => {
+            // Showing closed issues widens the wanted scope; the auto-widen
+            // after this key fetches them when they were never loaded (#230).
             app.state_filter = app.state_filter.next();
-            if app.state_filter != StateFilter::Open && !app.include_closed {
-                // Closed issues were never fetched; upgrade the dataset once.
-                app.include_closed = true;
-                app.loading = true;
-                app.status = Some("fetching closed issues…".into());
-                spawn_fetch(client, app, tx);
-            }
             app.rebuild_rows();
             app.expand_single_visible();
         }
@@ -308,13 +303,14 @@ pub(crate) fn handle_normal_key(
             if app.selected_issue().is_some() {
                 if !client.supports_move() {
                     app.status = Some("moving issues not supported by this provider".into());
+                } else if app.org_repo_names.is_none() {
+                    // The loaded repos may be only the filtered one (#230):
+                    // ask for the org's list once, then open the picker.
+                    app.picker.move_issue = app.selected_issue().map(|i| i.id.clone());
+                    app.status = Some("loading repos…".into());
+                    spawn_repo_names(client, app.org.clone(), tx);
                 } else {
-                    let targets = app.move_targets();
-                    if targets.is_empty() {
-                        app.status = Some("no other repo to move this issue to".into());
-                    } else {
-                        app.open_move_picker(targets);
-                    }
+                    open_move_targets(app);
                 }
             }
         }
