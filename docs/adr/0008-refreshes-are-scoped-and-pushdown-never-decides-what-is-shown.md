@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (#227, built in #229 and #230).
+Accepted (#227, built in #229 and #230). Rule 1 is partly superseded by ADR 0010 (#226): auto-refresh now covers the org.
 
 ## Context
 

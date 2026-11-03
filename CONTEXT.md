@@ -16,6 +16,18 @@ Terms used across this repo's code and docs.
 
 **Widen** and **narrow**: a filter change widens when it could show issues outside the loaded scope (clearing an assignee, showing closed issues), and narrows when it can only hide loaded ones. Narrowing never fetches; widening refetches the filtered scope once.
 
+## Caching (#226)
+
+**Snapshot**: the last loaded issues of one org on one backend, with the loaded scope they were fetched with, kept on disk and drawn at startup before the first fetch lands. Read-only: writes go to the backend and the snapshot follows. *Avoid*: "cache" alone, which also covers the Jev answer caches; "offline copy", since nothing can be edited from it.
+
+**Usable snapshot**: one whose scope covers the wanted scope. Any other snapshot is treated as missing.
+
+**Settle**: fold an answer from the backend (a load, refresh, patch or move) into the list. Each settle is what the snapshot saves.
+
+**Jev answer cache**: a readiness or search answer kept on disk under a hash of the exact state sent, plus model and prompt version. Stale exactly when that input changes. *Avoid*: "Jev cache", which would include the label-rank cache, a separate thing with its own lifecycle.
+
+**Load** (of the list): fetch data the list does not hold yet: the first load, or a widen past the loaded scope. A **refresh** refetches data it already holds. *Avoid*: calling a widen a refresh.
+
 ## Workflow runs
 
 **Linked PR**: a pull request connected to an issue, by the issue's timeline (a cross-reference or a connected PR) or by a link in the issue's body or comments. Mentioning is enough; closing is not required. *Avoid*: "the issue's PR", since an issue can have several.
