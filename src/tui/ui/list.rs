@@ -47,7 +47,8 @@ pub(super) fn draw_list(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         })
         .collect();
 
-    let title = if app.loading {
+    // A snapshot on screen is the list, not a placeholder: count it (#226).
+    let title = if app.loading && app.cached.is_none() {
         format!(" {} — loading… ", app.org)
     } else {
         format!(" {} — {} issues ", app.org, app.filtered_issue_count())
@@ -243,6 +244,11 @@ pub(super) fn draw_info_bar(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
             format!("  API {}/{}{}", rl.remaining, rl.limit, cost),
             Style::default().fg(color),
         ));
+    }
+    // Showing a snapshot no fetch has replaced yet (#226): how old it is.
+    if let Some(c) = app.cache_indicator(chrono::Utc::now()) {
+        let color = if app.loading { t.dim } else { t.warning };
+        spans.push(Span::styled(format!("  {c}"), Style::default().fg(color)));
     }
     if let Some(err) = &app.rate_limit_error {
         spans.push(Span::styled(

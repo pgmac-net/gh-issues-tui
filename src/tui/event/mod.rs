@@ -23,6 +23,7 @@ use super::harness::{HarnessRegistry, HarnessSettings, list_bg_sessions};
 use super::theme::Theme;
 use super::ui;
 
+mod cache_io;
 mod keys;
 mod persist;
 mod spawn;
@@ -30,7 +31,8 @@ mod spawn;
 use keys::{HarnessCtx, handle_key};
 use spawn::{
     AfterMutation, refetch_if_widened, spawn_comments, spawn_fetch, spawn_filtered_fetch,
-    spawn_label_ranks, spawn_priority_ranks, spawn_readiness, spawn_runs, spawn_semantic_search,
+    spawn_label_ranks, spawn_org_refresh, spawn_priority_ranks, spawn_readiness, spawn_runs,
+    spawn_semantic_search,
 };
 
 pub enum AppEvent {
@@ -188,14 +190,22 @@ async fn event_loop(
         hide_empty_repos,
         restore_layout,
         fresh,
-        cache: _cache,
-        no_cache: _no_cache,
+        cache,
+        no_cache,
         provider,
         copy_format,
         theme,
         harness: harness_settings,
         typesafe,
     } = config;
+    let mut cache_io = cache_io::CacheIo::new(
+        cache,
+        typesafe.issue_text.is_some(),
+        crate::cache::root(),
+        provider.clone(),
+        client.host(),
+        org.clone(),
+    );
     let mut saver = persist::LayoutSaver::new(
         restore_layout,
         persist::default_dir(),
@@ -234,6 +244,13 @@ async fn event_loop(
     let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // A usable snapshot draws at once (#226), after the layout resumed so the
+    // filters it restored decide whether the snapshot covers them. The fetch
+    // below always follows: the backend has the last word (ADR 0010).
+    if cache_io.start(&mut app, no_cache) {
+        spawn_label_ranks(&mut app, typesafe.ranks.as_ref(), &tx);
+    }
+
     // Startup fetches the filtered scope: just the clone's repo when started
     // inside one (#230), otherwise the org.
     spawn_filtered_fetch(&client, &mut app, &tx);
@@ -269,6 +286,10 @@ async fn event_loop(
         let save_due = saver.due();
         let save_timer =
             tokio::time::sleep_until(save_due.unwrap_or_else(tokio::time::Instant::now));
+        // The snapshot's debounced write (#226), gated off when nothing settled.
+        let cache_due = cache_io.due();
+        let cache_timer =
+            tokio::time::sleep_until(cache_due.unwrap_or_else(tokio::time::Instant::now));
         // A harness chunk never changes the layout, and arrives at PTY rates.
         let mut layout_may_have_changed = true;
 
@@ -324,7 +345,9 @@ async fn event_loop(
                 if app.should_auto_refresh() {
                     app.loading = true;
                     app.auto_refreshing = true;
-                    spawn_filtered_fetch(&client, &mut app, &tx);
+                    // The org, not the filtered scope, so the snapshot stays
+                    // fresh for the next start (ADR 0010).
+                    spawn_org_refresh(&client, &mut app, &tx);
                 }
             }
             _ = runs_timer, if runs_due.is_some() => {
@@ -336,6 +359,10 @@ async fn event_loop(
                 saver.flush();
                 layout_may_have_changed = false;
             }
+            _ = cache_timer, if cache_due.is_some() => {
+                cache_io.flush(&app);
+                layout_may_have_changed = false;
+            }
         }
 
         // The saved layout may have had the runs tab showing; that needs the
@@ -345,10 +372,16 @@ async fn event_loop(
             // `w` switched org: keep the old view's layout, resume the new one.
             saver.sync_org(&mut app);
             saver.observe(&app, tokio::time::Instant::now());
+            // ...and its snapshot and Jev answers (#226).
+            if cache_io.sync_org(&mut app) {
+                spawn_label_ranks(&mut app, typesafe.ranks.as_ref(), &tx);
+            }
         }
+        cache_io.observe(&app, tokio::time::Instant::now());
 
         if app.should_quit {
             saver.finish(&app);
+            cache_io.finish(&app);
             // Children die with the process anyway once their PTY closes;
             // doing it explicitly means the terminal is restored after they
             // are gone rather than racing them.

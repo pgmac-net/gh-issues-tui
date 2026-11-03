@@ -8,6 +8,7 @@
 //! Nothing here reaches a launch — see `typesafe::readiness`.
 
 use super::prelude::*;
+use crate::cache::answers::ReadinessCache;
 
 /// Judgements received, requests out, and whether asking has failed.
 ///
@@ -22,6 +23,9 @@ pub struct ReadinessState {
     /// Asking failed. Off for the rest of the session: no retry storm, and the
     /// pane simply has no badge, which is how it behaved before this existed.
     failed: bool,
+    /// Answers kept on disk across sessions, keyed by the request (#226).
+    /// Disabled unless `cache` is on and issue text may be sent.
+    disk: ReadinessCache,
 }
 
 impl ReadinessState {
@@ -42,6 +46,11 @@ impl ReadinessState {
         self.answers.clear();
         self.in_flight.clear();
         self.failed = false;
+    }
+
+    /// Use `disk` for answers from now on: the org's file, or a disabled one.
+    pub fn set_disk(&mut self, disk: ReadinessCache) {
+        self.disk = disk;
     }
 
     /// Asking has failed this session, so nothing will ask again.

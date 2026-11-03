@@ -34,6 +34,7 @@ impl App {
         let id = issue.id.clone();
         self.vocab.absorb_issue(&issue);
         *slot = issue;
+        self.data_gen += 1;
         // The judgement was derived from the old title/body/labels.
         self.invalidate_readiness(&id);
         self.stamp_label_ranks();

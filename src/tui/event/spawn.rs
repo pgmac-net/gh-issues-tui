@@ -2,10 +2,11 @@
 
 use super::prelude::*;
 
-/// Refetch the whole org at the wanted scope: create and move, which change
-/// which issues exist or where. Becomes the loaded scope when it lands.
+/// Refetch the whole org: create and org switch, which change which issues
+/// exist. At [`App::refresh_scope`], so it never fetches less than is loaded
+/// (#226). Becomes the loaded scope when it lands.
 pub(crate) fn spawn_fetch(client: &Provider, app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let scope = app.wanted_scope();
+    let scope = app.refresh_scope();
     app.begin_fetch(Loaded {
         scope: scope.clone(),
         repo: None,
@@ -13,15 +14,38 @@ pub(crate) fn spawn_fetch(client: &Provider, app: &mut App, tx: &mpsc::Unbounded
     send_org_fetch(client, app.org.clone(), scope, tx);
 }
 
-/// Refetch the filtered scope at the wanted scope (#229, #230): the one repo
-/// an exact repo filter names, otherwise the org. Startup, org switch,
-/// `Ctrl+R`, auto-refresh and auto-widen all land here.
+/// Refetch the filtered scope (#229, #230): the one repo an exact repo filter
+/// names, otherwise the org, at [`App::refresh_scope`] (#226). Startup,
+/// `Ctrl+R` and auto-widen land here; auto-refresh is [`spawn_org_refresh`].
 pub(crate) fn spawn_filtered_fetch(
     client: &Provider,
     app: &mut App,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let target = app.wanted();
+    let wanted = app.wanted();
+    let target = Loaded {
+        scope: app.refresh_scope(),
+        repo: wanted.repo,
+    };
+    begin(client, app, target, tx);
+}
+
+/// Auto-refresh (#226, ADR 0010): the whole org, at a scope covering both
+/// what is loaded and what the filters want, so the snapshot stays fresh for
+/// the next start even while you sit on one repo.
+pub(crate) fn spawn_org_refresh(
+    client: &Provider,
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let target = Loaded {
+        scope: app.refresh_scope(),
+        repo: None,
+    };
+    begin(client, app, target, tx);
+}
+
+fn begin(client: &Provider, app: &mut App, target: Loaded, tx: &mpsc::UnboundedSender<AppEvent>) {
     app.begin_fetch(target.clone());
     let org = app.org.clone();
     match target.repo {
