@@ -19,6 +19,38 @@ impl App {
         self.loaded = Some(snapshot.loaded);
         self.fetched_at = Some(snapshot.saved_at);
         self.cached = Some(snapshot.saved_at);
+        self.cache_refresh_failed = false;
+    }
+
+    /// A filter widened past the loaded scope, and the snapshot covers it
+    /// (#226): fold the snapshot in instead of fetching. Membership is the
+    /// union, so nothing loaded since is lost, and `keep_newer_loaded` keeps
+    /// the newer copy of every issue in both. The list is then as old as the
+    /// snapshot, which the indicator says; `Ctrl+R` or auto-refresh replaces
+    /// it.
+    pub fn widen_from_snapshot(&mut self, snapshot: Snapshot) {
+        let mut merged = snapshot.repos;
+        for repo in &self.repos {
+            match merged.iter_mut().find(|r| r.repo == repo.repo) {
+                Some(have) => {
+                    for issue in &repo.issues {
+                        if !have.issues.iter().any(|i| i.id == issue.id) {
+                            have.issues.push(issue.clone());
+                        }
+                    }
+                }
+                None => merged.push(repo.clone()),
+            }
+        }
+        merged.sort_by_key(|r| r.repo.to_lowercase());
+        let loading = self.loading;
+        self.set_data(merged);
+        self.loading = loading;
+        self.loaded = Some(snapshot.loaded);
+        let at = snapshot.saved_at;
+        self.fetched_at = Some(self.fetched_at.map_or(at, |f| f.min(at)));
+        self.cached = Some(at);
+        self.cache_refresh_failed = false;
     }
 
     /// What the snapshot saver writes: everything loaded, with the scope it
@@ -41,8 +73,10 @@ impl App {
         let at = self.cached?;
         let what = if self.loading {
             "refreshing…"
-        } else {
+        } else if self.cache_refresh_failed {
             "refresh failed"
+        } else {
+            "Ctrl+R refreshes"
         };
         Some(format!("cached {} · {what}", age(now - at)))
     }
@@ -111,9 +145,63 @@ mod tests {
         a.begin_fetch(a.wanted());
         a.loading = false;
         a.finish_fetch(false);
+        assert!(a.cache_refresh_failed);
         assert_eq!(
             a.cache_indicator(Utc::now()).as_deref(),
             Some("cached 5m ago · refresh failed")
+        );
+    }
+
+    #[test]
+    fn a_widen_from_the_snapshot_keeps_what_is_loaded_and_adds_the_rest() {
+        let mut a = app();
+        // Loaded: open issues only, and one issue newer than the snapshot's.
+        let newer = Issue {
+            title: "edited since".into(),
+            updated_at: Utc::now(),
+            ..Issue::fixture("I_1", 1)
+        };
+        a.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "ru".into(),
+            issues: vec![newer, Issue::fixture("I_new", 3)],
+        }]);
+        a.loaded = Some(Loaded {
+            scope: FetchScope::default(),
+            repo: Some("r".into()),
+        });
+        a.fetched_at = Some(Utc::now());
+        a.loading = false;
+        let old = Utc::now() - chrono::TimeDelta::hours(2);
+        let mut s = snap(old);
+        s.loaded.scope.include_closed = true;
+        s.repos[0].issues[0].updated_at = old;
+        s.repos.push(RepoIssues {
+            repo: "q".into(),
+            repo_url: "qu".into(),
+            issues: vec![Issue::fixture("I_q", 4)],
+        });
+        a.widen_from_snapshot(s);
+
+        let ids: Vec<_> = a
+            .repos
+            .iter()
+            .flat_map(|r| r.issues.iter().map(|i| i.id.as_str()))
+            .collect();
+        for id in ["I_1", "I_2", "I_new", "I_q"] {
+            assert!(ids.contains(&id), "{id} missing from {ids:?}");
+        }
+        let one = a
+            .repos
+            .iter()
+            .flat_map(|r| &r.issues)
+            .find(|i| i.id == "I_1");
+        assert_eq!(one.unwrap().title, "edited since", "the newer copy wins");
+        assert!(a.loaded.as_ref().unwrap().scope.include_closed);
+        assert_eq!(a.fetched_at, Some(old), "as old as its oldest part");
+        assert_eq!(
+            a.cache_indicator(Utc::now()).as_deref(),
+            Some("cached 2h ago · Ctrl+R refreshes")
         );
     }
 

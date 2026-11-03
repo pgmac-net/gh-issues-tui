@@ -114,6 +114,9 @@ impl App {
     /// loaded scope; on failure the loaded scope stays what it was. A
     /// partial refresh never called `begin_fetch`, so it changes nothing.
     pub fn finish_fetch(&mut self, ok: bool) {
+        if !ok && self.cached.is_some() {
+            self.cache_refresh_failed = true;
+        }
         if let Some(target) = self.pending_fetch.take()
             && ok
         {
@@ -121,6 +124,7 @@ impl App {
             // A fetch of the filtered scope or the org replaced the snapshot.
             self.fetched_at = Some(Utc::now());
             self.cached = None;
+            self.cache_refresh_failed = false;
         }
     }
 }

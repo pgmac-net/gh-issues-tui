@@ -78,7 +78,8 @@ pub(crate) fn refetch_if_widened(
         return;
     }
     app.loading = true;
-    app.status = Some("filters widened, refreshing…".into());
+    // A load of data the list does not hold, not a refresh (#226).
+    app.status = Some("filters widened, loading…".into());
     spawn_filtered_fetch(client, app, tx);
 }
 

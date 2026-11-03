@@ -93,6 +93,24 @@ impl CacheIo {
         drawn
     }
 
+    /// A filter change reached past the loaded scope: if the snapshot on disk
+    /// covers it, fold that in and fetch nothing (#226). Returns whether it
+    /// did; otherwise the caller's widen fetch goes out as before.
+    pub(crate) fn widen_from_snapshot(&mut self, app: &mut App) -> bool {
+        if !self.enabled || !app.widened() {
+            return false;
+        }
+        let Some(s) = snapshot::load(&snapshot::path(&self.dir())) else {
+            return false;
+        };
+        if !s.usable_for(&app.wanted()) {
+            return false;
+        }
+        app.widen_from_snapshot(s);
+        app.status = Some("filters widened: shown from the cache".into());
+        true
+    }
+
     /// Note the data after an event. A settle arms the debounce.
     pub(crate) fn observe(&mut self, app: &App, now: Instant) {
         if self.enabled && app.data_gen != self.written_gen && self.due.is_none() {
@@ -258,6 +276,31 @@ mod tests {
         assert!(saved(tmp.path(), "o").unwrap().loaded.scope.include_closed);
         c.observe(&a, t0 + Duration::from_secs(5));
         assert_eq!(c.due(), None, "written; nothing new");
+    }
+
+    #[test]
+    fn a_widen_the_snapshot_covers_needs_no_fetch() {
+        let tmp = tempfile::tempdir().unwrap();
+        put(tmp.path(), "o", &snap(true));
+        let mut a = app("o");
+        let mut c = io(tmp.path(), "o", true);
+        // Loaded open issues only, then asked for all of them.
+        a.set_data(snap(false).repos);
+        a.loaded = Some(snap(false).loaded);
+        a.loading = false;
+        a.state_filter = crate::tui::app::StateFilter::All;
+        assert!(a.widened());
+        assert!(c.widen_from_snapshot(&mut a));
+        assert!(!a.widened(), "nothing left to fetch");
+        // A widen the snapshot does not cover is left to the fetch.
+        a.filters.updated_after = None;
+        a.loaded = Some(Loaded {
+            scope: FetchScope::default(),
+            repo: Some("r".into()),
+        });
+        a.state_filter = crate::tui::app::StateFilter::Open;
+        let mut c_off = io(tmp.path(), "o", false);
+        assert!(!c_off.widen_from_snapshot(&mut a), "cache off");
     }
 
     #[test]

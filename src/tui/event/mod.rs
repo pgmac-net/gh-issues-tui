@@ -323,7 +323,9 @@ async fn event_loop(
                         // change that exposes unjudged issues all land here.
                         spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
                         // A filter change that reaches past the loaded data
-                        // refetches once (#230).
+                        // is served from the snapshot when it can be (#226),
+                        // else fetches once (#230).
+                        cache_io.widen_from_snapshot(&mut app);
                         refetch_if_widened(&client, &mut app, &tx);
                     }
                     // Children need the new size too, or their own TUI keeps
@@ -351,6 +353,7 @@ async fn event_loop(
                 // Fresh data can bring issues not yet judged for an active query.
                 spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
                 // A widen held back by a fetch in flight goes out once it lands.
+                cache_io.widen_from_snapshot(&mut app);
                 refetch_if_widened(&client, &mut app, &tx);
             }
             _ = refresh.tick(), if refresh_enabled => {
@@ -1247,7 +1250,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         refetch_if_widened(&client, &mut app, &tx);
         assert!(app.loading);
-        assert_eq!(app.status.as_deref(), Some("filters widened, refreshing…"));
+        assert_eq!(app.status.as_deref(), Some("filters widened, loading…"));
         assert_eq!(
             app.pending_fetch.as_ref().map(|t| t.scope.clone()),
             Some(FetchScope::default())

@@ -129,6 +129,8 @@ pub struct App {
     /// The list shows a snapshot no fetch has replaced yet; when it was
     /// fetched. Drives the info bar's `cached <age>` (ADR 0010).
     pub cached: Option<DateTime<Utc>>,
+    /// The refresh meant to replace that snapshot failed.
+    pub cache_refresh_failed: bool,
     /// Search answers kept on disk across sessions (#226); disabled unless
     /// `cache` is on and issue text may be sent.
     pub search_disk: crate::cache::answers::SearchCache,
@@ -228,6 +230,7 @@ impl App {
             data_gen: 0,
             fetched_at: None,
             cached: None,
+            cache_refresh_failed: false,
             search_disk: crate::cache::answers::SearchCache::disabled(),
             pending_fetch: None,
             vocab: Vocab::default(),
@@ -369,6 +372,7 @@ impl App {
         self.loaded = None;
         self.fetched_at = None;
         self.cached = None;
+        self.cache_refresh_failed = false;
         self.pending_fetch = None;
         self.vocab = Vocab::default();
         self.org_repo_names = None;
