@@ -19,6 +19,7 @@ mod pr;
 mod ranks;
 pub mod readiness;
 mod refresh;
+mod resume;
 mod rows;
 mod run_tree;
 pub mod runs;
@@ -58,6 +59,12 @@ pub struct App {
     /// Collapsed sub-issue parents, by issue id (#234). Survives reloads;
     /// cleared by `switch_org`.
     pub collapsed_issues: std::collections::HashSet<String>,
+    /// The part of a saved layout that needs data (selection, detail pane),
+    /// waiting for the first load (#236). `None` once applied.
+    pub resume: Option<resume::Resume>,
+    /// The saved layout had the runs tab showing; the event loop switches to
+    /// it after the load, because that needs the clock.
+    pub resume_runs: bool,
     /// Repo names seen in any previous load; used to apply `default_collapsed`
     /// only to repos appearing for the first time.
     pub seen_repos: std::collections::HashSet<String>,
@@ -173,6 +180,8 @@ impl App {
             repos: Vec::new(),
             collapsed: Default::default(),
             collapsed_issues: Default::default(),
+            resume: None,
+            resume_runs: false,
             seen_repos: Default::default(),
             default_collapsed,
             hide_empty_default: true,
@@ -275,6 +284,7 @@ impl App {
         // otherwise silently land elsewhere. A vanished issue keeps the
         // index clamped by `rebuild_rows`.
         self.reselect(prev_selected);
+        self.apply_resume();
     }
 
     /// True when the repo filter text exactly names a fetched repo — then
@@ -325,6 +335,8 @@ impl App {
         self.rows.clear();
         self.collapsed.clear();
         self.collapsed_issues.clear();
+        self.resume = None;
+        self.resume_runs = false;
         self.seen_repos.clear();
         self.clear_filters();
         self.state_filter = StateFilter::Open;

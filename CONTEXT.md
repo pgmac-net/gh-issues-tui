@@ -34,6 +34,14 @@ Terms used across this repo's code and docs.
 
 **Fold** is comments and tree nodes in the detail pane. **Collapse** is repo groups and sub-issue parents in the list.
 
+## Layout (#236)
+
+**Layout**: where you were in a view: filters, sort, collapse, the selected issue and the detail pane. Saved per view and resumed on the next start. *Avoid*: "state" (too broad: fetched data, popups and sessions are also state, and none of them are saved) and "session" (that is a harness session).
+
+**View**: the org browsed plus the clone the app was started in, if any. One layout file per view.
+
+**Resume**: apply a saved layout at startup. The parts that don't need data (filters, sort, collapse) apply at once, before the first fetch; the selection and the detail pane wait for the first load.
+
 ## Sub-issues (#234)
 
 **Sub-issue**: an issue with a parent issue, which nests under it in the list. It is the only link that nests; dependencies (blocked by / blocking) and related links are counted in the detail pane. *Avoid*: "linked issue" for a sub-issue, since that covers all three.

@@ -24,6 +24,7 @@ use super::theme::Theme;
 use super::ui;
 
 mod keys;
+mod persist;
 mod spawn;
 
 use keys::{HarnessCtx, handle_key};
@@ -148,6 +149,14 @@ pub struct RunConfig {
     /// Auto-refresh period in seconds; 0 disables it.
     pub refresh_interval: u64,
     pub hide_empty_repos: bool,
+    /// Config `restore_layout`: resume where the last session left off, and
+    /// save where this one does (#236).
+    pub restore_layout: bool,
+    /// `--fresh`: start this session clean. Still saves on the way out.
+    pub fresh: bool,
+    /// The backend's name, recorded in the saved layout: issue ids differ
+    /// between backends, so another backend's file is ignored.
+    pub provider: String,
     pub copy_format: String,
     pub theme: Theme,
     pub harness: HarnessSettings,
@@ -173,11 +182,21 @@ async fn event_loop(
         default_collapsed,
         refresh_interval,
         hide_empty_repos,
+        restore_layout,
+        fresh,
+        provider,
         copy_format,
         theme,
         harness: harness_settings,
         typesafe,
     } = config;
+    let mut saver = persist::LayoutSaver::new(
+        restore_layout,
+        persist::default_dir(),
+        provider,
+        org.clone(),
+        initial_repo.clone(),
+    );
     let mut app = App::new(
         org,
         initial_repo,
@@ -188,6 +207,9 @@ async fn event_loop(
     app.set_hide_empty_default(hide_empty_repos);
     app.typesafe = typesafe.status;
     app.runs.supported = client.supports_runs();
+    // Resume where the last session left off (#236), before the first fetch so
+    // a restored filter also scopes it.
+    saver.resume(&mut app, fresh);
     // Adopt any background sessions still running from a previous run — the
     // fix for a session otherwise being lost the moment gh-issues-tui quits.
     // Best-effort: no `claude` on PATH, or the call failing, just means
@@ -237,6 +259,12 @@ async fn event_loop(
         let runs_timer = tokio::time::sleep_until(
             runs_due.map_or_else(tokio::time::Instant::now, tokio::time::Instant::from_std),
         );
+        // The layout's debounced write (#236), gated off when nothing changed.
+        let save_due = saver.due();
+        let save_timer =
+            tokio::time::sleep_until(save_due.unwrap_or_else(tokio::time::Instant::now));
+        // A harness chunk never changes the layout, and arrives at PTY rates.
+        let mut layout_may_have_changed = true;
 
         tokio::select! {
             Some(Ok(ev)) = keys.next() => {
@@ -270,6 +298,7 @@ async fn event_loop(
             Some(msg) = rx.recv() => {
                 if let AppEvent::HarnessDirty(id) = &msg {
                     redraw = app.harness.active == Some(*id);
+                    layout_may_have_changed = false;
                 }
                 // Fresh data can bring labels nobody has ranked yet.
                 let fresh_data = matches!(msg, AppEvent::Data(Ok(_)));
@@ -297,9 +326,23 @@ async fn event_loop(
                     spawn_runs(&client, fetch, &tx);
                 }
             }
+            _ = save_timer, if save_due.is_some() => {
+                saver.flush();
+                layout_may_have_changed = false;
+            }
+        }
+
+        // The saved layout may have had the runs tab showing; that needs the
+        // clock, so it waits for the load and happens here (#236).
+        app.resume_runs_tab(std::time::Instant::now());
+        if layout_may_have_changed {
+            // `w` switched org: keep the old view's layout, resume the new one.
+            saver.sync_org(&mut app);
+            saver.observe(&app, tokio::time::Instant::now());
         }
 
         if app.should_quit {
+            saver.finish(&app);
             // Children die with the process anyway once their PTY closes;
             // doing it explicitly means the terminal is restored after they
             // are gone rather than racing them.

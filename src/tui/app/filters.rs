@@ -23,6 +23,13 @@ impl StateFilter {
             StateFilter::All => "all",
         }
     }
+
+    /// The inverse of [`Self::label`], for a saved layout (#236).
+    pub fn from_label(label: &str) -> Option<Self> {
+        [Self::Open, Self::Closed, Self::All]
+            .into_iter()
+            .find(|s| s.label() == label)
+    }
 }
 
 /// One optional date bound. Parsed from `YYYY-MM-DD`.
@@ -404,6 +411,21 @@ impl SortKey {
             SortKey::Author => "author",
             SortKey::Priority => "priority",
         }
+    }
+
+    /// The inverse of [`Self::label`], for a saved layout (#236).
+    pub fn from_label(label: &str) -> Option<Self> {
+        [
+            Self::Updated,
+            Self::Created,
+            Self::Closed,
+            Self::State,
+            Self::Assignee,
+            Self::Author,
+            Self::Priority,
+        ]
+        .into_iter()
+        .find(|k| k.label() == label)
     }
 }
 

@@ -38,6 +38,11 @@ struct Cli {
     /// `refresh_interval` in the config file.
     #[arg(long, value_name = "SECS")]
     refresh: Option<u64>,
+
+    /// Start this session clean instead of resuming the saved layout. The
+    /// layout is still saved on the way out.
+    #[arg(long)]
+    fresh: bool,
 }
 
 fn install_panic_hook() {
@@ -115,6 +120,9 @@ async fn main() -> Result<()> {
             default_collapsed: cfg.default_collapsed,
             refresh_interval: cli.refresh.unwrap_or(cfg.refresh_interval),
             hide_empty_repos: cfg.hide_empty_repos,
+            restore_layout: cfg.restore_layout,
+            fresh: cli.fresh,
+            provider: provider_name,
             copy_format: cfg.copy_format,
             theme,
             harness,

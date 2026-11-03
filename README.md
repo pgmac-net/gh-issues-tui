@@ -20,6 +20,7 @@ gh-issues --org my-org          # open issues only (default)
 gh-issues --org my-org --all    # include closed issues in the initial fetch
 gh-issues                       # inside a repo clone: that repo's owner, filtered to the repo
 gh-issues --refresh 60          # auto-refresh every 60 seconds (0 disables)
+gh-issues --fresh               # start clean instead of resuming where you left off
 gh-issues --provider github     # issue backend (default: github; currently the only one)
 ```
 
@@ -107,6 +108,7 @@ default_org = "my-org"
 provider = "github"         # issue backend (default: "github"; currently the only one)
 default_collapsed = false   # start with repo groups expanded (default: true)
 refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
+restore_layout = true       # resume where you left off, and save where you are (default: true)
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
 copy_format = "{owner}/{repo}#{number}"   # `y` clipboard format (default shown)
 infer_priority_ranks = false              # rank non-`priority:` labels (P0, sev1…); needs TYPESAFE_API_KEY (default: false)
@@ -172,6 +174,16 @@ A harness runs in the current directory's repo when that is the issue's repo; ot
 ### Refreshing
 
 `r` refetches only what is selected: one issue (and its comment thread, if the detail pane is open), or one repo's issues when a repo header is selected. An issue or repo that no longer exists is removed from the list, and the status line says so. `Ctrl+R` refetches the filtered scope: just the repo when the repo filter names one exactly (as it does when you start inside a clone), otherwise the whole org. To refresh everything while a repo filter is on, clear the filters (`F` then `c`) first. A refresh key pressed while another refresh is running does nothing. Full detail: [docs/granular-refresh.md](docs/granular-refresh.md).
+
+### Resuming where you left off
+
+The next start picks up where the last one ended: filters, state filter, sort, collapsed repo groups and sub-issue parents, the selected issue and list position, and the detail pane (open or closed, focus, the comments or runs tab, folded comments). Not saved: the org (startup still decides it), popups and half-typed input, harness sessions (they reattach on their own) and the fetched data.
+
+Each view has its own layout: one per org, and one per clone you start the app in (`pgmac-net.json`, `pgmac-net@gh-issues-tui.json`). Copies on different views never interfere. If you run two on the same view, the last to exit wins. What you pass at startup beats what was saved: `--org`, the repo filter detected from the clone, and `--all`. Switching org with `w` saves the old org's layout and resumes the new one's.
+
+The layout is written about two seconds after anything changes, as well as on quit, so closing the terminal window or a crash loses at most the last couple of seconds. If the saved issue has since been closed or moved, you start at the top of the list. A missing, corrupt or older-version file is ignored.
+
+Files live in `~/.local/state/gh-issues/layout/` (`$XDG_STATE_HOME` is honoured). macOS and Windows have no state directory, so they use the local-data one (`~/Library/Application Support/gh-issues/layout/`, `%LOCALAPPDATA%\gh-issues\layout\`). `--fresh` starts one session clean and still saves on exit; `restore_layout = false` in the config never restores and never saves. Full detail: [docs/layout-state.md](docs/layout-state.md).
 
 ### Sub-issues
 

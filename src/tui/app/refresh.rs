@@ -146,6 +146,9 @@ impl App {
         {
             self.selected = idx;
         }
+        // The first load of a clone-scoped start lands here, not in
+        // `set_data`, so a saved selection resumes from either (#236).
+        self.apply_resume();
     }
 
     /// Issue count of a loaded repo, for the status line.
