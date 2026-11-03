@@ -48,6 +48,48 @@ pub struct Issue {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub closed_at: Option<DateTime<Utc>>,
+    /// Parent, grandparent, … nearest first (#234). Empty for a top-level
+    /// issue. Each backend fills what it can see without extra requests:
+    /// GitHub up to its 8-level limit, Linear its parent chain, Jira one level.
+    pub ancestors: Vec<IssueStub>,
+    /// Sub-issue progress as the backend counts it, including children that
+    /// are closed, filtered out or in another repo. `None` when it has none.
+    pub sub_issues: Option<SubIssueProgress>,
+    /// Blocked-by, blocking and related counts; `None` when the backend
+    /// doesn't say, or all three are zero.
+    pub relations: Option<Relations>,
+}
+
+/// Enough of an issue to draw it as a context row without loading it (#234):
+/// a parent that is filtered out, not fetched, or in another repo or owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueStub {
+    pub id: String,
+    pub number: u64,
+    pub title: String,
+    pub state: IssueState,
+    pub url: String,
+    /// Repo (group) name.
+    pub repo: String,
+    /// Owner login; differs from the browsed org for a cross-owner parent.
+    pub owner: String,
+}
+
+/// Sub-issues done and in total, as the backend reports them (#234).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubIssueProgress {
+    pub completed: u32,
+    pub total: u32,
+}
+
+/// The non-hierarchical links of an issue (#234): what blocks it, what it
+/// blocks, and what it is marked related to. Graphs, not a tree, so they are
+/// counted in the detail pane rather than nested in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Relations {
+    pub blocked_by: u32,
+    pub blocking: u32,
+    pub related: u32,
 }
 
 /// The value part of a `priority:<value>` label name, `None` for other labels.
@@ -144,6 +186,9 @@ impl Issue {
             created_at: now,
             updated_at: now,
             closed_at: None,
+            ancestors: vec![],
+            sub_issues: None,
+            relations: None,
         }
     }
 }

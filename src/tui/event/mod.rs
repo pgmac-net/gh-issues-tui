@@ -1156,8 +1156,9 @@ mod tests {
                 Row::Issue {
                     repo_idx,
                     issue_idx,
+                    ..
                 } => app.repos[*repo_idx].issues[*issue_idx].id == "I_1",
-                Row::RepoHeader { .. } => false,
+                Row::RepoHeader { .. } | Row::Context { .. } => false,
             })
             .expect("I_1 must be a row");
         app.detail.open = true;

@@ -11,8 +11,9 @@ use crate::provider::http::{
 use crate::provider::scope::FetchScope;
 use crate::provider::types::{
     CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueRef, IssueState,
-    Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary, RateLimitData, RepoIssues,
-    RepoLabel, ReviewDecision, ReviewSummary, WorkflowRunInfo,
+    IssueStub, Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary, RateLimitData,
+    Relations, RepoIssues, RepoLabel, ReviewDecision, ReviewSummary, SubIssueProgress,
+    WorkflowRunInfo,
 };
 use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
 
@@ -901,9 +902,72 @@ struct IssueNode {
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     closed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The parent chain (#234): objects, not connections, so free in the
+    /// bulk query. Null for a top-level issue or a parent the viewer can't see.
+    #[serde(default)]
+    parent: Option<Box<ParentNode>>,
+    #[serde(default)]
+    sub_issues_summary: Option<SubIssuesSummaryNode>,
+    #[serde(default)]
+    issue_dependencies_summary: Option<DependenciesNode>,
+    /// `relatesTo { totalCount }`: a connection, but with no `first:` it is
+    /// not billed per issue slot (measured: still cost 1).
+    #[serde(default)]
+    relates_to: Option<CountNode>,
+}
+
+/// One link of an issue's parent chain, as [`ancestor_fields`] selects it.
+#[derive(Debug, Deserialize)]
+struct ParentNode {
+    id: String,
+    number: u64,
+    title: String,
+    state: IssueState,
+    url: String,
+    repository: ParentRepo,
+    #[serde(default)]
+    parent: Option<Box<ParentNode>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParentRepo {
+    name: String,
+    owner: ActorNode,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubIssuesSummaryNode {
+    completed: u32,
+    total: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DependenciesNode {
+    blocked_by: u32,
+    blocking: u32,
 }
 
 impl IssueNode {
+    /// Flatten the nested parent chain, nearest first.
+    fn ancestors(&self) -> Vec<IssueStub> {
+        let mut out = Vec::new();
+        let mut next = self.parent.as_deref();
+        while let Some(p) = next {
+            out.push(IssueStub {
+                id: p.id.clone(),
+                number: p.number,
+                title: p.title.clone(),
+                state: p.state,
+                url: p.url.clone(),
+                repo: p.repository.name.clone(),
+                owner: p.repository.owner.login.clone(),
+            });
+            next = p.parent.as_deref();
+        }
+        out
+    }
+
     fn to_issue(&self) -> Issue {
         Issue {
             id: self.id.clone(),
@@ -926,6 +990,24 @@ impl IssueNode {
             created_at: self.created_at,
             updated_at: self.updated_at,
             closed_at: self.closed_at,
+            ancestors: self.ancestors(),
+            sub_issues: self
+                .sub_issues_summary
+                .as_ref()
+                .filter(|s| s.total > 0)
+                .map(|s| SubIssueProgress {
+                    completed: s.completed,
+                    total: s.total,
+                }),
+            relations: {
+                let deps = self.issue_dependencies_summary.as_ref();
+                let r = Relations {
+                    blocked_by: deps.map_or(0, |d| d.blocked_by),
+                    blocking: deps.map_or(0, |d| d.blocking),
+                    related: self.relates_to.as_ref().map_or(0, |c| c.total_count as u32),
+                };
+                (r != Relations::default()).then_some(r)
+            },
         }
     }
 }
@@ -1036,10 +1118,41 @@ struct CountNode {
 /// guards it. See `docs/graphql-api-cost.md`.
 macro_rules! issue_fields {
     () => {
-        "id number title body state url
-         author { login }
-         comments { totalCount }
-         createdAt updatedAt closedAt"
+        concat!(
+            "id number title body state url
+             author { login }
+             comments { totalCount }
+             createdAt updatedAt closedAt
+             subIssuesSummary { completed total }
+             issueDependenciesSummary { blockedBy blocking }
+             relatesTo { totalCount }",
+            ancestor_fields!()
+        )
+    };
+}
+
+/// What a context row needs of an ancestor it may never load (#234).
+macro_rules! stub_fields {
+    () => {
+        "id number title state url repository { name owner { login } }"
+    };
+}
+
+/// The parent chain to GitHub's 8-level sub-issue limit. Nested objects, not
+/// connections: measured at no extra cost in the bulk query, at any depth.
+macro_rules! ancestor_fields {
+    () => {
+        parent_chain!(1 2 3 4 5 6 7 8)
+    };
+}
+
+/// One `parent { … }` level per token, each holding the next.
+macro_rules! parent_chain {
+    () => {
+        ""
+    };
+    ($level:tt $($rest:tt)*) => {
+        concat!(" parent { ", stub_fields!(), parent_chain!($($rest)*), " }")
     };
 }
 
@@ -1897,6 +2010,82 @@ mod tests {
             !fields.contains("first:"),
             "no connection may be paginated inside `issues` — see docs/graphql-api-cost.md"
         );
+    }
+
+    /// #234: the ancestor chain reaches GitHub's 8-level sub-issue limit.
+    #[test]
+    fn issue_fields_carry_an_eight_level_parent_chain() {
+        let fields = issue_fields!();
+        assert_eq!(fields.matches("parent {").count(), 8, "{fields}");
+        assert!(fields.contains("subIssuesSummary { completed total }"));
+        assert!(fields.contains("issueDependenciesSummary { blockedBy blocking }"));
+        assert!(
+            fields.contains("relatesTo { totalCount }"),
+            "a count with no `first:` is not billed per slot"
+        );
+    }
+
+    #[test]
+    fn a_parent_chain_flattens_nearest_first() {
+        let node = serde_json::json!({
+            "id": "I_3", "number": 3, "title": "grandchild", "body": "", "state": "OPEN",
+            "url": "u", "author": {"login": "a"}, "comments": {"totalCount": 0},
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+            "closedAt": null,
+            "subIssuesSummary": {"completed": 0, "total": 0},
+            "issueDependenciesSummary": {"blockedBy": 1, "blocking": 2},
+            "relatesTo": {"totalCount": 3},
+            "parent": {
+                "id": "I_2", "number": 2, "title": "child", "state": "OPEN", "url": "u2",
+                "repository": {"name": "r", "owner": {"login": "o"}},
+                "parent": {
+                    "id": "I_1", "number": 1, "title": "root", "state": "CLOSED", "url": "u1",
+                    "repository": {"name": "other", "owner": {"login": "o"}},
+                    "parent": null
+                }
+            }
+        });
+        let issue = serde_json::from_value::<IssueNode>(node)
+            .unwrap()
+            .to_issue();
+        let numbers: Vec<_> = issue.ancestors.iter().map(|a| a.number).collect();
+        assert_eq!(numbers, vec![2, 1]);
+        assert_eq!(issue.ancestors[1].repo, "other");
+        assert_eq!(issue.ancestors[1].state, IssueState::Closed);
+        assert_eq!(issue.sub_issues, None, "no sub-issues reads as none");
+        assert_eq!(
+            issue.relations,
+            Some(Relations {
+                blocked_by: 1,
+                blocking: 2,
+                related: 3
+            })
+        );
+    }
+
+    #[test]
+    fn a_top_level_parent_reports_its_progress() {
+        let node = serde_json::json!({
+            "id": "I_1", "number": 227, "title": "t", "body": "", "state": "OPEN",
+            "url": "u", "author": null, "comments": {"totalCount": 0},
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+            "closedAt": null, "parent": null,
+            "subIssuesSummary": {"completed": 4, "total": 5},
+            "issueDependenciesSummary": {"blockedBy": 0, "blocking": 0},
+            "relatesTo": {"totalCount": 0}
+        });
+        let issue = serde_json::from_value::<IssueNode>(node)
+            .unwrap()
+            .to_issue();
+        assert!(issue.ancestors.is_empty());
+        assert_eq!(
+            issue.sub_issues,
+            Some(SubIssueProgress {
+                completed: 4,
+                total: 5
+            })
+        );
+        assert_eq!(issue.relations, None, "all-zero relations read as none");
     }
 
     /// #196: every issue-level mutation reports the full issue back —

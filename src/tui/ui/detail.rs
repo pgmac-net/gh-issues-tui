@@ -4,6 +4,7 @@ use super::list::{state_style, title_style};
 use super::prelude::*;
 use super::runs::{draw_detail_runs, tab_title};
 use super::widgets::{apply_hyperlinks, inner_area, paragraph_height, render_region_scrollbar};
+use crate::provider::types::IssueStub;
 use crate::tui::app::{DetailSel, Focus, Mode};
 use crate::tui::markdown;
 use crate::tui::markdown::LinkSpan;
@@ -20,6 +21,10 @@ pub(super) fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         area
     };
 
+    if let Some(stub) = app.selected_stub() {
+        draw_stub(f, app, t, area, stub);
+        return;
+    }
     let Some(issue) = app.selected_issue() else {
         // Live follow landed on a repo header (or an empty list).
         let block = Block::default()
@@ -272,6 +277,15 @@ pub(super) fn body_lines_links(
             Style::default().fg(t.assignee),
         )),
     ];
+    // Sub-issue and relation summary (#234), only when there is one. It is
+    // built here, so `body_content_height` (which measures these same lines)
+    // counts it and the scroll clamp stays in step with what is drawn.
+    if let Some(summary) = relations_summary(issue) {
+        lines.push(Line::from(Span::styled(
+            summary,
+            Style::default().fg(t.dim),
+        )));
+    }
     // Ticket readiness (#160), when a judgement has landed. Absent renders no
     // line at all, so with the feature off the pane is identical to before —
     // geometry included, which `body_content_height` depends on.
@@ -294,6 +308,80 @@ pub(super) fn body_lines_links(
         .collect();
     lines.extend(md_lines);
     (lines, links)
+}
+
+/// The detail pane's one-line summary of how an issue is linked (#234): its
+/// parent, its sub-issue progress, and its blocked-by / blocking / related
+/// counts. Each part only when present; `None` when there are none, so an
+/// unlinked issue's pane is exactly as before. Full lists are a follow-up.
+pub(super) fn relations_summary(issue: &Issue) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(parent) = issue.ancestors.first() {
+        // `#227` in the same repo, `other-repo#227` elsewhere: judged from the
+        // URLs, since an issue does not carry its own repo name.
+        let dir = |url: &str| url.rsplit_once('/').map(|(d, _)| d.to_string());
+        let same_repo = !issue.url.is_empty() && dir(&issue.url) == dir(&parent.url);
+        let reference = if same_repo {
+            format!("#{}", parent.number)
+        } else {
+            format!("{}#{}", parent.repo, parent.number)
+        };
+        parts.push(format!("parent: {reference} {}", parent.title));
+    }
+    if let Some(p) = issue.sub_issues {
+        parts.push(format!("sub-issues: {}/{} done", p.completed, p.total));
+    }
+    if let Some(r) = issue.relations {
+        for (n, what) in [
+            (r.blocked_by, "blocked by"),
+            (r.blocking, "blocking"),
+            (r.related, "related"),
+        ] {
+            if n > 0 {
+                parts.push(format!("{what} {n}"));
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The pane for a stub (#234): an ancestor known only from a descendant, so
+/// there is no body or thread to show. Read-only; `o` opens it.
+fn draw_stub(f: &mut Frame, app: &App, t: &Theme, area: Rect, stub: &IssueStub) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(pane_border(app, t, Focus::Detail))
+        .title(" issue (not loaded) ");
+    let home = if stub.owner.is_empty() || stub.owner.eq_ignore_ascii_case(&app.org) {
+        stub.repo.clone()
+    } else {
+        format!("{}/{}", stub.owner, stub.repo)
+    };
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("#{} ", stub.number), Style::default().fg(t.dim)),
+            Span::styled(
+                stub.title.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("{} · {home}", stub.state),
+            Style::default().fg(t.dim),
+        )),
+        Line::default(),
+        Line::from(Span::styled(
+            "Not loaded: shown because an issue in the list is its sub-issue. \
+             It is read-only here; o opens it in the browser.",
+            Style::default().fg(t.dim),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(block),
+        area,
+    );
 }
 
 /// One comment card: an author·timestamp header rule, the rendered body, a
@@ -461,6 +549,88 @@ mod tests {
         let mut three = issue(vec![]);
         three.body = "line one\nline two\nline three".into();
         assert_eq!(body_content_height_t(&three, 80), 7);
+    }
+
+    fn parent_stub(number: u64, repo: &str) -> crate::provider::types::IssueStub {
+        crate::provider::types::IssueStub {
+            id: format!("I_{number}"),
+            number,
+            title: "Refactor".into(),
+            state: crate::provider::types::IssueState::Open,
+            url: format!("https://github.com/org/{repo}/issues/{number}"),
+            repo: repo.into(),
+            owner: "org".into(),
+        }
+    }
+
+    /// #234: an issue with no links has no summary line, so its pane and its
+    /// height are exactly as before.
+    #[test]
+    fn an_unlinked_issue_has_no_relations_line() {
+        assert_eq!(relations_summary(&issue(vec![])), None);
+    }
+
+    #[test]
+    fn the_relations_line_names_each_link_that_is_present() {
+        use crate::provider::types::{Relations, SubIssueProgress};
+        let mut i = issue(vec![]);
+        i.url = "https://github.com/org/r/issues/229".into();
+        i.ancestors = vec![parent_stub(227, "r")];
+        assert_eq!(
+            relations_summary(&i).as_deref(),
+            Some("parent: #227 Refactor"),
+            "a parent in the same repo needs no repo name"
+        );
+        i.ancestors = vec![parent_stub(12, "api")];
+        i.sub_issues = Some(SubIssueProgress {
+            completed: 2,
+            total: 5,
+        });
+        i.relations = Some(Relations {
+            blocked_by: 1,
+            blocking: 0,
+            related: 3,
+        });
+        assert_eq!(
+            relations_summary(&i).as_deref(),
+            Some("parent: api#12 Refactor · sub-issues: 2/5 done · blocked by 1 · related 3"),
+            "zero counts are left out"
+        );
+    }
+
+    #[test]
+    fn the_relations_line_is_counted_in_the_body_height() {
+        let plain = issue(vec![]);
+        let mut linked = issue(vec![]);
+        linked.ancestors = vec![parent_stub(227, "r")];
+        assert_eq!(
+            body_content_height_t(&linked, 80),
+            body_content_height_t(&plain, 80) + 1
+        );
+    }
+
+    /// #234: a selected stub gets its own read-only pane, not "no issue".
+    #[test]
+    fn a_stub_shows_a_read_only_pane() {
+        use crate::provider::types::RepoIssues;
+        let mut app = test_app();
+        let mut child = issue(vec![]);
+        child.ancestors = vec![parent_stub(1, "r")];
+        app.set_data(vec![RepoIssues {
+            repo: "r".into(),
+            repo_url: "u".into(),
+            issues: vec![child],
+        }]);
+        app.selected = 1; // 0 = header, 1 = the stub
+        app.detail.open = true;
+        let buf = render_app(&app, 120, 30);
+        let text: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(text.contains("issue (not loaded)"), "{text}");
+        assert!(text.contains("#1 Refactor"), "{text}");
+        assert!(!text.contains("no issue selected"));
     }
 
     #[test]

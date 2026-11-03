@@ -173,6 +173,10 @@ A harness runs in the current directory's repo when that is the issue's repo; ot
 
 `r` refetches only what is selected: one issue (and its comment thread, if the detail pane is open), or one repo's issues when a repo header is selected. An issue or repo that no longer exists is removed from the list, and the status line says so. `Ctrl+R` refetches the filtered scope: just the repo when the repo filter names one exactly (as it does when you start inside a clone), otherwise the whole org. To refresh everything while a repo filter is on, clear the filters (`F` then `c`) first. A refresh key pressed while another refresh is running does nothing. Full detail: [docs/granular-refresh.md](docs/granular-refresh.md).
 
+### Sub-issues
+
+Sub-issues nest under their parent in the list, to any depth, with `▾`/`▸` to collapse a parent and GitHub's own progress after its title (`5/5`, which counts children that are closed or filtered out). When a filter hides a parent, it stays as a dim row with a hollow dot (`○`), so the tree keeps its shape. A parent that isn't loaded at all (closed while you show open issues, or in another repo or owner) is drawn the same way from what the child knows about it. It's read-only: write keys say it isn't loaded, and `o` opens it. Every issue stays in its own repo's group, so a parent from another repo shows with its repo name. The detail pane adds one line for an issue's links when it has any: `parent: #227 …`, `sub-issues: 5/5 done`, and `blocked by` / `blocking` / `related` counts. Linear and Jira show one level of parent. Full detail: [docs/sub-issues.md](docs/sub-issues.md).
+
 ### Filters and fetching
 
 On GitHub, the state, assignee, author and "updated after" filters, plus the priority **or** status filter (not both at once), are sent with the fetch, so a refresh brings back only matching issues. Narrowing a filter applies instantly from what is already loaded. Widening one past what was fetched (clearing the assignee, an earlier date, showing closed issues) refetches once by itself, with the status line `filters widened, refreshing…`. What is shown is always decided by the filters in the app, so the list is the same either way, just smaller to fetch. The filter pickers offer every repo, person and label seen this session, not only those in the current results. Linear and Jira fetch as before, filtering in the app. Full detail: [docs/filter-pushdown.md](docs/filter-pushdown.md).
@@ -243,10 +247,10 @@ code_number  = "#dcdcdc"
 | `j`/`k`, `↑`/`↓` | in the list: move the selected row. In the detail pane: move through the body and comments — a comment taller than the view scrolls a row at a time until its bottom shows, then the next `↓` selects the next comment (no wrap) |
 | `PgUp`/`PgDn` | a page of `↑`/`↓` in the **focused** pane |
 | `g`/`G`, `Home`/`End` | top / bottom of the **focused** pane (in the detail pane: the body / the last comment) |
-| `←` | "out one level". In the list: from an issue, select its repo header; on an expanded header, collapse it. In the detail pane: fold an open comment; from a folded comment or the body, return focus to the list |
-| `→` | "in one level". In the list: expand a collapsed header; on an expanded header, select its first issue; on an issue, move into the detail pane (opening it if closed). In the detail pane: unfold a folded comment |
+| `←` | "out one level". In the list: on an expanded parent issue, collapse its sub-issues; on a sub-issue, select its parent; on a top-level issue, select its repo header; on an expanded header, collapse it. In the detail pane: fold an open comment; from a folded comment or the body, return focus to the list |
+| `→` | "in one level". In the list: expand a collapsed header or parent issue; on an expanded header, select its first issue; on any other issue, move into the detail pane (opening it if closed). In the detail pane: unfold a folded comment |
 | `Space` / `Enter` | the same key: on a repo header, collapse/expand it; on an issue, the same as `→`; on a comment, fold/unfold it |
-| `[` / `]` | collapse all / expand all in the focused pane — repo groups in the list, comments in the detail pane |
+| `[` / `]` | collapse all / expand all in the focused pane — repo groups and sub-issue parents in the list, comments in the detail pane |
 | `Tab` / `Shift+Tab` | from the list: switch into the detail pane. In the detail pane: jump to the next / previous comment header (wrapping) |
 | `Esc` / `q` | close the detail pane (from either pane) |
 | `o` / `O` | open issue / repo in the browser |

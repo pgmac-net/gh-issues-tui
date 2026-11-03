@@ -10,12 +10,12 @@ use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result, found
 use crate::provider::http::build_http_client;
 use crate::provider::scope::FetchScope;
 use crate::provider::types::{
-    Comment, FormOptions, IdName, Issue, IssueState, Label, NewIssueParams, RateLimitData,
-    RepoIssues, RepoLabel,
+    Comment, FormOptions, IdName, Issue, IssueState, IssueStub, Label, NewIssueParams,
+    RateLimitData, RepoIssues, RepoLabel,
 };
 
 /// Fields requested for every issue in the list fetch.
-const ISSUE_FIELDS: &str = "summary,description,status,assignee,reporter,priority,labels,comment,created,updated,resolutiondate,issuetype";
+const ISSUE_FIELDS: &str = "summary,description,status,assignee,reporter,priority,labels,comment,created,updated,resolutiondate,issuetype,parent";
 const PROJECTS_PAGE: u32 = 50;
 const ISSUES_PAGE: u32 = 50;
 
@@ -617,7 +617,41 @@ fn map_issue(raw: &Value) -> Issue {
         created_at: dt("created").unwrap_or_else(chrono::Utc::now),
         updated_at: dt("updated").unwrap_or_else(chrono::Utc::now),
         closed_at: dt("resolutiondate"),
+        ancestors: f.get("parent").and_then(map_parent).into_iter().collect(),
+        // Jira's child counts and issue links are separate requests.
+        sub_issues: None,
+        relations: None,
     }
+}
+
+/// `fields.parent` (#234): one level, as Jira sends it. The project key is
+/// the issue key's prefix, matching how `org_issues` names its groups.
+fn map_parent(p: &Value) -> Option<IssueStub> {
+    let key = p.get("key").and_then(Value::as_str)?;
+    let done = p
+        .pointer("/fields/status/statusCategory/key")
+        .and_then(Value::as_str)
+        == Some("done");
+    Some(IssueStub {
+        id: key.to_string(),
+        number: key_to_number(key),
+        title: p
+            .pointer("/fields/summary")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        state: if done {
+            IssueState::Closed
+        } else {
+            IssueState::Open
+        },
+        url: String::new(),
+        repo: key
+            .rsplit_once('-')
+            .map_or(key, |(project, _)| project)
+            .to_string(),
+        owner: String::new(),
+    })
 }
 
 /// Thin adapter over the inherent methods — inherent methods win name
@@ -715,6 +749,29 @@ mod tests {
         });
         merge(&mut base["fields"], extra);
         base
+    }
+
+    /// #234: `fields.parent` becomes a one-level ancestry in its project.
+    #[test]
+    fn a_parent_maps_to_a_one_level_ancestry() {
+        assert!(ISSUE_FIELDS.split(',').any(|f| f == "parent"));
+        let raw = sample_issue(json!({
+            "parent": {
+                "id": "10001", "key": "PROJ-7",
+                "fields": {
+                    "summary": "Epic",
+                    "status": { "statusCategory": { "key": "done" } }
+                }
+            }
+        }));
+        let issue = map_issue(&raw);
+        assert_eq!(issue.ancestors.len(), 1);
+        let p = &issue.ancestors[0];
+        assert_eq!((p.id.as_str(), p.number), ("PROJ-7", 7));
+        assert_eq!(p.repo, "PROJ");
+        assert_eq!(p.title, "Epic");
+        assert_eq!(p.state, IssueState::Closed);
+        assert!(map_issue(&sample_issue(json!({}))).ancestors.is_empty());
     }
 
     fn merge(target: &mut Value, extra: Value) {
