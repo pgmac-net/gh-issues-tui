@@ -7,7 +7,7 @@
 //! and never when the set only shrinks, since every remaining issue was judged.
 
 use super::prelude::*;
-use crate::typesafe::search::{Candidate, worth_searching};
+use crate::typesafe::search::{self as jev_search, Candidate, worth_searching};
 
 #[derive(Debug, Default)]
 pub struct SearchState {
@@ -29,6 +29,11 @@ pub struct SearchState {
     /// starts or the query changes, so the info bar never reports a count that
     /// belongs to an earlier query.
     answered: bool,
+    /// Hits among the candidates answered from disk (#226), merged with the
+    /// sent ones' when their answer lands.
+    kept_hits: HashSet<String>,
+    /// Each sent candidate's request hash, the key its answer is kept under.
+    sent_hashes: HashMap<String, u64>,
 }
 
 impl SearchState {
@@ -168,15 +173,48 @@ impl App {
             return None;
         }
         self.search.generation += 1;
-        self.search.in_flight = true;
         self.search.answered = false;
         self.search.query = self.filters.text.clone();
         self.search.judged = candidates.iter().map(|c| c.id.clone()).collect();
-        Some((
-            self.search.generation,
-            self.search.query.clone(),
-            candidates,
-        ))
+        // Candidates whose exact request was answered before (#226) are not
+        // sent again; only the rest are.
+        let query = self.search.query.clone();
+        let mut kept = HashMap::new();
+        let mut hashes = HashMap::new();
+        let mut misses = Vec::new();
+        for c in candidates {
+            let hash = jev_search::request_hash(&query, &c);
+            match self.search_disk.get(&query, &c.id, hash) {
+                Some(p) => {
+                    kept.insert(c.id, p);
+                }
+                None => {
+                    hashes.insert(c.id.clone(), hash);
+                    misses.push(c);
+                }
+            }
+        }
+        self.search.kept_hits = jev_search::hits(&kept);
+        self.search.sent_hashes = hashes;
+        if misses.is_empty() {
+            // Every answer was kept: settle now, and mark the query used.
+            self.search_disk.put(&query, []);
+            self.settle_search_hits(HashSet::new());
+            return None;
+        }
+        self.search.in_flight = true;
+        Some((self.search.generation, query, misses))
+    }
+
+    /// The hits are the kept ones plus `fresh`: the whole candidate set.
+    fn settle_search_hits(&mut self, fresh: HashSet<String>) {
+        self.search.in_flight = false;
+        self.search.answered = true;
+        let mut hits = std::mem::take(&mut self.search.kept_hits);
+        hits.extend(fresh);
+        self.filters.semantic_hits = hits;
+        self.rebuild_rows();
+        self.expand_single_visible();
     }
 
     /// Record a search's answer. Dropped if a newer search or a text change has
@@ -187,18 +225,22 @@ impl App {
     pub fn apply_semantic_search(
         &mut self,
         generation: u64,
-        result: Result<HashSet<String>, String>,
+        result: Result<HashMap<String, f64>, String>,
     ) {
         if generation != self.search.generation {
             return;
         }
         self.search.in_flight = false;
         match result {
-            Ok(hits) => {
-                self.search.answered = true;
-                self.filters.semantic_hits = hits;
-                self.rebuild_rows();
-                self.expand_single_visible();
+            Ok(scores) => {
+                let hashes = std::mem::take(&mut self.search.sent_hashes);
+                self.search_disk.put(
+                    &self.search.query.clone(),
+                    scores
+                        .iter()
+                        .filter_map(|(id, p)| Some((id.clone(), *hashes.get(id)?, *p))),
+                );
+                self.settle_search_hits(jev_search::hits(&scores));
             }
             Err(e) => {
                 self.search.failed = true;

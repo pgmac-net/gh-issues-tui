@@ -240,7 +240,7 @@ pub(crate) fn spawn_readiness(
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let Some(reader) = reader else { return };
-    let Some((issue_id, state)) = app.begin_readiness() else {
+    let Some((issue_id, state, hash)) = app.begin_readiness() else {
         return;
     };
     let reader = reader.clone();
@@ -249,7 +249,11 @@ pub(crate) fn spawn_readiness(
         let result = crate::typesafe::readiness::assess(&reader, state)
             .await
             .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::Readiness { issue_id, result });
+        let _ = tx.send(AppEvent::Readiness {
+            issue_id,
+            hash,
+            result,
+        });
     });
 }
 
@@ -272,7 +276,7 @@ pub(crate) fn spawn_semantic_search(
     let reader = reader.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
-        let result = crate::typesafe::search::search(&reader, &query, &candidates)
+        let result = crate::typesafe::search::score(&reader, &query, &candidates)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::SemanticSearch { generation, result });

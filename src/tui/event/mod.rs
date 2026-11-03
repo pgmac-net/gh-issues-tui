@@ -92,13 +92,17 @@ pub enum AppEvent {
     /// about so a late answer cannot be shown against a different ticket.
     Readiness {
         issue_id: String,
+        /// The request's hash, the key it is kept under on disk (#226).
+        hash: u64,
         result: Result<crate::typesafe::readiness::Readiness, String>,
     },
     /// A semantic search's hits (#158), tagged with the generation it was sent
     /// under so a response overtaken by a newer query is dropped.
     SemanticSearch {
         generation: u64,
-        result: Result<std::collections::HashSet<String>, String>,
+        /// Each sent candidate's probability of being about the query; the
+        /// app keeps them on disk (#226) and decides the hits.
+        result: Result<std::collections::HashMap<String, f64>, String>,
     },
     /// Inferred ranks for the repo labels the set-priority picker fetched
     /// (#162). Carries `labels` so the picker can be built without a second
@@ -591,7 +595,11 @@ pub(crate) fn handle_app_event(
             ));
         }
         AppEvent::LabelRanks { org, result } => app.apply_label_ranks(&org, result),
-        AppEvent::Readiness { issue_id, result } => app.apply_readiness(issue_id, result),
+        AppEvent::Readiness {
+            issue_id,
+            hash,
+            result,
+        } => app.apply_readiness(issue_id, hash, result),
         AppEvent::SemanticSearch { generation, result } => {
             app.apply_semantic_search(generation, result)
         }

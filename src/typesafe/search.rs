@@ -145,18 +145,19 @@ pub async fn score(
     results.into_iter().collect()
 }
 
-/// The ids of the candidates that are about `query`.
-pub async fn search(
-    client: &Client,
-    query: &str,
-    candidates: &[Candidate],
-) -> Result<HashSet<String>> {
-    Ok(score(client, query, candidates)
-        .await?
+/// The hash of the request [`score`] sends for one candidate (#226): query,
+/// issue text, model and question, so a change to any of them is a miss.
+pub fn request_hash(query: &str, c: &Candidate) -> u64 {
+    crate::cache::request_hash(&request(query, c))
+}
+
+/// The ids among `scores` that are about the query.
+pub fn hits<'a>(scores: impl IntoIterator<Item = (&'a String, &'a f64)>) -> HashSet<String> {
+    scores
         .into_iter()
-        .filter(|(_, p)| *p > SEARCH_YES)
-        .map(|(id, _)| id)
-        .collect())
+        .filter(|(_, p)| **p > SEARCH_YES)
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 #[cfg(test)]

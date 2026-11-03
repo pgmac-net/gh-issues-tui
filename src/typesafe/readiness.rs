@@ -346,6 +346,12 @@ impl Verdict {
 
 /// Judge one ticket. Any failure is the caller's to swallow: the badge is
 /// advisory, so not having one behaves exactly as before this existed.
+/// The hash of the request [`assess`] would send for `state` (#226): the
+/// state, model and questions, so a change to any of them misses the cache.
+pub fn request_hash(state: &Value) -> u64 {
+    crate::cache::request_hash(&request_body(state.clone()))
+}
+
 pub async fn assess(client: &Client, state: Value) -> Result<Readiness> {
     let answers = client.ask(&request_body(state)).await?;
     Readiness::from_answers(&answers)
