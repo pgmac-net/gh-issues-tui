@@ -5,6 +5,7 @@
 //! sort model, the text editors, the new-issue form, the mode enums, the
 //! picker, and the detail-pane and PR-summary state.
 
+mod cache;
 mod detail;
 mod editor;
 mod filter_input;
@@ -119,6 +120,20 @@ pub struct App {
     pub loaded: Option<Loaded>,
     /// What the fetch in flight asked for; becomes `loaded` when it lands.
     pub pending_fetch: Option<Loaded>,
+    /// Bumped on every settle (#226): load, refresh, patch, removal or move.
+    /// The snapshot saver writes when it changes.
+    pub data_gen: u64,
+    /// When the list was last fetched (an org or filtered fetch landing), or
+    /// the snapshot's age when drawn from one. Saved with the snapshot.
+    pub fetched_at: Option<DateTime<Utc>>,
+    /// The list shows a snapshot no fetch has replaced yet; when it was
+    /// fetched. Drives the info bar's `cached <age>` (ADR 0010).
+    pub cached: Option<DateTime<Utc>>,
+    /// The refresh meant to replace that snapshot failed.
+    pub cache_refresh_failed: bool,
+    /// Search answers kept on disk across sessions (#226); disabled unless
+    /// `cache` is on and issue text may be sent.
+    pub search_disk: crate::cache::answers::SearchCache,
     /// Every repo, person and label seen this session, for the pickers.
     pub vocab: Vocab,
     /// The org's full repo list, fetched lazily for move targets (#230).
@@ -212,6 +227,11 @@ impl App {
             auto_refreshing: false,
             include_closed,
             loaded: None,
+            data_gen: 0,
+            fetched_at: None,
+            cached: None,
+            cache_refresh_failed: false,
+            search_disk: crate::cache::answers::SearchCache::disabled(),
             pending_fetch: None,
             vocab: Vocab::default(),
             org_repo_names: None,
@@ -248,6 +268,7 @@ impl App {
     }
 
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
+        self.data_gen += 1;
         let prev_selected = self.selected_issue().map(|i| i.id.clone());
         // Fresh data can carry comments added since the last fetch, so the
         // cached threads are no longer trustworthy — nor are the readiness
@@ -349,6 +370,9 @@ impl App {
         self.runs.reset();
         self.label_rank = RankState::default();
         self.loaded = None;
+        self.fetched_at = None;
+        self.cached = None;
+        self.cache_refresh_failed = false;
         self.pending_fetch = None;
         self.vocab = Vocab::default();
         self.org_repo_names = None;

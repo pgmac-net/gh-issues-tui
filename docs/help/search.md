@@ -37,3 +37,4 @@ Nothing is shown without the settings above, or for a query that is never sent.
 - It takes about 4 to 6 seconds and costs about $0.003 per search.
 - Relaxing a filter, showing closed issues or a refresh that brings new issues searches again. Narrowing a filter never does, because every issue left was already judged.
 - Only `/` and the filter editor's text field search this way.
+- Answers for your last 20 searches are kept in `~/.cache/gh-issues/` (unless `cache = false`), so repeating a search sends only issues that changed.

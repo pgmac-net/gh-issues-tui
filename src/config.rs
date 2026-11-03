@@ -36,6 +36,14 @@ pub struct Config {
     #[serde(default = "restore_layout_default")]
     pub restore_layout: bool,
 
+    /// Keep a snapshot of the loaded issues, and Jev answers, on disk in the
+    /// user cache directory, so the next start draws at once and refreshes in
+    /// the background (#226). `false` neither reads nor writes any of it.
+    /// The snapshot holds issue titles and bodies. `--no-cache` wipes one
+    /// org's cache for a single start.
+    #[serde(default = "cache_default")]
+    pub cache: bool,
+
     /// Hide repo groups with no visible issues (the default). The filter
     /// editor can flip this per session; clearing filters restores it.
     #[serde(default = "hide_empty_repos_default")]
@@ -251,6 +259,10 @@ fn restore_layout_default() -> bool {
     true
 }
 
+fn cache_default() -> bool {
+    true
+}
+
 fn copy_format_default() -> String {
     "{owner}/{repo}#{number}".to_string()
 }
@@ -263,6 +275,7 @@ impl Default for Config {
             default_collapsed: true,
             refresh_interval: refresh_interval_default(),
             restore_layout: true,
+            cache: true,
             hide_empty_repos: true,
             color_profile: None,
             copy_format: copy_format_default(),
@@ -428,6 +441,18 @@ mod tests {
         assert!(Config::load_from(&path).unwrap().restore_layout, "unset");
         std::fs::write(&path, "restore_layout = false\n").unwrap();
         assert!(!Config::load_from(&path).unwrap().restore_layout);
+    }
+
+    #[test]
+    fn cache_defaults_on_and_can_be_turned_off() {
+        assert!(Config::default().cache);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(Config::load_from(&path).unwrap().cache, "no file");
+        std::fs::write(&path, "refresh_interval = 60\n").unwrap();
+        assert!(Config::load_from(&path).unwrap().cache, "unset");
+        std::fs::write(&path, "cache = false\n").unwrap();
+        assert!(!Config::load_from(&path).unwrap().cache);
     }
 
     #[test]

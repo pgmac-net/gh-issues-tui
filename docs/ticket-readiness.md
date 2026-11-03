@@ -55,7 +55,7 @@ blocked" depends on.
 **Never the org or repo name** — ADR 0002 clause 3 still covers those, and
 `readiness::state` takes no org argument, so it cannot carry one.
 
-Nothing is written to disk. Judgements are in-memory, per session.
+Since #226, judgements are also kept on disk (`~/.cache/gh-issues/<provider>@<host>/<org>/readiness.json`) under the hash of the exact request, when `cache = true`. An issue whose title, body and thread are unchanged is not sent again in a later session. The in-memory judgements are still per session. See [caching.md](caching.md).
 
 ## Advisory, and structurally so
 

@@ -12,6 +12,16 @@ use std::collections::HashMap;
 use super::App;
 use crate::provider::types::{Issue, RepoIssues};
 
+/// A repo's web URL from one of its issues' (`…/repo/issues/42` → `…/repo`),
+/// for a group created by a move into a repo that was not loaded. Empty when
+/// the URL has no `/issues/` part (Linear, Jira), as an unknown URL would be.
+fn repo_url_of(issue_url: &str) -> String {
+    issue_url
+        .rsplit_once("/issues/")
+        .map(|(repo, _)| repo.to_string())
+        .unwrap_or_default()
+}
+
 impl App {
     /// Replace the loaded copy of `issue` (matched by id) with the one a
     /// mutation reported. Returns `false` when the issue is not loaded — it
@@ -34,12 +44,65 @@ impl App {
         let id = issue.id.clone();
         self.vocab.absorb_issue(&issue);
         *slot = issue;
+        self.data_gen += 1;
         // The judgement was derived from the old title/body/labels.
         self.invalidate_readiness(&id);
         self.stamp_label_ranks();
         self.rebuild_rows();
         self.reselect(prev_selected);
         true
+    }
+
+    /// An issue moved to `target` (#226): drop the copy under its old id and
+    /// put the one the move reported into the target group, creating the
+    /// group when it is not loaded. No org refetch, as for any patch (ADR
+    /// 0005). On GitHub the moved issue has a new id and number. The
+    /// selection follows it when it is still shown. Returns whether it is.
+    pub fn apply_move(&mut self, from_id: &str, target: &str, issue: Issue) -> bool {
+        self.data_gen += 1;
+        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        for repo in &mut self.repos {
+            repo.issues.retain(|i| i.id != from_id);
+        }
+        self.invalidate_comments(from_id);
+        let id = issue.id.clone();
+        self.vocab.absorb_issue(&issue);
+        let slot = match self
+            .repos
+            .iter()
+            .position(|r| r.repo.eq_ignore_ascii_case(target))
+        {
+            Some(i) => i,
+            None => {
+                let at = self
+                    .repos
+                    .iter()
+                    .position(|r| r.repo.to_lowercase() > target.to_lowercase())
+                    .unwrap_or(self.repos.len());
+                self.repos.insert(
+                    at,
+                    RepoIssues {
+                        repo: target.to_string(),
+                        repo_url: repo_url_of(&issue.url),
+                        issues: Vec::new(),
+                    },
+                );
+                at
+            }
+        };
+        self.repos[slot].issues.retain(|i| i.id != id);
+        self.repos[slot].issues.insert(0, issue);
+        self.stamp_label_ranks();
+        self.rebuild_rows();
+        let follow = if prev_selected.as_deref() == Some(from_id) {
+            Some(id.clone())
+        } else {
+            prev_selected
+        };
+        self.reselect(follow);
+        self.rows
+            .iter()
+            .any(|row| self.row_issue_id(row) == Some(id.as_str()))
     }
 
     /// A comment was added to `issue_id`: the list shows the count, and no

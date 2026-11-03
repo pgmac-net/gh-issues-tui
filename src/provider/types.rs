@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::codespan::{Backticks, backticks, fence_closes, fence_open};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum IssueState {
     Open,
@@ -19,7 +19,7 @@ impl std::fmt::Display for IssueState {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Label {
     pub name: String,
     #[serde(default)]
@@ -32,7 +32,7 @@ pub struct Label {
     pub rank: Option<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     /// GraphQL node id, needed for mutations.
     pub id: String,
@@ -62,7 +62,7 @@ pub struct Issue {
 
 /// Enough of an issue to draw it as a context row without loading it (#234):
 /// a parent that is filtered out, not fetched, or in another repo or owner.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueStub {
     pub id: String,
     pub number: u64,
@@ -76,7 +76,7 @@ pub struct IssueStub {
 }
 
 /// Sub-issues done and in total, as the backend reports them (#234).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubIssueProgress {
     pub completed: u32,
     pub total: u32,
@@ -85,7 +85,7 @@ pub struct SubIssueProgress {
 /// The non-hierarchical links of an issue (#234): what blocks it, what it
 /// blocks, and what it is marked related to. Graphs, not a tree, so they are
 /// counted in the detail pane rather than nested in the list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Relations {
     pub blocked_by: u32,
     pub blocking: u32,
@@ -193,7 +193,7 @@ impl Issue {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoIssues {
     pub repo: String,
     pub repo_url: String,
@@ -996,5 +996,63 @@ mod tests {
     fn parse_pr_links_treats_an_unterminated_fence_as_code_to_the_end() {
         let text = "real #1\n```\n#2\nstill code #3";
         assert_eq!(parse_pr_links(text, HERE), vec![pr("o", "r", 1)]);
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    /// A snapshot (#226) stores issues as JSON; everything a backend gave us
+    /// comes back, and the stamped-on label rank does not (it is re-stamped).
+    #[test]
+    fn an_issue_round_trips_through_json_without_its_label_ranks() {
+        let issue = Issue {
+            labels: vec![Label {
+                name: "urgent".into(),
+                color: "ff0000".into(),
+                rank: Some(4),
+            }],
+            assignees: vec!["pgmac".into()],
+            closed_at: Some(Utc::now()),
+            state: IssueState::Closed,
+            ancestors: vec![IssueStub {
+                id: "P".into(),
+                number: 7,
+                title: "parent".into(),
+                state: IssueState::Open,
+                url: "pu".into(),
+                repo: "r".into(),
+                owner: "o".into(),
+            }],
+            sub_issues: Some(SubIssueProgress {
+                completed: 1,
+                total: 3,
+            }),
+            relations: Some(Relations {
+                blocked_by: 1,
+                blocking: 0,
+                related: 2,
+            }),
+            ..Issue::fixture("I_1", 1)
+        };
+        let repo = RepoIssues {
+            repo: "r".into(),
+            repo_url: "ru".into(),
+            issues: vec![issue.clone()],
+        };
+        let back: RepoIssues =
+            serde_json::from_str(&serde_json::to_string(&repo).unwrap()).unwrap();
+        let got = &back.issues[0];
+        assert_eq!(got.id, issue.id);
+        assert_eq!(got.state, IssueState::Closed);
+        assert_eq!(got.closed_at, issue.closed_at);
+        assert_eq!(got.updated_at, issue.updated_at);
+        assert_eq!(got.ancestors, issue.ancestors);
+        assert_eq!(got.sub_issues, issue.sub_issues);
+        assert_eq!(got.relations, issue.relations);
+        assert_eq!(got.labels[0].name, "urgent");
+        assert_eq!(got.labels[0].color, "ff0000");
+        assert_eq!(got.labels[0].rank, None);
     }
 }

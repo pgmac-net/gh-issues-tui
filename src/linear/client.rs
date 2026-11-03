@@ -383,7 +383,8 @@ impl Client {
     /// Move the issue to another team ("repo" in this app's terminology).
     /// Linear remaps the issue's workflow state and label set to the target
     /// team server-side — this app makes no attempt to reconcile them itself.
-    pub async fn move_issue(&self, issue_id: &str, _org: &str, target: &str) -> Result<()> {
+    /// Returns the moved issue (#226) so the list patches it in place.
+    pub async fn move_issue(&self, issue_id: &str, _org: &str, target: &str) -> Result<Issue> {
         let data = self
             .graphql(
                 "query($key: String!) {
@@ -399,14 +400,8 @@ impl Client {
             .and_then(Value::as_str)
             .ok_or_else(|| ProviderError::Shape(format!("no team {target}")))?
             .to_string();
-        self.graphql(
-            "mutation($id: String!, $teamId: String!) {
-               issueUpdate(id: $id, input: {teamId: $teamId}) { success }
-             }",
-            json!({ "id": issue_id, "teamId": team_id }),
-        )
-        .await
-        .map(drop)
+        self.issue_update(issue_id, json!({ "teamId": team_id }))
+            .await
     }
 
     /// Team labels plus the synthetic `priority:*` labels, so the priority
@@ -877,11 +872,14 @@ impl crate::provider::IssueProvider for Client {
     fn rate_limit(&self) -> Option<RateLimitData> {
         self.rate_limit()
     }
+    fn host(&self) -> String {
+        "linear.app".into()
+    }
     // supports_pr_summary defaults to false — Linear has no GitHub PR links.
     fn supports_move(&self) -> bool {
         true
     }
-    async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<()> {
+    async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<Issue> {
         self.move_issue(issue_id, org, target).await
     }
 }

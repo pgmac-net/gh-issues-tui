@@ -8,6 +8,7 @@
 //! Nothing here reaches a launch — see `typesafe::readiness`.
 
 use super::prelude::*;
+use crate::cache::answers::ReadinessCache;
 
 /// Judgements received, requests out, and whether asking has failed.
 ///
@@ -22,6 +23,9 @@ pub struct ReadinessState {
     /// Asking failed. Off for the rest of the session: no retry storm, and the
     /// pane simply has no badge, which is how it behaved before this existed.
     failed: bool,
+    /// Answers kept on disk across sessions, keyed by the request (#226).
+    /// Disabled unless `cache` is on and issue text may be sent.
+    disk: ReadinessCache,
 }
 
 impl ReadinessState {
@@ -44,6 +48,11 @@ impl ReadinessState {
         self.failed = false;
     }
 
+    /// Use `disk` for answers from now on: the org's file, or a disabled one.
+    pub fn set_disk(&mut self, disk: ReadinessCache) {
+        self.disk = disk;
+    }
+
     /// Asking has failed this session, so nothing will ask again.
     pub fn has_failed(&self) -> bool {
         self.failed
@@ -56,11 +65,18 @@ impl App {
         self.readiness.get(&self.selected_issue()?.id)
     }
 
-    /// Record a judgement and clear its in-flight mark.
-    pub fn apply_readiness(&mut self, issue_id: String, result: Result<Readiness, String>) {
+    /// Record a judgement and clear its in-flight mark. `hash` is the
+    /// request's, under which the answer is kept on disk (#226).
+    pub fn apply_readiness(
+        &mut self,
+        issue_id: String,
+        hash: u64,
+        result: Result<Readiness, String>,
+    ) {
         self.readiness.in_flight.remove(&issue_id);
         match result {
             Ok(readiness) => {
+                self.readiness.disk.put(&issue_id, hash, readiness);
                 self.readiness.answers.insert(issue_id, readiness);
             }
             // Deliberately silent: unlike the label-rank failure this sets no
@@ -76,7 +92,10 @@ impl App {
     /// Requires a *settled* thread. `blocked` and `duplicate` are answered from
     /// the comments, so asking before they arrive would judge the ticket on its
     /// body alone and then keep that answer.
-    pub fn begin_readiness(&mut self) -> Option<(String, serde_json::Value)> {
+    ///
+    /// An answer kept on disk for exactly this request (#226) is used at once
+    /// and nothing is sent: the source material has not changed.
+    pub fn begin_readiness(&mut self) -> Option<(String, serde_json::Value, u64)> {
         if self.readiness.failed {
             return None;
         }
@@ -92,8 +111,13 @@ impl App {
             &comments.iter().map(|c| c.body.clone()).collect::<Vec<_>>(),
             issue.comment_count,
         );
+        let hash = crate::typesafe::readiness::request_hash(&state);
+        if let Some(kept) = self.readiness.disk.get(&id, hash) {
+            self.readiness.answers.insert(id, kept);
+            return None;
+        }
         self.readiness.in_flight.insert(id.clone());
-        Some((id, state))
+        Some((id, state, hash))
     }
 
     /// Forget one judgement.

@@ -10,7 +10,7 @@ Part 1 of #227. Before this, every refresh refetched the whole org. Now a refres
 | `r` | repo header | that repo's issues | `refreshed repo foo (12)` / `repo foo is gone, archived or has issues off, removed` |
 | `r` | runs tab focused | the runs (unchanged, #222) | as before |
 | `Ctrl+R` | anywhere in the list | the **filtered scope**: the exact-filtered repo, else the org | `refreshed repo foo (12)` / `refreshed org: 87 issues across 9 repos` |
-| (timer) | auto-refresh | the filtered scope | `auto-refreshed repo foo (12)` / `auto-refreshed org: …` |
+| (timer) | auto-refresh | the org (since #226, ADR 0010) | `auto-refreshed org: …` |
 
 The first load of an org still says `loaded N issues across M repos`. A refresh key pressed while a refresh is running says `a refresh is already running` and starts nothing.
 

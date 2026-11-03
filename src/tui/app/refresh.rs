@@ -85,6 +85,7 @@ impl App {
             removed |= repo.issues.len() != before;
         }
         if removed {
+            self.data_gen += 1;
             self.invalidate_comments(id);
             self.rebuild_rows();
             self.reselect(prev_selected);
@@ -98,6 +99,7 @@ impl App {
     /// `keep_newer_loaded` keeps any newer patched copy, exactly as
     /// `set_data` does for the whole org.
     pub fn replace_repo(&mut self, name: &str, incoming: Option<RepoIssues>) {
+        self.data_gen += 1;
         let prev_selected = self.selected_issue().map(|i| i.id.clone());
         let prev_header = match self.rows.get(self.selected) {
             Some(Row::RepoHeader { .. }) => self.selected_repo().map(|r| r.repo.clone()),

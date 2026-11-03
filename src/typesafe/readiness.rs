@@ -215,7 +215,7 @@ fn request_body(state: Value) -> Value {
 /// The five probabilities, as answered. Raw on purpose: the policy in
 /// [`Readiness::verdict`] is a pure function over them, so changing a
 /// threshold or the badge wording never needs a new request.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Readiness {
     pub specifics: f64,
     pub criteria: f64,
@@ -346,6 +346,12 @@ impl Verdict {
 
 /// Judge one ticket. Any failure is the caller's to swallow: the badge is
 /// advisory, so not having one behaves exactly as before this existed.
+/// The hash of the request [`assess`] would send for `state` (#226): the
+/// state, model and questions, so a change to any of them misses the cache.
+pub fn request_hash(state: &Value) -> u64 {
+    crate::cache::request_hash(&request_body(state.clone()))
+}
+
 pub async fn assess(client: &Client, state: Value) -> Result<Readiness> {
     let answers = client.ask(&request_body(state)).await?;
     Readiness::from_answers(&answers)

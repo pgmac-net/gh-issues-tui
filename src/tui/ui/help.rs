@@ -318,7 +318,7 @@ mod tests {
         let (g, _, _) = app.begin_semantic_search().unwrap();
         assert!(bar(&app).contains("semantic: searching…"));
 
-        app.apply_semantic_search(g, Ok(std::collections::HashSet::new()));
+        app.apply_semantic_search(g, Ok(std::collections::HashMap::new()));
         assert!(bar(&app).contains("semantic: +0"));
 
         app.set_text_filter("another".into());
@@ -332,7 +332,7 @@ mod tests {
         let mut app = indicator_app();
         app.typesafe = Status::default();
         let (g, _, _) = app.begin_semantic_search().unwrap();
-        app.apply_semantic_search(g, Ok(std::collections::HashSet::new()));
+        app.apply_semantic_search(g, Ok(std::collections::HashMap::new()));
         assert!(!text_of(&render_app(&app, 120, 24)).contains("semantic:"));
     }
 }

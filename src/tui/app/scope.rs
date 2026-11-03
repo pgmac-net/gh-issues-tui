@@ -7,6 +7,7 @@
 //! refetches the filtered scope once. Glossary: `CONTEXT.md`.
 
 use chrono::{Local, TimeZone};
+use serde::{Deserialize, Serialize};
 
 use super::prelude::*;
 use super::refresh::FetchTarget;
@@ -14,7 +15,7 @@ use crate::provider::scope::FetchScope;
 
 /// What a fetch asked for: the backend scope, and the one repo it was
 /// narrowed to (`None` is the whole org).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Loaded {
     pub scope: FetchScope,
     pub repo: Option<String>,
@@ -78,6 +79,18 @@ impl App {
             .map_or_else(|| self.wanted_scope(), |l| l.scope.clone())
     }
 
+    /// The scope a filtered fetch or auto-refresh asks for (#226): what the
+    /// filters want, widened to cover what is already loaded, so a refresh
+    /// never fetches less than the list holds and toggling a filter back and
+    /// forth fetches at most once.
+    pub fn refresh_scope(&self) -> FetchScope {
+        let wanted = self.wanted_scope();
+        match &self.loaded {
+            Some(l) => wanted.union(&l.scope),
+            None => wanted,
+        }
+    }
+
     /// True when the filters now reach past the loaded data and nothing
     /// stands in the way of refetching: data has loaded once, no fetch is
     /// out, no rate limit, and no popup that a data swap would disturb.
@@ -101,10 +114,17 @@ impl App {
     /// loaded scope; on failure the loaded scope stays what it was. A
     /// partial refresh never called `begin_fetch`, so it changes nothing.
     pub fn finish_fetch(&mut self, ok: bool) {
+        if !ok && self.cached.is_some() {
+            self.cache_refresh_failed = true;
+        }
         if let Some(target) = self.pending_fetch.take()
             && ok
         {
             self.loaded = Some(target);
+            // A fetch of the filtered scope or the org replaced the snapshot.
+            self.fetched_at = Some(Utc::now());
+            self.cached = None;
+            self.cache_refresh_failed = false;
         }
     }
 }
@@ -183,6 +203,33 @@ mod tests {
         let mut a = app();
         a.state_filter = StateFilter::Closed;
         assert!(a.wanted_scope().include_closed);
+    }
+
+    #[test]
+    fn a_refresh_never_fetches_less_than_is_loaded() {
+        let mut a = app();
+        assert_eq!(a.refresh_scope(), a.wanted_scope(), "nothing loaded yet");
+        // Loaded with closed issues, then narrowed back to open ones.
+        a.loaded = Some(Loaded {
+            scope: FetchScope {
+                include_closed: true,
+                ..FetchScope::default()
+            },
+            repo: None,
+        });
+        a.filters.assignee = "pgmac".into();
+        let s = a.refresh_scope();
+        assert!(s.include_closed, "narrowing never shrinks the loaded scope");
+        assert_eq!(s.assignee, None);
+        // ...so toggling closed on again needs no fetch.
+        a.state_filter = StateFilter::All;
+        a.loading = false;
+        a.begin_fetch(Loaded {
+            scope: s,
+            repo: None,
+        });
+        a.finish_fetch(true);
+        assert!(!a.widened());
     }
 
     #[test]

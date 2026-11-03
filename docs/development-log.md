@@ -1412,3 +1412,31 @@ Work driven by [pgmac-net/gh-issues-tui#198](https://github.com/pgmac-net/gh-iss
 
 - New tests: exact filter keeps an empty repo; exact filter keeps an all-filtered-out repo; a substring filter still hides empties; `n` with no rows sets the status and stays in Normal mode.
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (all pass).
+
+---
+
+# Development log — caching and optimisation (2026-11-03)
+
+Work driven by [pgmac-net/gh-issues-tui#226](https://github.com/pgmac-net/gh-issues-tui/issues/226), branch `226-caching`. Decisions: [ADR 0010](adr/0010-a-read-only-snapshot-cache-and-the-org-wide-auto-refresh.md). Detail: [caching.md](caching.md).
+
+## Decisions (from grilling)
+
+- **Read cache only.** The ticket sketched a write-back cache that replays changes to the backend. Writes were never the slow part, and ADR 0005 already patches the list from each write's answer, so the cache only follows writes. No queue, no replay, no merge UI.
+- **Draw the snapshot, always refresh.** No age threshold; the info bar says `cached <age> · refreshing…`, then `refresh failed` if it fails.
+- **Auto-refresh covers the org**, so the snapshot does not go stale while you sit on one repo. Supersedes the auto-refresh part of ADR 0008 rule 1. `Ctrl+R` stays the filtered scope.
+- **A snapshot is used only when it covers the wanted scope**, one per backend, host and org, in the cache dir.
+- **Jev answers keyed by what was sent**, not by `updated_at`: a label change costs no re-evaluation.
+- **Move places the moved issue; create still refetches.** **A widen is a load**, checked against the snapshot first. **Threads are not persisted.**
+
+## Deviations from the plan
+
+- Files live in one directory per org (`<provider>@<host>/<org>/{snapshot,readiness,search}.json`) rather than `snapshots/<backend>@<host>/<org>.json`, so `--no-cache` is one directory removal.
+- The Jev key hashes the whole request body (state, model and question text) instead of state + `MODEL` + a prompt-version constant: a reworded question invalidates on its own, with no constant to remember to bump.
+- `set_data` still clears the in-memory readiness judgements; the disk lookup in `begin_readiness` is what makes asking again free. Same outcome, fewer moving parts.
+- The cache indicator gained a third state, `Ctrl+R refreshes`, for a widen served from the snapshot, which is cached on purpose rather than after a failure.
+
+## Verification
+
+- `cargo test`: 1185 pass. clippy `-D warnings` and fmt clean.
+- Driven live against `pgmac-net` (202 issues, 62 repos) on a pty with an isolated `XDG_CACHE_HOME`: cold start drew the list at 7.65 s; warm at 0.26 s with `cached just now · refreshing…`, then `refreshed org: 202 issues across 62 repos`; `--no-cache` 7.79 s and the label-rank cache kept; a bad token after a warm start kept the cached list and showed `refresh failed`. The snapshot was 438 KB, mode `0600`, in `0700` directories.
+- **Not driven live:** a move (it would change real repos) and the Jev answer caches (need the TypeSafe consent and key). Both are covered by unit tests.

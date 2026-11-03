@@ -23,6 +23,7 @@ use super::harness::{HarnessRegistry, HarnessSettings, list_bg_sessions};
 use super::theme::Theme;
 use super::ui;
 
+mod cache_io;
 mod keys;
 mod persist;
 mod spawn;
@@ -30,7 +31,8 @@ mod spawn;
 use keys::{HarnessCtx, handle_key};
 use spawn::{
     AfterMutation, refetch_if_widened, spawn_comments, spawn_fetch, spawn_filtered_fetch,
-    spawn_label_ranks, spawn_priority_ranks, spawn_readiness, spawn_runs, spawn_semantic_search,
+    spawn_label_ranks, spawn_org_refresh, spawn_priority_ranks, spawn_readiness, spawn_runs,
+    spawn_semantic_search,
 };
 
 pub enum AppEvent {
@@ -70,6 +72,14 @@ pub enum AppEvent {
         msg: String,
         issue: Box<Issue>,
     },
+    /// A move landed (#226): the issue as it is in `target`, which replaces
+    /// the copy under `from_id`.
+    IssueMoved {
+        msg: String,
+        from_id: String,
+        target: String,
+        issue: Box<Issue>,
+    },
     MutationFailed(String),
     /// Per-repo picker options for the new-issue form.
     FormOptions {
@@ -90,13 +100,17 @@ pub enum AppEvent {
     /// about so a late answer cannot be shown against a different ticket.
     Readiness {
         issue_id: String,
+        /// The request's hash, the key it is kept under on disk (#226).
+        hash: u64,
         result: Result<crate::typesafe::readiness::Readiness, String>,
     },
     /// A semantic search's hits (#158), tagged with the generation it was sent
     /// under so a response overtaken by a newer query is dropped.
     SemanticSearch {
         generation: u64,
-        result: Result<std::collections::HashSet<String>, String>,
+        /// Each sent candidate's probability of being about the query; the
+        /// app keeps them on disk (#226) and decides the hits.
+        result: Result<std::collections::HashMap<String, f64>, String>,
     },
     /// Inferred ranks for the repo labels the set-priority picker fetched
     /// (#162). Carries `labels` so the picker can be built without a second
@@ -154,6 +168,10 @@ pub struct RunConfig {
     pub restore_layout: bool,
     /// `--fresh`: start this session clean. Still saves on the way out.
     pub fresh: bool,
+    /// Config `cache`: keep a snapshot and Jev answers on disk (#226).
+    pub cache: bool,
+    /// `--no-cache`: wipe this org's cache before the first load.
+    pub no_cache: bool,
     /// The backend's name, recorded in the saved layout: issue ids differ
     /// between backends, so another backend's file is ignored.
     pub provider: String,
@@ -184,12 +202,22 @@ async fn event_loop(
         hide_empty_repos,
         restore_layout,
         fresh,
+        cache,
+        no_cache,
         provider,
         copy_format,
         theme,
         harness: harness_settings,
         typesafe,
     } = config;
+    let mut cache_io = cache_io::CacheIo::new(
+        cache,
+        typesafe.issue_text.is_some(),
+        crate::cache::root(),
+        provider.clone(),
+        client.host(),
+        org.clone(),
+    );
     let mut saver = persist::LayoutSaver::new(
         restore_layout,
         persist::default_dir(),
@@ -228,6 +256,13 @@ async fn event_loop(
     let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // A usable snapshot draws at once (#226), after the layout resumed so the
+    // filters it restored decide whether the snapshot covers them. The fetch
+    // below always follows: the backend has the last word (ADR 0010).
+    if cache_io.start(&mut app, no_cache) {
+        spawn_label_ranks(&mut app, typesafe.ranks.as_ref(), &tx);
+    }
+
     // Startup fetches the filtered scope: just the clone's repo when started
     // inside one (#230), otherwise the org.
     spawn_filtered_fetch(&client, &mut app, &tx);
@@ -263,6 +298,10 @@ async fn event_loop(
         let save_due = saver.due();
         let save_timer =
             tokio::time::sleep_until(save_due.unwrap_or_else(tokio::time::Instant::now));
+        // The snapshot's debounced write (#226), gated off when nothing settled.
+        let cache_due = cache_io.due();
+        let cache_timer =
+            tokio::time::sleep_until(cache_due.unwrap_or_else(tokio::time::Instant::now));
         // A harness chunk never changes the layout, and arrives at PTY rates.
         let mut layout_may_have_changed = true;
 
@@ -284,7 +323,9 @@ async fn event_loop(
                         // change that exposes unjudged issues all land here.
                         spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
                         // A filter change that reaches past the loaded data
-                        // refetches once (#230).
+                        // is served from the snapshot when it can be (#226),
+                        // else fetches once (#230).
+                        cache_io.widen_from_snapshot(&mut app);
                         refetch_if_widened(&client, &mut app, &tx);
                     }
                     // Children need the new size too, or their own TUI keeps
@@ -312,13 +353,16 @@ async fn event_loop(
                 // Fresh data can bring issues not yet judged for an active query.
                 spawn_semantic_search(&mut app, typesafe.issue_text.as_ref(), &tx);
                 // A widen held back by a fetch in flight goes out once it lands.
+                cache_io.widen_from_snapshot(&mut app);
                 refetch_if_widened(&client, &mut app, &tx);
             }
             _ = refresh.tick(), if refresh_enabled => {
                 if app.should_auto_refresh() {
                     app.loading = true;
                     app.auto_refreshing = true;
-                    spawn_filtered_fetch(&client, &mut app, &tx);
+                    // The org, not the filtered scope, so the snapshot stays
+                    // fresh for the next start (ADR 0010).
+                    spawn_org_refresh(&client, &mut app, &tx);
                 }
             }
             _ = runs_timer, if runs_due.is_some() => {
@@ -330,6 +374,10 @@ async fn event_loop(
                 saver.flush();
                 layout_may_have_changed = false;
             }
+            _ = cache_timer, if cache_due.is_some() => {
+                cache_io.flush(&app);
+                layout_may_have_changed = false;
+            }
         }
 
         // The saved layout may have had the runs tab showing; that needs the
@@ -339,10 +387,16 @@ async fn event_loop(
             // `w` switched org: keep the old view's layout, resume the new one.
             saver.sync_org(&mut app);
             saver.observe(&app, tokio::time::Instant::now());
+            // ...and its snapshot and Jev answers (#226).
+            if cache_io.sync_org(&mut app) {
+                spawn_label_ranks(&mut app, typesafe.ranks.as_ref(), &tx);
+            }
         }
+        cache_io.observe(&app, tokio::time::Instant::now());
 
         if app.should_quit {
             saver.finish(&app);
+            cache_io.finish(&app);
             // Children die with the process anyway once their PTY closes;
             // doing it explicitly means the terminal is restored after they
             // are gone rather than racing them.
@@ -552,7 +606,11 @@ pub(crate) fn handle_app_event(
             ));
         }
         AppEvent::LabelRanks { org, result } => app.apply_label_ranks(&org, result),
-        AppEvent::Readiness { issue_id, result } => app.apply_readiness(issue_id, result),
+        AppEvent::Readiness {
+            issue_id,
+            hash,
+            result,
+        } => app.apply_readiness(issue_id, hash, result),
         AppEvent::SemanticSearch { generation, result } => {
             app.apply_semantic_search(generation, result)
         }
@@ -684,6 +742,23 @@ pub(crate) fn handle_app_event(
                 msg
             } else {
                 format!("{msg} (no longer listed)")
+            });
+            spawn_label_ranks(app, ranker, tx);
+        }
+        AppEvent::IssueMoved {
+            msg,
+            from_id,
+            target,
+            issue,
+        } => {
+            let mut listed = false;
+            nav(app, client, tx, |app| {
+                listed = app.apply_move(&from_id, &target, *issue);
+            });
+            app.status = Some(if listed {
+                msg
+            } else {
+                format!("{msg} (not shown under the current filters)")
             });
             spawn_label_ranks(app, ranker, tx);
         }
@@ -1175,7 +1250,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         refetch_if_widened(&client, &mut app, &tx);
         assert!(app.loading);
-        assert_eq!(app.status.as_deref(), Some("filters widened, refreshing…"));
+        assert_eq!(app.status.as_deref(), Some("filters widened, loading…"));
         assert_eq!(
             app.pending_fetch.as_ref().map(|t| t.scope.clone()),
             Some(FetchScope::default())

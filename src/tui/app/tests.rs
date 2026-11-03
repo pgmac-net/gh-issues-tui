@@ -3124,7 +3124,7 @@ fn readiness_is_asked_for_once_per_issue() {
     let (mut app, id) = readiness_app();
     app.cache_comments(id.clone(), Vec::new());
 
-    let (asked, _state) = app.begin_readiness().expect("first ask");
+    let (asked, _state, _hash) = app.begin_readiness().expect("first ask");
     assert_eq!(asked, id);
     assert_eq!(
         app.begin_readiness(),
@@ -3132,8 +3132,80 @@ fn readiness_is_asked_for_once_per_issue() {
         "a request is already out for this issue"
     );
 
-    app.apply_readiness(id, Ok(some_readiness()));
+    app.apply_readiness(id, 0, Ok(some_readiness()));
     assert_eq!(app.begin_readiness(), None, "already answered");
+}
+
+#[test]
+fn a_move_places_the_returned_issue_and_the_selection_follows() {
+    let mut app = two_repo_app();
+    app.collapsed.clear();
+    app.rebuild_rows();
+    select_issue(&mut app, "I_1");
+    let before = app.data_gen;
+    // GitHub gives a transferred issue a new id and number.
+    let moved = Issue {
+        url: "https://github.com/o/beta/issues/9".into(),
+        ..issue(9, "first bug", IssueState::Open)
+    };
+    assert!(app.apply_move("I_1", "beta", moved));
+    let ids = |repo: &str| -> Vec<String> {
+        app.repos
+            .iter()
+            .find(|r| r.repo == repo)
+            .unwrap()
+            .issues
+            .iter()
+            .map(|i| i.id.clone())
+            .collect()
+    };
+    assert!(!ids("alpha").contains(&"I_1".to_string()));
+    assert!(ids("beta").contains(&"I_9".to_string()));
+    assert_eq!(app.selected_issue().unwrap().id, "I_9");
+    assert!(app.data_gen > before, "the snapshot saves the move");
+}
+
+#[test]
+fn a_move_into_a_repo_not_loaded_creates_its_group() {
+    let mut app = two_repo_app();
+    let moved = Issue {
+        url: "https://github.com/o/gamma/issues/1".into(),
+        ..issue(10, "first bug", IssueState::Open)
+    };
+    app.apply_move("I_1", "gamma", moved);
+    let g = app.repos.iter().find(|r| r.repo == "gamma").unwrap();
+    assert_eq!(g.repo_url, "https://github.com/o/gamma");
+    assert_eq!(g.issues[0].id, "I_10");
+    let names: Vec<_> = app.repos.iter().map(|r| r.repo.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "beta", "gamma"], "name order kept");
+}
+
+#[test]
+fn a_kept_judgement_is_reused_next_session_until_its_source_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = crate::cache::answers::readiness_path(tmp.path());
+    let session = || {
+        let (mut app, id) = readiness_app();
+        app.readiness
+            .set_disk(crate::cache::answers::ReadinessCache::load(path.clone()));
+        app.cache_comments(id.clone(), Vec::new());
+        (app, id)
+    };
+
+    let (mut first, id) = session();
+    let (_, _, hash) = first.begin_readiness().expect("nothing kept yet");
+    first.apply_readiness(id.clone(), hash, Ok(some_readiness()));
+
+    // Next start: same title, body and thread, so nothing is sent.
+    let (mut second, _) = session();
+    assert_eq!(second.begin_readiness(), None);
+    assert_eq!(second.selected_readiness(), Some(&some_readiness()));
+
+    // The body was edited since: the kept answer no longer applies.
+    let (mut third, _) = session();
+    third.readiness.clear();
+    third.repos[0].issues[0].body = "edited".into();
+    assert!(third.begin_readiness().is_some());
 }
 
 #[test]
@@ -3141,7 +3213,7 @@ fn a_landed_judgement_is_shown_against_its_own_issue() {
     let (mut app, id) = readiness_app();
     app.cache_comments(id.clone(), Vec::new());
     app.begin_readiness();
-    app.apply_readiness(id, Ok(some_readiness()));
+    app.apply_readiness(id, 0, Ok(some_readiness()));
     assert_eq!(app.selected_readiness(), Some(&some_readiness()));
 }
 
@@ -3150,7 +3222,7 @@ fn a_failed_judgement_stops_asking_and_says_nothing() {
     let (mut app, id) = readiness_app();
     app.cache_comments(id.clone(), Vec::new());
     app.begin_readiness();
-    app.apply_readiness(id, Err("TypeSafe returned 429".into()));
+    app.apply_readiness(id, 0, Err("TypeSafe returned 429".into()));
 
     assert!(app.readiness.has_failed());
     assert_eq!(app.begin_readiness(), None, "no retry storm");
@@ -3165,7 +3237,7 @@ fn the_comment_thread_and_its_judgement_are_invalidated_together() {
     let (mut app, id) = readiness_app();
     app.cache_comments(id.clone(), Vec::new());
     app.begin_readiness();
-    app.apply_readiness(id.clone(), Ok(some_readiness()));
+    app.apply_readiness(id.clone(), 0, Ok(some_readiness()));
 
     // Editing the body or adding a comment invalidates the thread; the
     // judgement was derived from it, so it goes too.
@@ -3182,7 +3254,7 @@ fn fresh_data_clears_judgements_and_the_failure() {
     let (mut app, id) = readiness_app();
     app.cache_comments(id.clone(), Vec::new());
     app.begin_readiness();
-    app.apply_readiness(id, Err("boom".into()));
+    app.apply_readiness(id, 0, Err("boom".into()));
 
     app.set_data(one_repo(vec![labelled(1, &["bug"])]));
     assert!(
@@ -3197,7 +3269,7 @@ fn switching_org_clears_judgements() {
     let (mut app, id) = readiness_app();
     app.cache_comments(id.clone(), Vec::new());
     app.begin_readiness();
-    app.apply_readiness(id, Ok(some_readiness()));
+    app.apply_readiness(id, 0, Ok(some_readiness()));
 
     app.switch_org("other".into());
     app.set_data(one_repo(vec![labelled(1, &["bug"])]));
@@ -3222,7 +3294,7 @@ fn the_state_sent_is_the_selected_issues_own_text() {
         }],
     );
 
-    let (_id, state) = app.begin_readiness().expect("ask");
+    let (_id, state, _hash) = app.begin_readiness().expect("ask");
     assert_eq!(state["title"], "Upgrade Calico");
     assert_eq!(state["body"], "steps to reproduce");
     assert_eq!(state["recent_comments"][0], "blocked on #184");
@@ -3264,8 +3336,13 @@ fn shown(app: &App) -> Vec<u64> {
         .collect()
 }
 
-fn hits(ids: &[&str]) -> HashSet<String> {
+fn hit_ids(ids: &[&str]) -> HashSet<String> {
     ids.iter().map(|s| s.to_string()).collect()
+}
+
+/// Answers that make exactly `ids` hits: each scored well above the bar.
+fn hits(ids: &[&str]) -> HashMap<String, f64> {
+    ids.iter().map(|s| (s.to_string(), 0.95)).collect()
 }
 
 const QUERY: &str = "persistent disks becoming unwritable";
@@ -3283,6 +3360,54 @@ fn a_semantic_hit_widens_the_text_match() {
     let (g, _, _) = app.begin_semantic_search().expect("worth searching");
     app.apply_semantic_search(g, Ok(hits(&["I_1", "I_3"])));
     assert_eq!(shown(&app), vec![1, 3]);
+}
+
+#[test]
+fn kept_search_answers_are_not_sent_again_next_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = crate::cache::answers::search_path(tmp.path());
+    let session = || {
+        let mut app = search_app();
+        app.search_disk = crate::cache::answers::SearchCache::load(path.clone());
+        app.set_text_filter(QUERY.into());
+        app.rebuild_rows();
+        app
+    };
+
+    let mut first = session();
+    let (g, _, sent) = first.begin_semantic_search().unwrap();
+    let all = sent.len();
+    let mut scores = hits(&["I_1", "I_3"]);
+    for c in &sent {
+        scores.entry(c.id.clone()).or_insert(0.05);
+    }
+    first.apply_semantic_search(g, Ok(scores));
+
+    // Same query, same issues: settled from disk, nothing sent.
+    let mut second = session();
+    assert!(second.begin_semantic_search().is_none());
+    assert_eq!(shown(&second), vec![1, 3]);
+
+    // One issue edited: only it is sent, and the kept hits still count.
+    let mut third = session();
+    let two = third
+        .repos
+        .iter_mut()
+        .flat_map(|r| r.issues.iter_mut())
+        .find(|i| i.number == 2)
+        .unwrap();
+    two.body = "now about unwritable disks".into();
+    let edited = two.id.clone();
+    let (g, _, sent) = third.begin_semantic_search().unwrap();
+    assert_eq!(
+        sent.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+        vec![edited.clone()]
+    );
+    assert!(all > 1);
+    third.apply_semantic_search(g, Ok(hits(&[edited.as_str()])));
+    let mut now = shown(&third);
+    now.sort_unstable();
+    assert_eq!(now, vec![1, 2, 3]);
 }
 
 #[test]
@@ -3469,7 +3594,7 @@ fn a_landed_answer_replaces_the_hits() {
     app.filters.repo.clear();
     let (g, _, _) = app.begin_semantic_search().unwrap();
     app.apply_semantic_search(g, Ok(hits(&["I_3"])));
-    assert_eq!(app.filters.semantic_hits, hits(&["I_3"]));
+    assert_eq!(app.filters.semantic_hits, hit_ids(&["I_3"]));
 }
 
 #[test]
@@ -3497,7 +3622,7 @@ fn a_failure_latches_off_and_keeps_substring_results() {
 fn both_text_entry_points_clear_hits_and_can_search() {
     for kind in [InputKind::Search, InputKind::FilterField(0)] {
         let mut app = search_app();
-        app.filters.semantic_hits = hits(&["I_1"]);
+        app.filters.semantic_hits = hit_ids(&["I_1"]);
         app.apply_filter_input(kind, QUERY);
         assert_eq!(app.filters.text, QUERY, "{kind:?}");
         assert!(
@@ -3571,7 +3696,7 @@ fn zero_added_is_reported_not_hidden() {
     let mut app = consenting_search_app();
     app.set_text_filter(QUERY.into());
     let (g, _, _) = app.begin_semantic_search().unwrap();
-    app.apply_semantic_search(g, Ok(HashSet::new()));
+    app.apply_semantic_search(g, Ok(HashMap::new()));
     assert_eq!(app.semantic_indicator(), Some(SemanticIndicator::Added(0)));
 }
 
@@ -3682,7 +3807,7 @@ fn help_app_with_badge() -> App {
     let (mut app, id) = readiness_app();
     app.detail.open = true;
     app.focus = Focus::Detail;
-    app.apply_readiness(id, Ok(some_readiness()));
+    app.apply_readiness(id, 0, Ok(some_readiness()));
     app
 }
 
@@ -3930,7 +4055,7 @@ fn status_reports_a_failure_and_how_it_recovers() {
     // The badge fails independently, and recovers on the next refresh.
     let (mut r, id) = readiness_app();
     r.typesafe = Status::new(false, true, Some("k"));
-    r.apply_readiness(id, Err("x".into()));
+    r.apply_readiness(id, 0, Err("x".into()));
     let rows = status_of(&r, HelpTopic::Readiness);
     assert_eq!(rows[0].2, Tone::Failed);
     assert!(rows[0].1.contains("next refresh"), "{}", rows[0].1);
@@ -4037,7 +4162,7 @@ fn patch_removing_a_filtered_label_drops_the_row() {
 #[test]
 fn patch_invalidates_the_issues_readiness() {
     let (mut app, id) = readiness_app();
-    app.apply_readiness(id.clone(), Ok(some_readiness()));
+    app.apply_readiness(id.clone(), 0, Ok(some_readiness()));
     let patched = later(app.selected_issue().unwrap(), 1);
 
     assert!(app.patch_issue(patched));

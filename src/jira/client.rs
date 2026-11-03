@@ -718,11 +718,34 @@ impl crate::provider::IssueProvider for Client {
     fn rate_limit(&self) -> Option<RateLimitData> {
         self.rate_limit()
     }
+    fn host(&self) -> String {
+        site_host(&self.base_url)
+    }
     // supports_pr_summary defaults to false — Jira has no GitHub PR links.
+}
+
+/// `https://acme.atlassian.net/` → `acme.atlassian.net`: the site, for the
+/// cache key (#226).
+fn site_host(base_url: &str) -> String {
+    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest).to_string()
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_site_host_is_the_base_urls_authority() {
+        assert_eq!(
+            site_host("https://acme.atlassian.net"),
+            "acme.atlassian.net"
+        );
+        assert_eq!(
+            site_host("https://acme.atlassian.net/"),
+            "acme.atlassian.net"
+        );
+        assert_eq!(site_host("acme.atlassian.net"), "acme.atlassian.net");
+    }
+
     use super::*;
 
     fn sample_issue(extra: Value) -> Value {

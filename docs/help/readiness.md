@@ -33,7 +33,7 @@ Without both, there is no badge and nothing is sent. The line appears once the t
 
 ## What is sent
 
-The title, the first 4000 characters of the body, the last 10 comments cut to 500 characters each, and the true comment count. Never the org or repo name. Nothing is written to disk; answers live for the session.
+The title, the first 4000 characters of the body, the last 10 comments cut to 500 characters each, and the true comment count. Never the org or repo name. Answers are kept in `~/.cache/gh-issues/` (unless `cache = false`), so a ticket that has not changed is not sent again.
 
 ## Good to know
 

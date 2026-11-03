@@ -2,10 +2,11 @@
 
 use super::prelude::*;
 
-/// Refetch the whole org at the wanted scope: create and move, which change
-/// which issues exist or where. Becomes the loaded scope when it lands.
+/// Refetch the whole org: create and org switch, which change which issues
+/// exist. At [`App::refresh_scope`], so it never fetches less than is loaded
+/// (#226). Becomes the loaded scope when it lands.
 pub(crate) fn spawn_fetch(client: &Provider, app: &mut App, tx: &mpsc::UnboundedSender<AppEvent>) {
-    let scope = app.wanted_scope();
+    let scope = app.refresh_scope();
     app.begin_fetch(Loaded {
         scope: scope.clone(),
         repo: None,
@@ -13,15 +14,38 @@ pub(crate) fn spawn_fetch(client: &Provider, app: &mut App, tx: &mpsc::Unbounded
     send_org_fetch(client, app.org.clone(), scope, tx);
 }
 
-/// Refetch the filtered scope at the wanted scope (#229, #230): the one repo
-/// an exact repo filter names, otherwise the org. Startup, org switch,
-/// `Ctrl+R`, auto-refresh and auto-widen all land here.
+/// Refetch the filtered scope (#229, #230): the one repo an exact repo filter
+/// names, otherwise the org, at [`App::refresh_scope`] (#226). Startup,
+/// `Ctrl+R` and auto-widen land here; auto-refresh is [`spawn_org_refresh`].
 pub(crate) fn spawn_filtered_fetch(
     client: &Provider,
     app: &mut App,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
-    let target = app.wanted();
+    let wanted = app.wanted();
+    let target = Loaded {
+        scope: app.refresh_scope(),
+        repo: wanted.repo,
+    };
+    begin(client, app, target, tx);
+}
+
+/// Auto-refresh (#226, ADR 0010): the whole org, at a scope covering both
+/// what is loaded and what the filters want, so the snapshot stays fresh for
+/// the next start even while you sit on one repo.
+pub(crate) fn spawn_org_refresh(
+    client: &Provider,
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let target = Loaded {
+        scope: app.refresh_scope(),
+        repo: None,
+    };
+    begin(client, app, target, tx);
+}
+
+fn begin(client: &Provider, app: &mut App, target: Loaded, tx: &mpsc::UnboundedSender<AppEvent>) {
     app.begin_fetch(target.clone());
     let org = app.org.clone();
     match target.repo {
@@ -54,7 +78,8 @@ pub(crate) fn refetch_if_widened(
         return;
     }
     app.loading = true;
-    app.status = Some("filters widened, refreshing…".into());
+    // A load of data the list does not hold, not a refresh (#226).
+    app.status = Some("filters widened, loading…".into());
     spawn_filtered_fetch(client, app, tx);
 }
 
@@ -216,7 +241,7 @@ pub(crate) fn spawn_readiness(
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let Some(reader) = reader else { return };
-    let Some((issue_id, state)) = app.begin_readiness() else {
+    let Some((issue_id, state, hash)) = app.begin_readiness() else {
         return;
     };
     let reader = reader.clone();
@@ -225,7 +250,11 @@ pub(crate) fn spawn_readiness(
         let result = crate::typesafe::readiness::assess(&reader, state)
             .await
             .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::Readiness { issue_id, result });
+        let _ = tx.send(AppEvent::Readiness {
+            issue_id,
+            hash,
+            result,
+        });
     });
 }
 
@@ -248,7 +277,7 @@ pub(crate) fn spawn_semantic_search(
     let reader = reader.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
-        let result = crate::typesafe::search::search(&reader, &query, &candidates)
+        let result = crate::typesafe::search::score(&reader, &query, &candidates)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::SemanticSearch { generation, result });
@@ -379,8 +408,8 @@ pub(crate) fn spawn_runs(
 /// [`with_issue_patch`] instead, which patches the list in place (#196).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AfterMutation {
-    /// The mutation changed which issues exist or where they live (create,
-    /// move to another repo) — refetch the org.
+    /// The mutation changed which issues exist (create) — refetch the org.
+    /// A move no longer does: it places the moved issue (#226).
     RefetchOrg,
     /// A comment was added: bump the list's count, refetch the thread.
     CommentAdded,
@@ -428,6 +457,30 @@ pub(crate) fn with_issue_patch<F, Fut>(
     mutate_selected(app, client, tx, op, move |_, issue| {
         AppEvent::IssuePatched {
             msg: done_msg.into(),
+            issue: Box::new(issue),
+        }
+    });
+}
+
+/// Move the selected issue (#226): like [`with_issue_patch`], but the issue
+/// that comes back may have a new id and lives in `target`, so it lands as
+/// `IssueMoved` and is placed rather than patched. No org refetch.
+pub(crate) fn with_issue_move<F, Fut>(
+    app: &mut App,
+    client: &Provider,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    done_msg: impl Into<String> + Send + 'static,
+    target: String,
+    op: F,
+) where
+    F: FnOnce(Provider, String) -> Fut + Send + 'static,
+    Fut: Future<Output = crate::provider::error::Result<Issue>> + Send,
+{
+    mutate_selected(app, client, tx, op, move |from_id, issue| {
+        AppEvent::IssueMoved {
+            msg: done_msg.into(),
+            from_id,
+            target,
             issue: Box::new(issue),
         }
     });

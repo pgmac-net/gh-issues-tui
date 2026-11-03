@@ -5,10 +5,11 @@
 //! but must never leave out an issue the filters would show (ADR 0008).
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Parameters pushed down to the backend. GitHub honours all of them via
 /// `filterBy`; Linear and Jira use `include_closed` only and ignore the rest.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FetchScope {
     pub include_closed: bool,
     /// Issues assigned to this login.
@@ -47,6 +48,40 @@ impl FetchScope {
                         .labels
                         .iter()
                         .all(|w| self.labels.iter().any(|h| h.eq_ignore_ascii_case(w)))))
+    }
+
+    /// The narrowest scope that covers both `self` and `other` (#226), so a
+    /// refresh never fetches less than the list already holds. A login is
+    /// kept only when both name the same one; labels are any-of, so the
+    /// union of two label sets is both sets, and an empty set is no label
+    /// pushdown at all.
+    #[must_use]
+    pub fn union(&self, other: &FetchScope) -> FetchScope {
+        let login = |a: &Option<String>, b: &Option<String>| match (a, b) {
+            (Some(a), Some(b)) if a.eq_ignore_ascii_case(b) => Some(a.clone()),
+            _ => None,
+        };
+        let labels = if self.labels.is_empty() || other.labels.is_empty() {
+            Vec::new()
+        } else {
+            let mut labels = self.labels.clone();
+            for l in &other.labels {
+                if !labels.iter().any(|h| h.eq_ignore_ascii_case(l)) {
+                    labels.push(l.clone());
+                }
+            }
+            labels
+        };
+        FetchScope {
+            include_closed: self.include_closed || other.include_closed,
+            assignee: login(&self.assignee, &other.assignee),
+            author: login(&self.author, &other.author),
+            updated_since: match (self.updated_since, other.updated_since) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                _ => None,
+            },
+            labels,
+        }
     }
 }
 
@@ -124,5 +159,80 @@ mod tests {
         assert!(!one.covers(&two));
         assert!(!two.covers(&other));
         assert!(!two.covers(&FetchScope::default()));
+    }
+
+    /// Every pair of these, unioned, covers both inputs (#226).
+    fn samples() -> Vec<FetchScope> {
+        let login = |s: &str| Some(s.to_string());
+        vec![
+            FetchScope::default(),
+            FetchScope {
+                include_closed: true,
+                ..FetchScope::default()
+            },
+            FetchScope {
+                assignee: login("pgmac"),
+                ..FetchScope::default()
+            },
+            FetchScope {
+                assignee: login("PGMAC"),
+                author: login("bot"),
+                ..FetchScope::default()
+            },
+            FetchScope {
+                author: login("other"),
+                updated_since: at("2026-10-01T00:00:00Z"),
+                ..FetchScope::default()
+            },
+            FetchScope {
+                updated_since: at("2026-11-01T00:00:00Z"),
+                labels: vec!["high".into(), "priority:high".into()],
+                ..FetchScope::default()
+            },
+            FetchScope {
+                labels: vec!["low".into()],
+                include_closed: true,
+                ..FetchScope::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn a_union_covers_both_of_its_inputs() {
+        for a in samples() {
+            for b in samples() {
+                let u = a.union(&b);
+                assert!(u.covers(&a), "{u:?} should cover {a:?}");
+                assert!(u.covers(&b), "{u:?} should cover {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_union_with_itself_or_a_narrower_scope_changes_nothing() {
+        let wide = FetchScope {
+            include_closed: true,
+            ..FetchScope::default()
+        };
+        let narrow = FetchScope {
+            assignee: Some("pgmac".into()),
+            ..FetchScope::default()
+        };
+        assert_eq!(wide.union(&wide), wide);
+        assert_eq!(wide.union(&narrow), wide);
+        assert_eq!(narrow.union(&narrow), narrow);
+    }
+
+    #[test]
+    fn label_sets_merge_without_case_duplicates() {
+        let a = FetchScope {
+            labels: vec!["high".into()],
+            ..FetchScope::default()
+        };
+        let b = FetchScope {
+            labels: vec!["HIGH".into(), "low".into()],
+            ..FetchScope::default()
+        };
+        assert_eq!(a.union(&b).labels, vec!["high".to_string(), "low".into()]);
     }
 }
