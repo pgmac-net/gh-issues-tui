@@ -32,4 +32,14 @@ Terms used across this repo's code and docs.
 
 ## Detail pane
 
-**Fold** is comments and tree nodes in the detail pane. **Collapse** is repo groups in the list.
+**Fold** is comments and tree nodes in the detail pane. **Collapse** is repo groups and sub-issue parents in the list.
+
+## Sub-issues (#234)
+
+**Sub-issue**: an issue with a parent issue, which nests under it in the list. It is the only link that nests; dependencies (blocked by / blocking) and related links are counted in the detail pane. *Avoid*: "linked issue" for a sub-issue, since that covers all three.
+
+**Ancestry**: an issue's parent, grandparent, and so on, nearest first (`Issue.ancestors`), fetched with the issue.
+
+**Context row**: an ancestor drawn dim above its sub-issues because it is not itself a visible issue of the group: filtered out, in another repo, or not loaded. Never counted. *Avoid*: "ghost row".
+
+**Stub**: a context row whose issue is not loaded, known only from a descendant's ancestry. Read-only; `o` opens it.
