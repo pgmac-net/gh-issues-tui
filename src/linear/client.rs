@@ -877,6 +877,9 @@ impl crate::provider::IssueProvider for Client {
     fn rate_limit(&self) -> Option<RateLimitData> {
         self.rate_limit()
     }
+    fn host(&self) -> String {
+        "linear.app".into()
+    }
     // supports_pr_summary defaults to false — Linear has no GitHub PR links.
     fn supports_move(&self) -> bool {
         true

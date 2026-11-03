@@ -1763,6 +1763,10 @@ impl crate::provider::IssueProvider for Client {
         self.rate_limit()
     }
 
+    fn host(&self) -> String {
+        "github.com".into()
+    }
+
     fn supports_pr_summary(&self) -> bool {
         true
     }

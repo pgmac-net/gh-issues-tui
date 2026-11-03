@@ -154,6 +154,10 @@ pub struct RunConfig {
     pub restore_layout: bool,
     /// `--fresh`: start this session clean. Still saves on the way out.
     pub fresh: bool,
+    /// Config `cache`: keep a snapshot and Jev answers on disk (#226).
+    pub cache: bool,
+    /// `--no-cache`: wipe this org's cache before the first load.
+    pub no_cache: bool,
     /// The backend's name, recorded in the saved layout: issue ids differ
     /// between backends, so another backend's file is ignored.
     pub provider: String,
@@ -184,6 +188,8 @@ async fn event_loop(
         hide_empty_repos,
         restore_layout,
         fresh,
+        cache: _cache,
+        no_cache: _no_cache,
         provider,
         copy_format,
         theme,

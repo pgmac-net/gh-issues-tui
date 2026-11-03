@@ -215,7 +215,7 @@ fn request_body(state: Value) -> Value {
 /// The five probabilities, as answered. Raw on purpose: the policy in
 /// [`Readiness::verdict`] is a pure function over them, so changing a
 /// threshold or the badge wording never needs a new request.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Readiness {
     pub specifics: f64,
     pub criteria: f64,

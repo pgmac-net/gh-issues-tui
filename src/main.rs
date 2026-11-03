@@ -1,3 +1,4 @@
+mod cache;
 mod codespan;
 mod config;
 mod cwd_repo;
@@ -43,6 +44,11 @@ struct Cli {
     /// layout is still saved on the way out.
     #[arg(long)]
     fresh: bool,
+
+    /// Wipe this org's cached snapshot and Jev answers, then start as on a
+    /// first run. The cache is rebuilt as you go unless `cache = false`.
+    #[arg(long)]
+    no_cache: bool,
 }
 
 fn install_panic_hook() {
@@ -122,6 +128,8 @@ async fn main() -> Result<()> {
             hide_empty_repos: cfg.hide_empty_repos,
             restore_layout: cfg.restore_layout,
             fresh: cli.fresh,
+            cache: cfg.cache,
+            no_cache: cli.no_cache,
             provider: provider_name,
             copy_format: cfg.copy_format,
             theme,

@@ -288,6 +288,9 @@ mod tests {
         async fn create_issue(&self, _: &NewIssueParams) -> Result<(u64, String)> {
             unimplemented!()
         }
+        fn host(&self) -> String {
+            String::new()
+        }
         fn rate_limit(&self) -> Option<RateLimitData> {
             None
         }

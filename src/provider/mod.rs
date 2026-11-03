@@ -98,6 +98,10 @@ pub trait IssueProvider: Send + Sync {
     /// The most recently observed rate limit state, if the provider tracks one.
     fn rate_limit(&self) -> Option<RateLimitData>;
 
+    /// The host this backend talks to, which with the provider name and org
+    /// keys the on-disk cache (#226): two Jira sites can share a project key.
+    fn host(&self) -> String;
+
     /// Capability probe for [`IssueProvider::pull_request`]. The UI checks
     /// this before offering the PR-summary popup.
     fn supports_pr_summary(&self) -> bool {
@@ -266,6 +270,9 @@ mod tests {
         }
         async fn create_issue(&self, _: &NewIssueParams) -> Result<(u64, String)> {
             Ok((0, String::new()))
+        }
+        fn host(&self) -> String {
+            String::new()
         }
         fn rate_limit(&self) -> Option<RateLimitData> {
             None
