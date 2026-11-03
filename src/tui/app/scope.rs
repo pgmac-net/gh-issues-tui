@@ -7,6 +7,7 @@
 //! refetches the filtered scope once. Glossary: `CONTEXT.md`.
 
 use chrono::{Local, TimeZone};
+use serde::{Deserialize, Serialize};
 
 use super::prelude::*;
 use super::refresh::FetchTarget;
@@ -14,7 +15,7 @@ use crate::provider::scope::FetchScope;
 
 /// What a fetch asked for: the backend scope, and the one repo it was
 /// narrowed to (`None` is the whole org).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Loaded {
     pub scope: FetchScope,
     pub repo: Option<String>,
