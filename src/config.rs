@@ -30,6 +30,12 @@ pub struct Config {
     #[serde(default = "refresh_interval_default")]
     pub refresh_interval: u64,
 
+    /// Resume where you left off: filters, sort, collapsed groups, the
+    /// selected issue and the detail pane are saved on exit and restored on
+    /// the next start (#236). `false` neither restores nor saves.
+    #[serde(default = "restore_layout_default")]
+    pub restore_layout: bool,
+
     /// Hide repo groups with no visible issues (the default). The filter
     /// editor can flip this per session; clearing filters restores it.
     #[serde(default = "hide_empty_repos_default")]
@@ -241,6 +247,10 @@ fn hide_empty_repos_default() -> bool {
     true
 }
 
+fn restore_layout_default() -> bool {
+    true
+}
+
 fn copy_format_default() -> String {
     "{owner}/{repo}#{number}".to_string()
 }
@@ -252,6 +262,7 @@ impl Default for Config {
             provider: None,
             default_collapsed: true,
             refresh_interval: refresh_interval_default(),
+            restore_layout: true,
             hide_empty_repos: true,
             color_profile: None,
             copy_format: copy_format_default(),
@@ -405,6 +416,18 @@ mod tests {
         std::fs::write(&path, "refresh_interval = 0\n").unwrap();
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.refresh_interval, 0);
+    }
+
+    #[test]
+    fn restore_layout_defaults_on_and_can_be_turned_off() {
+        assert!(Config::default().restore_layout);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(Config::load_from(&path).unwrap().restore_layout, "no file");
+        std::fs::write(&path, "refresh_interval = 60\n").unwrap();
+        assert!(Config::load_from(&path).unwrap().restore_layout, "unset");
+        std::fs::write(&path, "restore_layout = false\n").unwrap();
+        assert!(!Config::load_from(&path).unwrap().restore_layout);
     }
 
     #[test]
