@@ -3137,6 +3137,50 @@ fn readiness_is_asked_for_once_per_issue() {
 }
 
 #[test]
+fn a_move_places_the_returned_issue_and_the_selection_follows() {
+    let mut app = two_repo_app();
+    app.collapsed.clear();
+    app.rebuild_rows();
+    select_issue(&mut app, "I_1");
+    let before = app.data_gen;
+    // GitHub gives a transferred issue a new id and number.
+    let moved = Issue {
+        url: "https://github.com/o/beta/issues/9".into(),
+        ..issue(9, "first bug", IssueState::Open)
+    };
+    assert!(app.apply_move("I_1", "beta", moved));
+    let ids = |repo: &str| -> Vec<String> {
+        app.repos
+            .iter()
+            .find(|r| r.repo == repo)
+            .unwrap()
+            .issues
+            .iter()
+            .map(|i| i.id.clone())
+            .collect()
+    };
+    assert!(!ids("alpha").contains(&"I_1".to_string()));
+    assert!(ids("beta").contains(&"I_9".to_string()));
+    assert_eq!(app.selected_issue().unwrap().id, "I_9");
+    assert!(app.data_gen > before, "the snapshot saves the move");
+}
+
+#[test]
+fn a_move_into_a_repo_not_loaded_creates_its_group() {
+    let mut app = two_repo_app();
+    let moved = Issue {
+        url: "https://github.com/o/gamma/issues/1".into(),
+        ..issue(10, "first bug", IssueState::Open)
+    };
+    app.apply_move("I_1", "gamma", moved);
+    let g = app.repos.iter().find(|r| r.repo == "gamma").unwrap();
+    assert_eq!(g.repo_url, "https://github.com/o/gamma");
+    assert_eq!(g.issues[0].id, "I_10");
+    let names: Vec<_> = app.repos.iter().map(|r| r.repo.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "beta", "gamma"], "name order kept");
+}
+
+#[test]
 fn a_kept_judgement_is_reused_next_session_until_its_source_changes() {
     let tmp = tempfile::tempdir().unwrap();
     let path = crate::cache::answers::readiness_path(tmp.path());

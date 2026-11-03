@@ -565,7 +565,11 @@ impl Client {
     /// depends on, survive the transfer instead of being silently dropped.
     /// GitHub only allows same-owner transfers, so `target` is always one
     /// of the org's already-loaded repos.
-    pub async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<()> {
+    ///
+    /// Returns the issue as it is after the move (#226), so the list patches
+    /// it in place instead of refetching the org. A transfer gives the issue a
+    /// new node id and number in the target repo.
+    pub async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<Issue> {
         let data = self
             .graphql(
                 "query($owner: String!, $name: String!) {
@@ -579,16 +583,13 @@ impl Client {
             .and_then(Value::as_str)
             .ok_or_else(|| ProviderError::Shape(format!("no repository {org}/{target}")))?
             .to_string();
-        self.graphql(
-            "mutation($id: ID!, $repo: ID!) {
-               transferIssue(input: {issueId: $id, repositoryId: $repo, createLabelsIfMissing: true}) {
-                 clientMutationId
-               }
-             }",
-            json!({ "id": issue_id, "repo": repo_id }),
-        )
-        .await
-        .map(drop)
+        let data = self
+            .graphql(
+                TRANSFER_ISSUE_MUTATION,
+                json!({ "id": issue_id, "repo": repo_id }),
+            )
+            .await?;
+        issue_from_payload(&data, "transferIssue")
     }
 
     /// Everything the new-issue form's pickers need, in one query (plus a
@@ -1184,6 +1185,12 @@ const CLOSE_ISSUE_MUTATION: &str = concat!(
 
 const REOPEN_ISSUE_MUTATION: &str = concat!(
     "mutation($id: ID!) { reopenIssue(input: {issueId: $id}) { ",
+    mutated_issue_fields!(),
+    " } }"
+);
+
+const TRANSFER_ISSUE_MUTATION: &str = concat!(
+    "mutation($id: ID!, $repo: ID!) { transferIssue(input: {issueId: $id, repositoryId: $repo, createLabelsIfMissing: true}) { ",
     mutated_issue_fields!(),
     " } }"
 );
@@ -1809,7 +1816,7 @@ impl crate::provider::IssueProvider for Client {
         true
     }
 
-    async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<()> {
+    async fn move_issue(&self, issue_id: &str, org: &str, target: &str) -> Result<Issue> {
         self.move_issue(issue_id, org, target).await
     }
 }
@@ -2101,6 +2108,8 @@ mod tests {
             CLOSE_ISSUE_MUTATION,
             REOPEN_ISSUE_MUTATION,
             UPDATE_ISSUE_MUTATION,
+            // #226: a move is placed from its answer, not an org refetch.
+            TRANSFER_ISSUE_MUTATION,
         ] {
             for field in [
                 "issue {",

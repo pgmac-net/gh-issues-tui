@@ -72,6 +72,14 @@ pub enum AppEvent {
         msg: String,
         issue: Box<Issue>,
     },
+    /// A move landed (#226): the issue as it is in `target`, which replaces
+    /// the copy under `from_id`.
+    IssueMoved {
+        msg: String,
+        from_id: String,
+        target: String,
+        issue: Box<Issue>,
+    },
     MutationFailed(String),
     /// Per-repo picker options for the new-issue form.
     FormOptions {
@@ -731,6 +739,23 @@ pub(crate) fn handle_app_event(
                 msg
             } else {
                 format!("{msg} (no longer listed)")
+            });
+            spawn_label_ranks(app, ranker, tx);
+        }
+        AppEvent::IssueMoved {
+            msg,
+            from_id,
+            target,
+            issue,
+        } => {
+            let mut listed = false;
+            nav(app, client, tx, |app| {
+                listed = app.apply_move(&from_id, &target, *issue);
+            });
+            app.status = Some(if listed {
+                msg
+            } else {
+                format!("{msg} (not shown under the current filters)")
             });
             spawn_label_ranks(app, ranker, tx);
         }

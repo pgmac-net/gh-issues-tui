@@ -71,12 +71,12 @@ fn confirm_move(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender<App
     let org = app.org.clone();
     let target = pending.target.clone();
     let msg = format!("moved to {target}");
-    with_issue(
+    with_issue_move(
         app,
         client,
         tx,
         msg,
-        AfterMutation::RefetchOrg,
+        target.clone(),
         move |c, id| async move { c.move_issue(&id, &org, &target).await },
     );
 }

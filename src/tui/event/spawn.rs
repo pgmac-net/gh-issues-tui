@@ -407,8 +407,8 @@ pub(crate) fn spawn_runs(
 /// [`with_issue_patch`] instead, which patches the list in place (#196).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AfterMutation {
-    /// The mutation changed which issues exist or where they live (create,
-    /// move to another repo) — refetch the org.
+    /// The mutation changed which issues exist (create) — refetch the org.
+    /// A move no longer does: it places the moved issue (#226).
     RefetchOrg,
     /// A comment was added: bump the list's count, refetch the thread.
     CommentAdded,
@@ -456,6 +456,30 @@ pub(crate) fn with_issue_patch<F, Fut>(
     mutate_selected(app, client, tx, op, move |_, issue| {
         AppEvent::IssuePatched {
             msg: done_msg.into(),
+            issue: Box::new(issue),
+        }
+    });
+}
+
+/// Move the selected issue (#226): like [`with_issue_patch`], but the issue
+/// that comes back may have a new id and lives in `target`, so it lands as
+/// `IssueMoved` and is placed rather than patched. No org refetch.
+pub(crate) fn with_issue_move<F, Fut>(
+    app: &mut App,
+    client: &Provider,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    done_msg: impl Into<String> + Send + 'static,
+    target: String,
+    op: F,
+) where
+    F: FnOnce(Provider, String) -> Fut + Send + 'static,
+    Fut: Future<Output = crate::provider::error::Result<Issue>> + Send,
+{
+    mutate_selected(app, client, tx, op, move |from_id, issue| {
+        AppEvent::IssueMoved {
+            msg: done_msg.into(),
+            from_id,
+            target,
             issue: Box::new(issue),
         }
     });

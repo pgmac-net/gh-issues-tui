@@ -128,7 +128,9 @@ pub trait IssueProvider: Send + Sync {
     /// provider's nearest grouping concept — same meaning as
     /// [`RepoIssues::repo`]) within the same org. Capability method — only
     /// meaningful when [`IssueProvider::supports_move`] is `true`.
-    async fn move_issue(&self, _issue_id: &str, _org: &str, _target: &str) -> Result<()> {
+    /// Move an issue to another repo (team), returning it as it is after the
+    /// move (#226): possibly a new id and number. Not every backend can.
+    async fn move_issue(&self, _issue_id: &str, _org: &str, _target: &str) -> Result<Issue> {
         Err(ProviderError::Unsupported("moving issues between repos"))
     }
 
