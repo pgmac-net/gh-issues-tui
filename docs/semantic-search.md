@@ -82,7 +82,9 @@ to ask, and asks only then:
 
 Narrowing a filter never re-sends: every remaining issue was already judged. A
 response overtaken by a newer query, a cleared filter or an org switch is
-dropped. One failure turns semantic search off for the session, with one status
+dropped. Since #226, answers are also kept on disk for the last 20 queries per
+org, under the hash of each exact request, so only issues without a kept answer
+are sent; when all have one, nothing is (see [caching.md](caching.md)). One failure turns semantic search off for the session, with one status
 message.
 
 ## The shape, and how it was found

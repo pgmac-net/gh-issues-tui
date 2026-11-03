@@ -27,8 +27,8 @@ Linear and Jira accept `FetchScope` and use only `include_closed`.
 
 - `App.loaded: Option<Loaded>` records the scope and the repo (`None` = org) the data was fetched for. A fetch records its target with `begin_fetch`, and `finish_fetch` promotes it when the fetch lands successfully. Partial `r` refreshes never begin one: they reuse `loaded_scope()`.
 - `Loaded::covers(wanted)` decides whether the loaded data can serve the current filters.
-- `refetch_if_widened` runs after every key and every event. It refetches the filtered scope once when the filters reach past `loaded`, and only when nothing is in flight, nothing is rate-limited, and the mode is Normal or the filter menu. Status: `filters widened, refreshing…`.
-- Narrowing (e.g. adding an assignee) is instant. The next `Ctrl+R` or auto-refresh fetches at the narrower scope, which is when the payload shrinks.
+- `refetch_if_widened` runs after every key and every event. It refetches the filtered scope once when the filters reach past `loaded`, and only when nothing is in flight, nothing is rate-limited, and the mode is Normal or the filter menu. Status: `filters widened, loading…` (#226: a load of data the list does not hold, not a refresh). Before it, `CacheIo::widen_from_snapshot` folds in the on-disk snapshot when that covers the new filters, and nothing is fetched. See [caching.md](caching.md).
+- Narrowing (e.g. adding an assignee) is instant. Since #226 a refresh no longer shrinks to the narrower scope: `Ctrl+R` and auto-refresh fetch at `App::refresh_scope`, the filters' scope united with the loaded one, so toggling a filter back fetches nothing. The payload shrinks again after `w` or a restart with `--no-cache`.
 - Showing closed issues is just a widen. The old one-off `include_closed` upgrade in `f` is gone.
 
 ## Startup inside a clone

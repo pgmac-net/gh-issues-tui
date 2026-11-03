@@ -18,7 +18,7 @@ There was no way to move an issue filed in the wrong repo to the right one witho
 ## Fix
 
 **`src/provider/mod.rs`**
-- New capability pair on `IssueProvider`, mirroring `supports_pr_summary`/`pull_request`: `supports_move() -> bool` (default `false`) and `move_issue(issue_id, org, target) -> Result<()>` (default `Err(ProviderError::Unsupported(...))`).
+- New capability pair on `IssueProvider`, mirroring `supports_pr_summary`/`pull_request`: `supports_move() -> bool` (default `false`) and `move_issue(issue_id, org, target) -> Result<()>` (since #226: `Result<Issue>`, the issue after the move) (default `Err(ProviderError::Unsupported(...))`).
 
 **`src/github/client.rs`**
 - `Client::move_issue`: looks up `repository(owner:,name:){id}` for the target, then `transferIssue(input: {issueId, repositoryId, createLabelsIfMissing: true})`.
@@ -76,3 +76,7 @@ Full suite: 507 passed (500 pre-existing + 7 new). `cargo clippy --all-targets -
 ## Deviations from plan
 
 - The plan's test list included "GitHub/Linear mutation payload shape" tests. Skipped — see the Tests section above; no other capability method in this repo has that kind of test, and adding one only for `move_issue` isn't parity, it's new infrastructure for one method.
+
+## Update (#226): no org refetch
+
+A move used to finish with `AfterMutation::RefetchOrg`. It now returns the issue as it is after the move (GitHub's `transferIssue` selects the full issue field set; Linear reuses `issue_update`), and `AppEvent::IssueMoved` → `App::apply_move` drops the old id and inserts the returned issue into the target group, creating the group when it was not loaded (its URL taken from the issue's). GitHub gives a transferred issue a new id and number, so the selection follows the new id. The snapshot cache saves the result like any settle. See [caching.md](caching.md).

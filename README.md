@@ -20,6 +20,7 @@ gh-issues --org my-org          # open issues only (default)
 gh-issues --org my-org --all    # include closed issues in the initial fetch
 gh-issues                       # inside a repo clone: that repo's owner, filtered to the repo
 gh-issues --refresh 60          # auto-refresh every 60 seconds (0 disables)
+gh-issues --no-cache            # forget this org's cached issues and start cold
 gh-issues --fresh               # start clean instead of resuming where you left off
 gh-issues --provider github     # issue backend (default: github; currently the only one)
 ```
@@ -109,6 +110,7 @@ provider = "github"         # issue backend (default: "github"; currently the on
 default_collapsed = false   # start with repo groups expanded (default: true)
 refresh_interval = 300      # seconds between auto-refreshes, 0 disables (default: 300)
 restore_layout = true       # resume where you left off, and save where you are (default: true)
+cache = true                # keep the last loaded issues on disk and draw them at start (default: true)
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
 copy_format = "{owner}/{repo}#{number}"   # `y` clipboard format (default shown)
 infer_priority_ranks = false              # rank non-`priority:` labels (P0, sev1…); needs TYPESAFE_API_KEY (default: false)
@@ -191,11 +193,17 @@ Sub-issues nest under their parent in the list, to any depth, with `▾`/`▸` t
 
 ### Filters and fetching
 
-On GitHub, the state, assignee, author and "updated after" filters, plus the priority **or** status filter (not both at once), are sent with the fetch, so a refresh brings back only matching issues. Narrowing a filter applies instantly from what is already loaded. Widening one past what was fetched (clearing the assignee, an earlier date, showing closed issues) refetches once by itself, with the status line `filters widened, refreshing…`. What is shown is always decided by the filters in the app, so the list is the same either way, just smaller to fetch. The filter pickers offer every repo, person and label seen this session, not only those in the current results. Linear and Jira fetch as before, filtering in the app. Full detail: [docs/filter-pushdown.md](docs/filter-pushdown.md).
+On GitHub, the state, assignee, author and "updated after" filters, plus the priority **or** status filter (not both at once), are sent with the fetch, so a refresh brings back only matching issues. Narrowing a filter applies instantly from what is already loaded. Widening one past what was fetched (clearing the assignee, an earlier date, showing closed issues) is served from the cache when the cache holds it, and otherwise fetches once by itself, with the status line `filters widened, loading…`. A refresh never fetches less than is loaded, so toggling a filter back and forth fetches at most once. What is shown is always decided by the filters in the app, so the list is the same either way, just smaller to fetch. The filter pickers offer every repo, person and label seen this session, not only those in the current results. Linear and Jira fetch as before, filtering in the app. Full detail: [docs/filter-pushdown.md](docs/filter-pushdown.md).
+
+### Caching
+
+The last loaded issues of each org are kept on disk, so the next start draws the list at once (about 0.3 s instead of 7.5 s on a 200-issue org). The info bar says `cached 2h ago · refreshing…` while the app asks the backend in the background, which always happens. If that fails, the cached list stays usable and the bar says `refresh failed`. Edits still go straight to the backend; the cache only follows. With `send_issue_text` on, readiness and search answers are kept too, so an unchanged issue is not sent to Jev again.
+
+Files live in `~/.cache/gh-issues/<provider>@<host>/<org>/` (`$XDG_CACHE_HOME` is honoured; `~/Library/Caches/gh-issues/` on macOS, `%LOCALAPPDATA%\gh-issues\` on Windows). They hold your issues' titles and bodies, so they are private to your user (`0600`). `--no-cache` wipes one org's cache and starts cold; `cache = false` in the config turns it off. Full detail: [docs/caching.md](docs/caching.md).
 
 ### Auto-refresh
 
-The issue list refetches the filtered scope (as `Ctrl+R` does) every `refresh_interval` seconds (default 5 minutes) so new and updated issues appear without a key press. The `--refresh <SECS>` flag overrides the config value; `0` disables it. A background refresh keeps your selection on the same issue and skips a beat while a fetch is already running, the API is rate-limited, or you are mid-edit (typing in an input, a menu, or a confirmation).
+The issue list refetches the whole org every `refresh_interval` seconds (default 5 minutes) so new and updated issues appear without a key press, and the cache stays fresh for the next start even while a repo filter is on. The `--refresh <SECS>` flag overrides the config value; `0` disables it. A background refresh keeps your selection on the same issue and skips a beat while a fetch is already running, the API is rate-limited, or you are mid-edit (typing in an input, a menu, or a confirmation).
 
 ### Clipboard
 
