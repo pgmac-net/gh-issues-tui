@@ -457,6 +457,7 @@ impl Client {
             users: users.into_iter().map(IdDisplayName::into_id_name).collect(),
             milestones: Vec::new(),
             projects,
+            projects_unavailable: None,
             issue_types: Vec::new(),
         })
     }

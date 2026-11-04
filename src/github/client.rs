@@ -592,9 +592,10 @@ impl Client {
         issue_from_payload(&data, "transferIssue")
     }
 
-    /// Everything the new-issue form's pickers need, in one query (plus a
-    /// separate, failure-tolerant issue-types query — that field is an org
-    /// feature not available for every owner and must not kill the form).
+    /// Everything the new-issue form's pickers need, in one query (plus
+    /// separate, failure-tolerant issue-types and projects queries — issue
+    /// types are an org feature not available for every owner, and projects
+    /// need the `read:project` scope; neither may kill the form, #253).
     pub async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions> {
         let data = self
             .graphql(
@@ -604,7 +605,6 @@ impl Client {
                      labels(first: 100, orderBy: {field: NAME, direction: ASC}) { nodes { id name } }
                      assignableUsers(first: 100) { nodes { id login } }
                      milestones(first: 50, states: [OPEN], orderBy: {field: DUE_DATE, direction: ASC}) { nodes { id title } }
-                     projectsV2(first: 50) { nodes { id title } }
                    }
                  }",
                 json!({ "owner": org, "name": repo }),
@@ -622,9 +622,12 @@ impl Client {
         let labels: Vec<IdName> = parse_at(&data, &["repository", "labels", "nodes"])?;
         let users: Vec<IdLogin> = parse_at(&data, &["repository", "assignableUsers", "nodes"])?;
         let milestones: Vec<IdTitle> = parse_at(&data, &["repository", "milestones", "nodes"])?;
-        let projects: Vec<IdTitle> = parse_at(&data, &["repository", "projectsV2", "nodes"])?;
 
         let issue_types = self.issue_types(org, repo).await.unwrap_or_default();
+        let (projects, projects_unavailable) = match self.repo_projects(org, repo).await {
+            Ok(p) => (p, None),
+            Err(e) => (Vec::new(), Some(projects_unavailable_reason(&e))),
+        };
 
         Ok(FormOptions {
             repo_id,
@@ -632,8 +635,26 @@ impl Client {
             users: users.into_iter().map(IdLogin::into_id_name).collect(),
             milestones: milestones.into_iter().map(IdTitle::into_id_name).collect(),
             projects: projects.into_iter().map(IdTitle::into_id_name).collect(),
+            projects_unavailable,
             issue_types,
         })
+    }
+
+    /// The repo's ProjectsV2, in a query of their own: the `projectsV2` field
+    /// needs the `read:project` scope, and GitHub fails a whole query that
+    /// asks for a field the token cannot read (#253).
+    async fn repo_projects(&self, org: &str, repo: &str) -> Result<Vec<IdTitle>> {
+        let data = self
+            .graphql(
+                "query($owner: String!, $name: String!) {
+                   repository(owner: $owner, name: $name) {
+                     projectsV2(first: 50) { nodes { id title } }
+                   }
+                 }",
+                json!({ "owner": org, "name": repo }),
+            )
+            .await?;
+        parse_at(&data, &["repository", "projectsV2", "nodes"])
     }
 
     async fn issue_types(&self, org: &str, repo: &str) -> Result<Vec<IdName>> {
@@ -1074,6 +1095,26 @@ impl MutatedIssue {
         issue.assignees = self.assignees.nodes.into_iter().map(|n| n.login).collect();
         issue.labels = self.labels.nodes;
         issue
+    }
+}
+
+/// Longest error text shown in the form's project row.
+const PROJECTS_REASON_MAX: usize = 60;
+
+/// Why the form has no projects, for its project row (#253). GitHub names
+/// the scope in its `INSUFFICIENT_SCOPES` message, so that case reads as
+/// something to fix; anything else shows a short form of the error.
+fn projects_unavailable_reason(err: &ProviderError) -> String {
+    let text = err.to_string();
+    if text.contains("read:project") {
+        return "token lacks read:project".to_string();
+    }
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= PROJECTS_REASON_MAX {
+        flat
+    } else {
+        let cut: String = flat.chars().take(PROJECTS_REASON_MAX - 1).collect();
+        format!("{cut}…")
     }
 }
 
@@ -2139,6 +2180,45 @@ mod tests {
         assert_eq!(issue.assignees, vec!["pgmac".to_string()]);
         assert_eq!(issue.labels[0].name, "bug");
         assert!(issue.closed_at.is_some());
+    }
+
+    /// #253: the project list is its own query. A token without `read:project`
+    /// fails any query that names `projectsV2`, so it must not share the one
+    /// that carries the repo id the form cannot do without.
+    #[test]
+    fn projects_are_not_in_the_main_options_query() {
+        let src = include_str!("client.rs");
+        let start = src.find("pub async fn repo_form_options").unwrap();
+        let end = src[start..].find("async fn repo_projects").unwrap();
+        let body = &src[start..start + end];
+        // The only mention left in that function is the call to the helper.
+        assert!(
+            !body.contains("projectsV2("),
+            "projectsV2 is back in the main query"
+        );
+        assert!(body.contains("repo_projects"));
+    }
+
+    #[test]
+    fn a_missing_project_scope_reads_as_something_to_fix() {
+        let e = ProviderError::Api(
+            "Your token has not been granted the required scopes to execute this query. \
+             The 'projectsV2' field requires one of the following scopes: ['read:project'], \
+             but your token has only been granted the: ['repo'] scopes."
+                .into(),
+        );
+        assert_eq!(projects_unavailable_reason(&e), "token lacks read:project");
+    }
+
+    #[test]
+    fn any_other_projects_error_shows_a_short_form_of_it() {
+        let short = ProviderError::Api("boom".into());
+        assert_eq!(projects_unavailable_reason(&short), "API errors: boom");
+
+        let long = ProviderError::Api("x ".repeat(100));
+        let why = projects_unavailable_reason(&long);
+        assert!(why.chars().count() <= PROJECTS_REASON_MAX, "{why}");
+        assert!(why.ends_with('…'));
     }
 
     #[test]

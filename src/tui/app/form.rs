@@ -51,6 +51,9 @@ pub struct IssueForm {
     pub milestone: Option<usize>,
     /// `None` while the per-repo options fetch is still in flight.
     pub options: Option<FormOptions>,
+    /// Set when the options fetch failed (#253), so the form says so instead
+    /// of reading "loading…" forever.
+    pub options_error: Option<String>,
     pub field_idx: usize,
 }
 
@@ -67,8 +70,16 @@ impl IssueForm {
             project: None,
             milestone: None,
             options: None,
+            options_error: None,
             field_idx: 0,
         }
+    }
+
+    /// The project field cannot be edited: its list could not be fetched.
+    pub fn projects_unavailable(&self) -> bool {
+        self.options
+            .as_ref()
+            .is_some_and(|o| o.projects_unavailable.is_some())
     }
 
     /// True for fields edited with the multi-select popup.
@@ -138,7 +149,14 @@ impl IssueForm {
             }
             4 => pick(self.issue_type),
             5 => pick(self.priority),
-            6 => pick(self.project),
+            6 => match self
+                .options
+                .as_ref()
+                .and_then(|o| o.projects_unavailable.as_ref())
+            {
+                Some(why) => format!("unavailable \u{2014} {why}"),
+                None => pick(self.project),
+            },
             7 => pick(self.milestone),
             _ => String::new(),
         }

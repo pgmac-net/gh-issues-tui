@@ -66,6 +66,8 @@ pub(crate) fn handle_issue_form_key(
                 app.mode = Mode::IssueFormMulti(idx);
             }
         }
+        // The project list could not be fetched (#253): nothing to pick from.
+        6 if form.projects_unavailable() => {}
         _ if IssueForm::is_select_field(idx) => {
             if key.code == KeyCode::Enter {
                 // "—" (none) is prepended; stored choices are offset by 1.
@@ -147,6 +149,10 @@ pub(crate) fn submit_issue_form(
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let Some(form) = &app.issue_form else { return };
+    if form.options_error.is_some() {
+        app.status = Some("can't create: repo options failed \u{2014} Esc to close".into());
+        return;
+    }
     if form.options.is_none() {
         app.status = Some("still loading repo options — try again in a moment".into());
         return;
@@ -181,6 +187,80 @@ mod tests {
     use super::super::testutil::*;
     use super::*;
     use crate::provider::types::FormOptions;
+
+    fn options_without_projects(why: &str) -> FormOptions {
+        FormOptions {
+            repo_id: "R_repo".into(),
+            projects_unavailable: Some(why.into()),
+            ..FormOptions::default()
+        }
+    }
+
+    #[test]
+    fn the_project_row_says_why_it_is_empty() {
+        let mut app = issue_form_test_app();
+        let form = app.issue_form.as_mut().unwrap();
+        form.options = Some(options_without_projects("token lacks read:project"));
+        assert!(form.projects_unavailable());
+        assert_eq!(
+            form.field_display(6),
+            "unavailable \u{2014} token lacks read:project"
+        );
+    }
+
+    #[test]
+    fn enter_on_an_unavailable_project_row_opens_nothing() {
+        let mut app = issue_form_test_app();
+        let form = app.issue_form.as_mut().unwrap();
+        form.options = Some(options_without_projects("token lacks read:project"));
+        form.field_idx = 6;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_issue_form_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert_eq!(app.mode, Mode::IssueForm, "no picker opened");
+    }
+
+    #[test]
+    fn a_working_project_list_still_opens_its_picker() {
+        let mut app = issue_form_test_app();
+        let form = app.issue_form.as_mut().unwrap();
+        form.options = Some(FormOptions {
+            repo_id: "R_repo".into(),
+            projects: vec![crate::provider::types::IdName {
+                id: "P_1".into(),
+                name: "Homelab".into(),
+            }],
+            ..FormOptions::default()
+        });
+        form.field_idx = 6;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_issue_form_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert_eq!(app.mode, Mode::IssueFormSelect(6));
+    }
+
+    #[test]
+    fn create_says_the_options_failed_instead_of_still_loading() {
+        let mut app = issue_form_test_app();
+        let form = app.issue_form.as_mut().unwrap();
+        form.title.start("a new issue");
+        form.field_idx = ISSUE_FORM_CREATE_ROW;
+        form.options_error = Some("API errors: boom".into());
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_issue_form_key(&mut app, key(KeyCode::Enter), &client, &tx);
+
+        assert!(app.issue_form.is_some(), "the form stays open");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("can't create: repo options failed \u{2014} Esc to close")
+        );
+    }
 
     #[test]
     fn tab_and_back_tab_wrap_across_all_form_fields_and_buttons() {
@@ -267,6 +347,7 @@ mod tests {
                 users: Vec::new(),
                 milestones: Vec::new(),
                 projects: Vec::new(),
+                projects_unavailable: None,
                 issue_types: Vec::new(),
             });
         }

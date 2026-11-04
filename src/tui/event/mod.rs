@@ -822,7 +822,10 @@ pub(crate) fn handle_app_event(
             Err(e) => {
                 // Without options there is no repo id, so the form cannot
                 // submit — surface the error; the user can Esc out.
-                if app.issue_form.as_ref().is_some_and(|f| f.repo == repo) {
+                // The form keeps the error too (#253): the status line is
+                // overwritten by the next key.
+                if let Some(form) = app.issue_form.as_mut().filter(|f| f.repo == repo) {
+                    form.options_error = Some(e.to_string());
                     app.status = Some(format!("form options failed: {e}"));
                 }
             }
@@ -1412,6 +1415,56 @@ mod tests {
             app.detail.comments.as_ref().unwrap()[0].body,
             "still current"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_options_fetch_is_remembered_by_the_form() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.open_issue_form("r".into());
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::FormOptions {
+                repo: "r".into(),
+                result: Err("API errors: boom".into()),
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        let form = app.issue_form.as_ref().unwrap();
+        assert_eq!(form.options_error.as_deref(), Some("API errors: boom"));
+        // The status line is still set, but the form no longer relies on it.
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap()
+                .starts_with("form options failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_options_fetch_for_another_repo_is_ignored() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.open_issue_form("r".into());
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::FormOptions {
+                repo: "elsewhere".into(),
+                result: Err("API errors: boom".into()),
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        assert!(app.issue_form.as_ref().unwrap().options_error.is_none());
     }
 
     #[tokio::test]

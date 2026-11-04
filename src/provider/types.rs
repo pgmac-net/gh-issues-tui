@@ -233,6 +233,9 @@ pub struct FormOptions {
     pub milestones: Vec<IdName>,
     /// ProjectsV2 linked to the repo; `name` is the title.
     pub projects: Vec<IdName>,
+    /// Why `projects` is empty when it could not be fetched (#253), shown in
+    /// the form's project row. `None` when the fetch worked or does not apply.
+    pub projects_unavailable: Option<String>,
     /// Issue types (org feature; empty when unavailable).
     pub issue_types: Vec<IdName>,
 }

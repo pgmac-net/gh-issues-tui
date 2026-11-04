@@ -28,17 +28,28 @@ pub(super) fn draw_issue_form(f: &mut Frame, app: &App, t: &Theme) {
         } else {
             Style::default()
         };
-        let value = if form.options.is_none() {
-            "loading…".to_string()
+        let (value, value_style) = if let Some(err) = &form.options_error {
+            // Only the first choice row spells the error out; the rest stay
+            // blank so one message is not repeated six times (#253).
+            let text = if i == 2 {
+                format!("options failed: {err}")
+            } else {
+                String::new()
+            };
+            (text, style.fg(t.warning))
+        } else if form.options.is_none() {
+            ("loading…".to_string(), style)
+        } else if i == 6 && form.projects_unavailable() {
+            (form.field_display(i), style.fg(t.dim))
         } else {
-            form.field_display(i)
+            (form.field_display(i), style)
         };
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {name:<ISSUE_FORM_LABEL_WIDTH$}"),
                 style.fg(t.accent),
             ),
-            Span::styled(value, style),
+            Span::styled(value, value_style),
         ]));
     }
     lines.push(Line::raw(""));
@@ -272,4 +283,76 @@ pub(super) fn comment_button_line(app: &App, t: &Theme, width: usize) -> Line<'s
             button_style(app.editor.focus == CommentFocus::Cancel),
         ),
     ])
+}
+
+#[cfg(test)]
+mod options_tests {
+    use super::super::testutil::*;
+    use crate::provider::types::FormOptions;
+    use crate::tui::app::{IssueForm, Mode};
+
+    fn form_app() -> crate::tui::app::App {
+        let mut app = test_app();
+        app.issue_form = Some(IssueForm::new("alpha".into()));
+        app.mode = Mode::IssueForm;
+        app
+    }
+
+    fn screen(app: &crate::tui::app::App) -> String {
+        let buf = render_app(app, 120, 40);
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| cell_at(&buf, x, y))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The screen line carrying a form field's label. The list pane behind the
+    /// form has its own `loading…` title, so assertions look at one row.
+    fn row_of(s: &str, label: &str) -> String {
+        s.lines()
+            .find(|l| l.contains(label))
+            .unwrap_or_else(|| panic!("no {label} row in:\n{s}"))
+            .to_string()
+    }
+
+    #[test]
+    fn the_project_row_shows_why_it_is_unavailable() {
+        let mut app = form_app();
+        app.issue_form.as_mut().unwrap().options = Some(FormOptions {
+            repo_id: "R".into(),
+            projects_unavailable: Some("token lacks read:project".into()),
+            ..FormOptions::default()
+        });
+        let s = screen(&app);
+        let project = row_of(&s, "project ");
+        assert!(
+            project.contains("unavailable \u{2014} token lacks read:project"),
+            "{project}"
+        );
+        assert!(!row_of(&s, "labels ").contains("loading…"));
+    }
+
+    #[test]
+    fn a_failed_options_load_is_drawn_in_place_of_loading() {
+        let mut app = form_app();
+        app.issue_form.as_mut().unwrap().options_error = Some("API errors: boom".into());
+        let s = screen(&app);
+        assert!(
+            row_of(&s, "assignees ").contains("options failed: API errors: boom"),
+            "{s}"
+        );
+        assert!(!row_of(&s, "labels ").contains("loading…"), "{s}");
+        assert!(!row_of(&s, "milestone ").contains("loading…"), "{s}");
+    }
+
+    #[test]
+    fn a_form_still_loading_says_loading() {
+        let s = screen(&form_app());
+        assert!(row_of(&s, "assignees ").contains("loading…"), "{s}");
+        assert!(!s.contains("options failed"));
+    }
 }

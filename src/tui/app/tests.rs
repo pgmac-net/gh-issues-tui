@@ -1766,6 +1766,7 @@ fn form_options() -> FormOptions {
         users: vec![id_name("U_pgmac", "pgmac"), id_name("U_bot", "bot")],
         milestones: vec![id_name("M_1", "v1.0")],
         projects: vec![id_name("P_1", "Homelab")],
+        projects_unavailable: None,
         issue_types: vec![id_name("T_bug", "Bug"), id_name("T_feat", "Feature")],
     }
 }
