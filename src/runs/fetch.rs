@@ -188,8 +188,8 @@ mod tests {
     use crate::provider::error::ProviderError;
     use crate::provider::scope::FetchScope;
     use crate::provider::types::{
-        Comment, FormOptions, Issue, IssueState, NewIssueParams, RateLimitData, RepoIssues,
-        RepoLabel,
+        Comment, Created, FormOptions, Issue, IssueState, NewIssueParams, RateLimitData,
+        RepoIssues, RepoLabel,
     };
 
     /// Scripted runs, and a log of every call so tests can assert what was
@@ -285,7 +285,7 @@ mod tests {
         async fn repo_form_options(&self, _: &str, _: &str) -> Result<FormOptions> {
             unimplemented!()
         }
-        async fn create_issue(&self, _: &NewIssueParams) -> Result<Issue> {
+        async fn create_issue(&self, _: &NewIssueParams) -> Result<Created> {
             unimplemented!()
         }
         fn host(&self) -> String {

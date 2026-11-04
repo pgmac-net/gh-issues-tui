@@ -10,10 +10,10 @@ use crate::provider::http::{
 };
 use crate::provider::scope::FetchScope;
 use crate::provider::types::{
-    CheckContextInfo, CheckRollup, Comment, FormOptions, IdName, Issue, IssueRef, IssueState,
-    IssueStub, Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary, RateLimitData,
-    Relations, RepoIssues, RepoLabel, ReviewDecision, ReviewSummary, SubIssueProgress,
-    WorkflowRunInfo,
+    CheckContextInfo, CheckRollup, Comment, Created, FormOptions, IdName, Issue, IssueRef,
+    IssueState, IssueStub, Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary,
+    RateLimitData, Relations, RepoIssues, RepoLabel, ReviewDecision, ReviewSummary,
+    SubIssueProgress, WorkflowRunInfo,
 };
 use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
 
@@ -626,7 +626,7 @@ impl Client {
         let issue_types = self.issue_types(org, repo).await.unwrap_or_default();
         let (projects, projects_unavailable) = match self.repo_projects(org, repo).await {
             Ok(p) => (p, None),
-            Err(e) => (Vec::new(), Some(projects_unavailable_reason(&e))),
+            Err(e) => (Vec::new(), Some(scope_reason(&e, "read:project"))),
         };
 
         Ok(FormOptions {
@@ -675,7 +675,7 @@ impl Client {
     /// (#249), so the list can show it without a refetch. When `project_id`
     /// is set the new issue is added to that ProjectV2 with a follow-up
     /// mutation (`CreateIssueInput` has no ProjectsV2 field).
-    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
+    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Created> {
         let mut input = json!({
             "repositoryId": p.repo_id,
             "title": p.title,
@@ -699,18 +699,24 @@ impl Client {
         let issue = issue_from_payload(&data, "createIssue")?;
         let issue_id = issue.id.clone();
 
-        if let Some(pid) = &p.project_id {
-            self.graphql(
-                "mutation($projectId: ID!, $contentId: ID!) {
-                   addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
-                     item { id }
-                   }
-                 }",
-                json!({ "projectId": pid, "contentId": issue_id }),
-            )
-            .await?;
+        // The issue exists from here on, so a failed project add is a warning
+        // on a successful create, not a failed create (#254).
+        let mut warning = None;
+        if let Some(pid) = &p.project_id
+            && let Err(e) = self
+                .graphql(
+                    "mutation($projectId: ID!, $contentId: ID!) {
+                       addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                         item { id }
+                       }
+                     }",
+                    json!({ "projectId": pid, "contentId": issue_id }),
+                )
+                .await
+        {
+            warning = Some(scope_reason(&e, "project"));
         }
-        Ok(issue)
+        Ok(Created { issue, warning })
     }
 
     pub async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {
@@ -1098,22 +1104,27 @@ impl MutatedIssue {
     }
 }
 
-/// Longest error text shown in the form's project row.
-const PROJECTS_REASON_MAX: usize = 60;
+/// Longest error text shown for a project problem (#253, #254).
+const REASON_MAX: usize = 60;
 
-/// Why the form has no projects, for its project row (#253). GitHub names
-/// the scope in its `INSUFFICIENT_SCOPES` message, so that case reads as
-/// something to fix; anything else shows a short form of the error.
-fn projects_unavailable_reason(err: &ProviderError) -> String {
+/// Why a project call failed, in a few words (#253, #254). GitHub names the
+/// scope it needs in its `INSUFFICIENT_SCOPES` message ("requires one of the
+/// following scopes: ['project']"), so that case reads as something to fix;
+/// anything else shows a short form of the error. Only the *required* list is
+/// searched: the same message also lists the scopes the token does have.
+fn scope_reason(err: &ProviderError, scope: &str) -> String {
     let text = err.to_string();
-    if text.contains("read:project") {
-        return "token lacks read:project".to_string();
+    if let Some((_, after)) = text.split_once("following scopes: [")
+        && let Some((required, _)) = after.split_once(']')
+        && required.contains(&format!("'{scope}'"))
+    {
+        return format!("token lacks {scope}");
     }
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= PROJECTS_REASON_MAX {
+    if flat.chars().count() <= REASON_MAX {
         flat
     } else {
-        let cut: String = flat.chars().take(PROJECTS_REASON_MAX - 1).collect();
+        let cut: String = flat.chars().take(REASON_MAX - 1).collect();
         format!("{cut}…")
     }
 }
@@ -1796,7 +1807,7 @@ impl crate::provider::IssueProvider for Client {
         self.repo_form_options(org, repo).await
     }
 
-    async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<Created> {
         self.create_issue(p).await
     }
 
@@ -2207,17 +2218,32 @@ mod tests {
              but your token has only been granted the: ['repo'] scopes."
                 .into(),
         );
-        assert_eq!(projects_unavailable_reason(&e), "token lacks read:project");
+        assert_eq!(scope_reason(&e, "read:project"), "token lacks read:project");
+    }
+
+    /// #254: the add-to-project mutation needs `project`. The message also
+    /// lists the scopes the token *has*, which can include `read:project`.
+    #[test]
+    fn a_missing_write_scope_is_matched_in_the_required_list_only() {
+        let e = ProviderError::Api(
+            "Your token has not been granted the required scopes to execute this query. \
+             The 'addProjectV2ItemById' field requires one of the following scopes: ['project'], \
+             but your token has only been granted the: ['read:project', 'repo'] scopes."
+                .into(),
+        );
+        assert_eq!(scope_reason(&e, "project"), "token lacks project");
+        // The granted list names read:project; that must not read as the cause.
+        assert_ne!(scope_reason(&e, "read:project"), "token lacks read:project");
     }
 
     #[test]
     fn any_other_projects_error_shows_a_short_form_of_it() {
         let short = ProviderError::Api("boom".into());
-        assert_eq!(projects_unavailable_reason(&short), "API errors: boom");
+        assert_eq!(scope_reason(&short, "project"), "API errors: boom");
 
         let long = ProviderError::Api("x ".repeat(100));
-        let why = projects_unavailable_reason(&long);
-        assert!(why.chars().count() <= PROJECTS_REASON_MAX, "{why}");
+        let why = scope_reason(&long, "project");
+        assert!(why.chars().count() <= REASON_MAX, "{why}");
         assert!(why.ends_with('…'));
     }
 

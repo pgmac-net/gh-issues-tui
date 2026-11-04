@@ -41,6 +41,14 @@ bottom, wrapping at both ends.
   ([ADR 0011](adr/0011-created-and-moved-issues-are-pinned-until-a-refetch-sees-them.md)).
   On Jira, if reading the issue back fails, the status reads
   `created #N in repo — not shown yet, r to refresh` and the org is refetched.
+- **A failed project add is a warning** (#254) — GitHub's create cannot set a
+  project in the same call, so the app adds the new issue to the chosen project
+  afterwards. If that second call fails (for instance a token with `read:project`
+  but not `project`), the issue is still created, inserted and selected, and the
+  status line adds `— not added to project: token lacks project` (or a short form
+  of the error). There is no retry; add it from GitHub's web UI. `Provider::create_issue`
+  returns `Created { issue, warning }` for this; Linear sets the project in the
+  create call itself and Jira has no projects, so they never warn.
 - **`[ Cancel ]`** — `Enter`/`Space` discards the form.
 - **`Esc`** cancels from any field, matching the rest of the app.
 - `j`/`k` no longer move between fields (they're literal characters when the

@@ -81,10 +81,12 @@ pub enum AppEvent {
         issue: Box<Issue>,
     },
     /// An issue was created (#249): the issue as the backend reports it,
-    /// inserted into `repo`'s group without a refetch.
+    /// inserted into `repo`'s group without a refetch. `warning` says what
+    /// part of the request did not take (#254), if anything.
     IssueCreated {
         repo: String,
         issue: Box<Issue>,
+        warning: Option<String>,
     },
     /// An issue was created but could not be read back (Jira, #249): the
     /// one case that still refetches the org to find it.
@@ -789,17 +791,25 @@ pub(crate) fn handle_app_event(
             });
             spawn_label_ranks(app, ranker, tx);
         }
-        AppEvent::IssueCreated { repo, issue } => {
+        AppEvent::IssueCreated {
+            repo,
+            issue,
+            warning,
+        } => {
             let number = issue.number;
             let mut shown = false;
             nav(app, client, tx, |app| {
                 shown = app.insert_created(&repo, *issue, std::time::Instant::now());
             });
-            app.status = Some(if shown {
+            let mut status = if shown {
                 format!("created #{number} in {repo}")
             } else {
                 format!("created #{number} in {repo} (hidden by filters)")
-            });
+            };
+            if let Some(why) = warning {
+                status.push_str(&format!(" \u{2014} not added to project: {why}"));
+            }
+            app.status = Some(status);
             spawn_label_ranks(app, ranker, tx);
         }
         AppEvent::CreatedUnread { repo, number } => {
@@ -1468,6 +1478,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_project_add_is_a_warning_on_a_created_issue() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = false;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::IssueCreated {
+                repo: "r".into(),
+                issue: Box::new(Issue::fixture("I_new", 99)),
+                warning: Some("token lacks project".into()),
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        assert_eq!(
+            app.status.as_deref(),
+            Some("created #99 in r \u{2014} not added to project: token lacks project")
+        );
+        // The issue is shown and pinned all the same (#254).
+        assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some("I_new"));
+        assert!(app.pins.contains("I_new"));
+        assert!(!app.loading);
+    }
+
+    #[tokio::test]
+    async fn the_project_warning_follows_the_hidden_by_filters_note() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.set_text_filter("nothing matches this".into());
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::IssueCreated {
+                repo: "r".into(),
+                issue: Box::new(Issue::fixture("I_new", 99)),
+                warning: Some("boom".into()),
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        assert_eq!(
+            app.status.as_deref(),
+            Some("created #99 in r (hidden by filters) \u{2014} not added to project: boom")
+        );
+    }
+
+    #[tokio::test]
     async fn a_created_issue_is_inserted_without_a_refetch() {
         let (mut app, _) = app_with_issue(&[]);
         app.loading = false;
@@ -1483,6 +1547,7 @@ mod tests {
             AppEvent::IssueCreated {
                 repo: "r".into(),
                 issue: Box::new(created),
+                warning: None,
             },
             &client,
             None,
@@ -1508,6 +1573,7 @@ mod tests {
             AppEvent::IssueCreated {
                 repo: "r".into(),
                 issue: Box::new(Issue::fixture("I_new", 99)),
+                warning: None,
             },
             &client,
             None,
