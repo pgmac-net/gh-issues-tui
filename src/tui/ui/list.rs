@@ -215,8 +215,18 @@ pub(super) fn state_style(issue: &Issue, t: &Theme) -> Style {
 }
 
 pub(super) fn draw_info_bar(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
+    // Column 0 is the refresh indicator (#250): blank when idle, so the bar
+    // never shifts.
+    let indicator = match app.loading_elapsed(std::time::Instant::now()) {
+        Some(elapsed) => Span::styled(
+            app.spinner.glyph(elapsed).to_string(),
+            Style::default().fg(app.spinner.colour(elapsed)),
+        ),
+        None => Span::raw(" "),
+    };
     let mut spans = vec![
-        Span::styled(" state:", Style::default().fg(t.dim)),
+        indicator,
+        Span::styled("state:", Style::default().fg(t.dim)),
         Span::raw(app.state_filter.label()),
         Span::styled("  sort:", Style::default().fg(t.dim)),
         Span::raw(format!(
@@ -294,8 +304,16 @@ pub(super) fn input_prompt(kind: InputKind) -> &'static str {
 }
 
 pub(super) fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
-    let msg = app.status.clone().unwrap_or_default();
-    let mut spans = vec![Span::styled(format!(" {msg}"), Style::default().fg(t.dim))];
+    // A sticky startup warning outranks the status line (#250).
+    let mut spans = if let Some(w) = &app.config_warning {
+        vec![Span::styled(
+            format!(" ⚠ {w}"),
+            Style::default().fg(t.warning),
+        )]
+    } else {
+        let msg = app.status.clone().unwrap_or_default();
+        vec![Span::styled(format!(" {msg}"), Style::default().fg(t.dim))]
+    };
     // Detached harness sessions (#23) are otherwise invisible — without this
     // an agent could be running with nothing on screen to say so.
     if let Some(segment) = app.harness.status_segment() {
@@ -372,5 +390,71 @@ mod tests {
         app.selected = top - 1;
         render_app(&app, 80, 14);
         assert_eq!(app.list_top.get(), top - 1);
+    }
+}
+
+#[cfg(test)]
+mod indicator_tests {
+    use super::super::testutil::*;
+    use crate::tui::spinner::DEFAULT_GLYPHS;
+
+    fn row(buf: &ratatui::buffer::Buffer, y: u16, w: u16) -> String {
+        (0..w).map(|x| cell_at(buf, x, y)).collect()
+    }
+
+    fn busy_app() -> crate::tui::app::App {
+        let mut app = test_app();
+        app.loading = true;
+        app.loading_since = Some(std::time::Instant::now());
+        app
+    }
+
+    #[test]
+    fn column_zero_of_the_info_bar_spins_while_loading() {
+        let buf = render_app(&busy_app(), 80, 20);
+        let glyph = cell_at(&buf, 0, 18);
+        assert!(DEFAULT_GLYPHS.contains(&glyph), "{glyph:?}");
+        assert!(row(&buf, 18, 80).contains("state:"));
+    }
+
+    #[test]
+    fn column_zero_is_blank_when_idle() {
+        let mut app = test_app();
+        app.loading = false;
+        let buf = render_app(&app, 80, 20);
+        assert_eq!(cell_at(&buf, 0, 18), " ");
+        assert!(row(&buf, 18, 80).starts_with(" state:"));
+    }
+
+    #[test]
+    fn the_indicator_does_not_shift_the_bar() {
+        let mut idle = test_app();
+        idle.loading = false;
+        let a = row(&render_app(&idle, 80, 20), 18, 80);
+        let b = row(&render_app(&busy_app(), 80, 20), 18, 80);
+        assert_eq!(
+            a.chars().skip(1).collect::<String>(),
+            b.chars().skip(1).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn the_glyph_is_coloured_from_the_hue() {
+        let buf = render_app(&busy_app(), 80, 20);
+        assert!(matches!(buf[(0, 18)].fg, ratatui::style::Color::Rgb(..)));
+    }
+
+    #[test]
+    fn a_config_warning_replaces_the_status_line_until_cleared() {
+        let mut app = test_app();
+        app.status = Some("loaded 3 issues across 1 repos".into());
+        app.config_warning = Some("spinner_glyphs: is empty — using default".into());
+        let bottom = row(&render_app(&app, 100, 20), 19, 100);
+        assert!(bottom.contains("⚠ spinner_glyphs: is empty"), "{bottom}");
+        assert!(!bottom.contains("loaded 3"));
+
+        app.config_warning = None;
+        let bottom = row(&render_app(&app, 100, 20), 19, 100);
+        assert!(bottom.contains("loaded 3 issues"), "{bottom}");
     }
 }

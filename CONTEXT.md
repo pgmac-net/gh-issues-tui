@@ -63,3 +63,11 @@ Terms used across this repo's code and docs.
 **Context row**: an ancestor drawn dim above its sub-issues because it is not itself a visible issue of the group: filtered out, in another repo, or not loaded. Never counted. *Avoid*: "ghost row".
 
 **Stub**: a context row whose issue is not loaded, known only from a descendant's ancestry. Read-only; `o` opens it.
+
+## Refresh indicator (#250)
+
+**Refresh indicator**: the one-column spinner at the left of the info bar while `App.loading` is true. Glyph steps every 100 ms; colour is a rainbow hue of the time since loading began. *Avoid*: "loading spinner" or "progress bar" (it shows that data is loading, not how far along it is), and "refresh" for the runs-tab poll, which does not light it.
+
+**Revolution**: one pass through the indicator's whole glyph set. `spinner_hue_revolutions` revolutions make one rainbow cycle.
+
+**Config warning**: a startup problem with a config value that falls back instead of failing (so far the `spinner_*` keys). Printed to stderr and held on the status line until the first keypress.

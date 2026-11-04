@@ -43,6 +43,7 @@ src/
     ├── linkmap.rs   detail-pane word wrap and URL positions (OSC 8 links)
     ├── markdown/    line-oriented markdown renderer for the detail pane
     ├── harness/     coding-harness PTY sessions (#23)
+    ├── spinner.rs   refresh indicator glyphs and rainbow hue (#250)
     ├── theme.rs     colours, overridable per profile
     └── title.rs     the outer terminal's window title (#132)
 ```

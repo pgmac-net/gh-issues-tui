@@ -13,6 +13,7 @@ mod filters;
 mod form;
 mod harness;
 pub mod help;
+mod indicator;
 mod mode;
 mod patch;
 mod picker;
@@ -111,6 +112,14 @@ pub struct App {
     /// Cursor position for the calendar date picker.
     pub calendar_cursor: NaiveDate,
     pub loading: bool,
+    /// When `loading` last went true: the refresh indicator's clock (#250).
+    /// Kept in step by `sync_loading`, so no `loading = true` site touches it.
+    pub loading_since: Option<std::time::Instant>,
+    /// The refresh indicator's glyphs and hue period (#250).
+    pub spinner: crate::tui::spinner::Spinner,
+    /// A startup config warning, held on the status line until the first
+    /// keypress so the first data load cannot overwrite it (#250).
+    pub config_warning: Option<String>,
     /// The in-flight fetch was started by the auto-refresh ticker, not a
     /// keypress — picks the quieter status wording when it lands.
     pub auto_refreshing: bool,
@@ -224,6 +233,9 @@ impl App {
             confirm_choice: ConfirmChoice::No,
             calendar_cursor: crate::localtime::today(),
             loading: true,
+            loading_since: None,
+            spinner: crate::tui::spinner::Spinner::default(),
+            config_warning: None,
             auto_refreshing: false,
             include_closed,
             loaded: None,

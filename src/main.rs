@@ -116,6 +116,15 @@ async fn main() -> Result<()> {
     // present (#156 for label names, #160 for issue text).
     let typesafe = typesafe::Consents::from_config(cfg.infer_priority_ranks, cfg.send_issue_text);
 
+    let (spinner, warnings) = tui::spinner::Spinner::from_config(
+        cfg.spinner_glyphs.as_deref(),
+        cfg.spinner_hue_revolutions,
+    );
+    // Also on stderr, for the scrollback once the TUI has gone.
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+
     install_panic_hook();
     tui::run(
         client,
@@ -132,6 +141,8 @@ async fn main() -> Result<()> {
             no_cache: cli.no_cache,
             provider: provider_name,
             copy_format: cfg.copy_format,
+            spinner,
+            warnings,
             theme,
             harness,
             typesafe,
