@@ -463,8 +463,8 @@ impl Client {
 
     /// Create a Jira issue. `repo_id` is the project id; `issue_type_id` is
     /// required. A synthetic priority label id in `label_ids` is peeled to the
-    /// native priority field. Returns `(number, url)`.
-    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+    /// native priority field. Returns the created issue, read back (#249).
+    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
         let mut priority: Option<&str> = None;
         let mut labels: Vec<String> = Vec::new();
         for id in &p.label_ids {
@@ -499,10 +499,14 @@ impl Client {
             .get("key")
             .and_then(Value::as_str)
             .ok_or_else(|| ProviderError::Shape("createIssue returned no key".into()))?;
-        Ok((
-            key_to_number(key),
-            format!("{}/browse/{key}", self.base_url),
-        ))
+        // The create answers with the key alone; read the issue back. The
+        // issue exists whatever this read does, so its failure is not a
+        // failed create (#249).
+        self.issue(key)
+            .await
+            .map_err(|_| ProviderError::CreatedUnread {
+                number: key_to_number(key),
+            })
     }
 }
 
@@ -712,7 +716,7 @@ impl crate::provider::IssueProvider for Client {
     async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions> {
         self.repo_form_options(org, repo).await
     }
-    async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
         self.create_issue(p).await
     }
     fn rate_limit(&self) -> Option<RateLimitData> {

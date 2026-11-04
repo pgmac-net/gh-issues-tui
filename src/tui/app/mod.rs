@@ -17,6 +17,7 @@ mod indicator;
 mod mode;
 mod patch;
 mod picker;
+mod pins;
 mod pr;
 mod ranks;
 pub mod readiness;
@@ -117,6 +118,9 @@ pub struct App {
     pub loading_since: Option<std::time::Instant>,
     /// The refresh indicator's glyphs and hue period (#250).
     pub spinner: crate::tui::spinner::Spinner,
+    /// Issues created or moved this session that no refetch has seen yet
+    /// (#249, ADR 0011); a refetch that lacks one keeps it.
+    pub pins: pins::Pins,
     /// A startup config warning, held on the status line until the first
     /// keypress so the first data load cannot overwrite it (#250).
     pub config_warning: Option<String>,
@@ -236,6 +240,7 @@ impl App {
             loading_since: None,
             spinner: crate::tui::spinner::Spinner::default(),
             config_warning: None,
+            pins: pins::Pins::default(),
             auto_refreshing: false,
             include_closed,
             loaded: None,
@@ -290,7 +295,8 @@ impl App {
         // Never regress an issue to an older copy: a refetch can read a
         // replica that has not yet seen a patch applied since (#196).
         self.vocab.absorb_repos(&repos);
-        self.repos = patch::keep_newer_loaded(std::mem::take(&mut self.repos), repos);
+        self.repos =
+            patch::keep_newer_loaded(std::mem::take(&mut self.repos), repos, &mut self.pins);
         // A refresh brings fresh issues whose labels carry no rank.
         self.stamp_label_ranks();
         // First-seen repos take the configured default; repos the user has
@@ -371,6 +377,7 @@ impl App {
         self.resume = None;
         self.resume_runs = false;
         self.seen_repos.clear();
+        self.pins.clear();
         self.clear_filters();
         self.state_filter = StateFilter::Open;
         self.selected = 0;

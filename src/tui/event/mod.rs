@@ -80,6 +80,18 @@ pub enum AppEvent {
         target: String,
         issue: Box<Issue>,
     },
+    /// An issue was created (#249): the issue as the backend reports it,
+    /// inserted into `repo`'s group without a refetch.
+    IssueCreated {
+        repo: String,
+        issue: Box<Issue>,
+    },
+    /// An issue was created but could not be read back (Jira, #249): the
+    /// one case that still refetches the org to find it.
+    CreatedUnread {
+        repo: String,
+        number: u64,
+    },
     MutationFailed(String),
     /// Per-repo picker options for the new-issue form.
     FormOptions {
@@ -291,6 +303,7 @@ async fn event_loop(
         title.sync(app.harness.active_meta().map(|s| s.issue_ref.as_str()));
 
         app.sync_loading(std::time::Instant::now());
+        app.prune_pins(std::time::Instant::now());
         if redraw {
             terminal.draw(|f| ui::draw(f, &app, &theme, &registry))?;
         }
@@ -740,9 +753,6 @@ pub(crate) fn handle_app_event(
             }
             if !should_fetch {
                 app.rate_limit_error = Some("rate limited — refetch skipped until reset".into());
-            } else if after == AfterMutation::RefetchOrg {
-                app.loading = true;
-                spawn_fetch(client, app, tx);
             } else if let Some(id) = comments_refresh_target(app) {
                 // The mutation changed the comment thread itself, so the
                 // cached copy is known-stale — drop it before refetching.
@@ -770,7 +780,7 @@ pub(crate) fn handle_app_event(
         } => {
             let mut listed = false;
             nav(app, client, tx, |app| {
-                listed = app.apply_move(&from_id, &target, *issue);
+                listed = app.apply_move(&from_id, &target, *issue, std::time::Instant::now());
             });
             app.status = Some(if listed {
                 msg
@@ -778,6 +788,28 @@ pub(crate) fn handle_app_event(
                 format!("{msg} (not shown under the current filters)")
             });
             spawn_label_ranks(app, ranker, tx);
+        }
+        AppEvent::IssueCreated { repo, issue } => {
+            let number = issue.number;
+            let mut shown = false;
+            nav(app, client, tx, |app| {
+                shown = app.insert_created(&repo, *issue, std::time::Instant::now());
+            });
+            app.status = Some(if shown {
+                format!("created #{number} in {repo}")
+            } else {
+                format!("created #{number} in {repo} (hidden by filters)")
+            });
+            spawn_label_ranks(app, ranker, tx);
+        }
+        AppEvent::CreatedUnread { repo, number } => {
+            app.status = Some(format!(
+                "created #{number} in {repo} — not shown yet, r to refresh"
+            ));
+            if app.rate_limit.is_none_or(|rl| rl.remaining > 0) && !app.loading {
+                app.loading = true;
+                spawn_fetch(client, app, tx);
+            }
         }
         AppEvent::MutationFailed(e) => {
             if e.starts_with(RATE_LIMIT_MSG_PREFIX) {
@@ -1383,29 +1415,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mutation_done_refetch_org_leaves_cached_comments_alone() {
-        let (mut app, issue_id) = app_with_issue(&[]);
-        app.detail.open = true;
-        app.comment_cache
-            .insert(issue_id.clone(), vec![stub_comment("cached")]);
-
+    async fn a_created_issue_is_inserted_without_a_refetch() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = false;
         let client = test_client();
         let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let created = Issue {
+            title: "new one".into(),
+            ..Issue::fixture("I_new", 99)
+        };
 
         handle_app_event(
             &mut app,
-            AppEvent::MutationDone {
-                msg: "moved to elsewhere".into(),
-                issue_id: Some(issue_id.clone()),
-                after: AfterMutation::RefetchOrg,
+            AppEvent::IssueCreated {
+                repo: "r".into(),
+                issue: Box::new(created),
             },
             &client,
             None,
             &tx,
         );
 
-        assert!(app.comment_cache.contains_key(&issue_id));
-        assert!(app.loading, "a move or create must refetch the org");
+        assert!(!app.loading, "a create must not refetch the org (#249)");
+        assert_eq!(app.status.as_deref(), Some("created #99 in r"));
+        assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some("I_new"));
+        assert!(app.pins.contains("I_new"));
+    }
+
+    #[tokio::test]
+    async fn a_created_issue_hidden_by_filters_says_so() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = false;
+        app.set_text_filter("nothing matches this".into());
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::IssueCreated {
+                repo: "r".into(),
+                issue: Box::new(Issue::fixture("I_new", 99)),
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        assert_eq!(
+            app.status.as_deref(),
+            Some("created #99 in r (hidden by filters)")
+        );
+        assert!(app.pins.contains("I_new"), "pinned even while hidden");
+    }
+
+    #[tokio::test]
+    async fn a_create_that_could_not_be_read_back_refetches_the_org() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.loading = false;
+        let client = test_client();
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+
+        handle_app_event(
+            &mut app,
+            AppEvent::CreatedUnread {
+                repo: "r".into(),
+                number: 7,
+            },
+            &client,
+            None,
+            &tx,
+        );
+
+        assert!(app.loading);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("created #7 in r — not shown yet, r to refresh")
+        );
     }
 
     #[tokio::test]

@@ -285,7 +285,7 @@ mod tests {
         async fn repo_form_options(&self, _: &str, _: &str) -> Result<FormOptions> {
             unimplemented!()
         }
-        async fn create_issue(&self, _: &NewIssueParams) -> Result<(u64, String)> {
+        async fn create_issue(&self, _: &NewIssueParams) -> Result<Issue> {
             unimplemented!()
         }
         fn host(&self) -> String {

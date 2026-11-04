@@ -463,8 +463,8 @@ impl Client {
 
     /// Create a Linear issue. `repo_id` is the team id. A synthetic priority
     /// label id in `label_ids` is peeled to the native priority field; a
-    /// `project_id` sets the issue's Linear project. Returns `(number, url)`.
-    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+    /// `project_id` sets the issue's Linear project. Returns the created issue (#249).
+    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
         let mut priority: Option<u8> = None;
         let mut label_ids: Vec<String> = Vec::new();
         for id in &p.label_ids {
@@ -491,25 +491,9 @@ impl Client {
         if let Some(project) = &p.project_id {
             input["projectId"] = json!(project);
         }
-        let data = self
-            .graphql(
-                "mutation($input: IssueCreateInput!) {
-                   issueCreate(input: $input) { issue { number url } }
-                 }",
-                json!({ "input": input }),
-            )
-            .await?;
-        let issue = data
-            .pointer("/issueCreate/issue")
-            .filter(|v| !v.is_null())
-            .ok_or_else(|| ProviderError::Shape("issueCreate returned no issue".into()))?;
-        let number = issue.get("number").and_then(Value::as_u64).unwrap_or(0);
-        let url = issue
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        Ok((number, url))
+        let query = format!("{ISSUE_CREATE_MUTATION}{ISSUE_FIELDS}");
+        let data = self.graphql(&query, json!({ "input": input })).await?;
+        issue_at(&data, "issueCreate")
     }
 }
 
@@ -553,11 +537,22 @@ const ISSUE_UPDATE_MUTATION: &str = "mutation($id: String!, $input: IssueUpdateI
 }
 ";
 
+/// `issueCreate` reporting the new issue (#249); append [`ISSUE_FIELDS`].
+const ISSUE_CREATE_MUTATION: &str = "mutation($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { ...IssueFields } }
+}
+";
+
 /// Parse `data.issueUpdate.issue` into an [`Issue`].
 fn issue_from_payload(data: &Value) -> Result<Issue> {
-    let node: Option<IssueNode> = parse_at(data, &["issueUpdate", "issue"])?;
+    issue_at(data, "issueUpdate")
+}
+
+/// Parse `data.<field>.issue` into an [`Issue`].
+fn issue_at(data: &Value, field: &str) -> Result<Issue> {
+    let node: Option<IssueNode> = parse_at(data, &[field, "issue"])?;
     node.map(|n| n.to_issue())
-        .ok_or_else(|| ProviderError::Shape("issueUpdate returned no issue".into()))
+        .ok_or_else(|| ProviderError::Shape(format!("{field} returned no issue")))
 }
 
 const TEAMS_QUERY: &str = "query($teamsFirst: Int!, $teamCursor: String) {
@@ -866,7 +861,7 @@ impl crate::provider::IssueProvider for Client {
     async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions> {
         self.repo_form_options(org, repo).await
     }
-    async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
         self.create_issue(p).await
     }
     fn rate_limit(&self) -> Option<RateLimitData> {
@@ -992,6 +987,29 @@ mod tests {
         assert_eq!(issue.id, "iss_1");
         assert_eq!(issue.state, IssueState::Closed);
         assert_eq!(issue.labels[0].name, "wontfix");
+    }
+
+    #[test]
+    fn issue_create_payload_maps_to_the_created_issue() {
+        let data = json!({ "issueCreate": { "success": true, "issue": {
+            "id": "iss_9", "number": 9, "title": "New",
+            "description": "", "url": "u", "priority": 0,
+            "createdAt": "2026-11-04T00:00:00Z", "updatedAt": "2026-11-04T00:00:00Z",
+            "completedAt": null, "canceledAt": null,
+            "state": {"type": "unstarted"},
+            "creator": {"displayName": "Ada"}, "assignee": null,
+            "labels": {"nodes": []}
+        }}});
+        let issue = issue_at(&data, "issueCreate").unwrap();
+        assert_eq!(issue.id, "iss_9");
+        assert_eq!(issue.number, 9);
+        assert_eq!(issue.state, IssueState::Open);
+    }
+
+    #[test]
+    fn issue_create_mutation_selects_the_shared_fragment() {
+        assert!(ISSUE_CREATE_MUTATION.contains("issue { ...IssueFields }"));
+        assert!(ISSUE_CREATE_MUTATION.contains("$input: IssueCreateInput!"));
     }
 
     #[test]
