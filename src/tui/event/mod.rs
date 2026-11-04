@@ -176,6 +176,9 @@ pub struct RunConfig {
     /// between backends, so another backend's file is ignored.
     pub provider: String,
     pub copy_format: String,
+    pub spinner: crate::tui::spinner::Spinner,
+    /// Config problems found at startup, shown until the first keypress.
+    pub warnings: Vec<String>,
     pub theme: Theme,
     pub harness: HarnessSettings,
     pub typesafe: crate::typesafe::Consents,
@@ -206,6 +209,8 @@ async fn event_loop(
         no_cache,
         provider,
         copy_format,
+        spinner,
+        warnings,
         theme,
         harness: harness_settings,
         typesafe,
@@ -233,6 +238,8 @@ async fn event_loop(
         copy_format,
     );
     app.set_hide_empty_default(hide_empty_repos);
+    app.spinner = spinner;
+    app.config_warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     app.typesafe = typesafe.status;
     app.runs.supported = client.supports_runs();
     // Resume where the last session left off (#236), before the first fetch so
@@ -283,6 +290,7 @@ async fn event_loop(
         // unless the title really changed, so this costs nothing per frame.
         title.sync(app.harness.active_meta().map(|s| s.issue_ref.as_str()));
 
+        app.sync_loading(std::time::Instant::now());
         if redraw {
             terminal.draw(|f| ui::draw(f, &app, &theme, &registry))?;
         }
@@ -302,6 +310,10 @@ async fn event_loop(
         let cache_due = cache_io.due();
         let cache_timer =
             tokio::time::sleep_until(cache_due.unwrap_or_else(tokio::time::Instant::now));
+        // The refresh indicator's frame clock (#250): ticks only while data is
+        // loading and the list is on screen, so an idle app stays silent.
+        let animating = app.indicator_animating();
+        let frame_timer = tokio::time::sleep(crate::tui::spinner::FRAME);
         // A harness chunk never changes the layout, and arrives at PTY rates.
         let mut layout_may_have_changed = true;
 
@@ -314,6 +326,8 @@ async fn event_loop(
                 };
                 match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        // A startup config warning is read once (#250).
+                        app.config_warning = None;
                         handle_key(&mut app, key, &client, &tx, &mut hx);
                         // Moving the selection onto an issue whose thread is
                         // already cached settles it without any event landing,
@@ -364,6 +378,9 @@ async fn event_loop(
                     // fresh for the next start (ADR 0010).
                     spawn_org_refresh(&client, &mut app, &tx);
                 }
+            }
+            _ = frame_timer, if animating => {
+                layout_may_have_changed = false;
             }
             _ = runs_timer, if runs_due.is_some() => {
                 if let Some(fetch) = app.runs_tick(std::time::Instant::now()) {

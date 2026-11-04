@@ -54,6 +54,17 @@ pub struct Config {
     #[serde(default)]
     pub color_profile: Option<String>,
 
+    /// Frames of the refresh indicator (#250), one column-wide character
+    /// each, shown 100 ms apart. Unset → braille. A bad value warns and falls
+    /// back rather than failing startup.
+    #[serde(default)]
+    pub spinner_glyphs: Option<String>,
+
+    /// Glyph revolutions per full rainbow cycle of the refresh indicator.
+    /// Unset → 10 (10 s with the default glyphs). Must be at least 1.
+    #[serde(default)]
+    pub spinner_hue_revolutions: Option<i64>,
+
     /// Template for the short reference copied to the clipboard with `y`.
     /// Supports `{owner}`, `{repo}`, `{number}` placeholders.
     #[serde(default = "copy_format_default")]
@@ -279,6 +290,8 @@ impl Default for Config {
             hide_empty_repos: true,
             color_profile: None,
             copy_format: copy_format_default(),
+            spinner_glyphs: None,
+            spinner_hue_revolutions: None,
             infer_priority_ranks: false,
             send_issue_text: false,
             color_profiles: HashMap::new(),
@@ -373,6 +386,26 @@ mod tests {
         std::fs::write(&path, "default_collapsed = false\n").unwrap();
         let cfg = Config::load_from(&path).unwrap();
         assert!(!cfg.default_collapsed);
+    }
+
+    #[test]
+    fn spinner_keys_default_to_unset_and_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_org = \"x\"\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.spinner_glyphs, None);
+        assert_eq!(cfg.spinner_hue_revolutions, None);
+
+        std::fs::write(
+            &path,
+            "spinner_glyphs = \"/-|\"\nspinner_hue_revolutions = 0\n",
+        )
+        .unwrap();
+        // A bad number still loads: the spinner warns and falls back (#250).
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.spinner_glyphs.as_deref(), Some("/-|"));
+        assert_eq!(cfg.spinner_hue_revolutions, Some(0));
     }
 
     #[test]

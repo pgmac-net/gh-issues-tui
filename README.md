@@ -113,6 +113,8 @@ restore_layout = true       # resume where you left off, and save where you are 
 cache = true                # keep the last loaded issues on disk and draw them at start (default: true)
 hide_empty_repos = true     # hide repo groups with no visible issues (default: true)
 copy_format = "{owner}/{repo}#{number}"   # `y` clipboard format (default shown)
+spinner_glyphs = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"          # refresh indicator frames, one column wide each (default shown)
+spinner_hue_revolutions = 10              # glyph revolutions per rainbow cycle, >= 1 (default: 10)
 infer_priority_ranks = false              # rank non-`priority:` labels (P0, sev1…); needs TYPESAFE_API_KEY (default: false)
 send_issue_text = false                   # send issue text for the readiness badge and semantic `/` search; needs TYPESAFE_API_KEY (default: false)
 
@@ -204,6 +206,10 @@ Files live in `~/.cache/gh-issues/<provider>@<host>/<org>/` (`$XDG_CACHE_HOME` i
 ### Auto-refresh
 
 The issue list refetches the whole org every `refresh_interval` seconds (default 5 minutes) so new and updated issues appear without a key press, and the cache stays fresh for the next start even while a repo filter is on. The `--refresh <SECS>` flag overrides the config value; `0` disables it. A background refresh keeps your selection on the same issue and skips a beat while a fetch is already running, the API is rate-limited, or you are mid-edit (typing in an input, a menu, or a confirmation).
+
+### Refresh indicator
+
+While issue data is being fetched (startup, `r`, `Ctrl+R`, auto-refresh), the first column of the bottom info bar shows a spinner that cycles through the colours of the rainbow, starting at red. With the defaults it completes a rainbow every 10 seconds, so the colour tells you how long the refresh has been running. It is blank when idle. `spinner_glyphs` sets a custom frame set (each frame exactly one terminal column wide; a single character gives a colour-only indicator) and `spinner_hue_revolutions` sets how many trips round the frame set make one rainbow. A bad value falls back to the default and shows a warning on the status line until your first keypress. Details: [`docs/refresh-indicator.md`](docs/refresh-indicator.md).
 
 ### Clipboard
 

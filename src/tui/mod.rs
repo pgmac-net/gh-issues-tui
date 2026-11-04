@@ -5,6 +5,7 @@ pub mod layout;
 pub mod layout_state;
 pub mod linkmap;
 pub mod markdown;
+pub mod spinner;
 pub mod theme;
 pub mod title;
 pub mod ui;
