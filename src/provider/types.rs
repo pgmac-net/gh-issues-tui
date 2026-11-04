@@ -240,6 +240,24 @@ pub struct FormOptions {
     pub issue_types: Vec<IdName>,
 }
 
+/// What `create_issue` made (#254): the issue as the backend holds it, and a
+/// note when part of the request did not take — GitHub's follow-up "add to
+/// project" call can fail after the issue exists. The issue is shown either way.
+#[derive(Debug, Clone)]
+pub struct Created {
+    pub issue: Issue,
+    pub warning: Option<String>,
+}
+
+impl Created {
+    pub fn new(issue: Issue) -> Self {
+        Self {
+            issue,
+            warning: None,
+        }
+    }
+}
+
 /// Parameters for `Client::create_issue`. Ids come from `FormOptions`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NewIssueParams {

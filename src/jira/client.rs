@@ -10,7 +10,7 @@ use crate::provider::error::{ProviderError, RATE_LIMIT_MSG_PREFIX, Result, found
 use crate::provider::http::build_http_client;
 use crate::provider::scope::FetchScope;
 use crate::provider::types::{
-    Comment, FormOptions, IdName, Issue, IssueState, IssueStub, Label, NewIssueParams,
+    Comment, Created, FormOptions, IdName, Issue, IssueState, IssueStub, Label, NewIssueParams,
     RateLimitData, RepoIssues, RepoLabel,
 };
 
@@ -465,7 +465,7 @@ impl Client {
     /// Create a Jira issue. `repo_id` is the project id; `issue_type_id` is
     /// required. A synthetic priority label id in `label_ids` is peeled to the
     /// native priority field. Returns the created issue, read back (#249).
-    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
+    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Created> {
         let mut priority: Option<&str> = None;
         let mut labels: Vec<String> = Vec::new();
         for id in &p.label_ids {
@@ -505,6 +505,7 @@ impl Client {
         // failed create (#249).
         self.issue(key)
             .await
+            .map(Created::new)
             .map_err(|_| ProviderError::CreatedUnread {
                 number: key_to_number(key),
             })
@@ -717,7 +718,7 @@ impl crate::provider::IssueProvider for Client {
     async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions> {
         self.repo_form_options(org, repo).await
     }
-    async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<Created> {
         self.create_issue(p).await
     }
     fn rate_limit(&self) -> Option<RateLimitData> {

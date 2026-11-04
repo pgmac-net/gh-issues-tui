@@ -9,7 +9,7 @@ use crate::provider::http::{
 };
 use crate::provider::scope::FetchScope;
 use crate::provider::types::{
-    Comment, FormOptions, IdName, Issue, IssueState, IssueStub, Label, NewIssueParams,
+    Comment, Created, FormOptions, IdName, Issue, IssueState, IssueStub, Label, NewIssueParams,
     RateLimitData, RepoIssues, RepoLabel,
 };
 
@@ -465,7 +465,7 @@ impl Client {
     /// Create a Linear issue. `repo_id` is the team id. A synthetic priority
     /// label id in `label_ids` is peeled to the native priority field; a
     /// `project_id` sets the issue's Linear project. Returns the created issue (#249).
-    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
+    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Created> {
         let mut priority: Option<u8> = None;
         let mut label_ids: Vec<String> = Vec::new();
         for id in &p.label_ids {
@@ -494,7 +494,7 @@ impl Client {
         }
         let query = format!("{ISSUE_CREATE_MUTATION}{ISSUE_FIELDS}");
         let data = self.graphql(&query, json!({ "input": input })).await?;
-        issue_at(&data, "issueCreate")
+        issue_at(&data, "issueCreate").map(Created::new)
     }
 }
 
@@ -862,7 +862,7 @@ impl crate::provider::IssueProvider for Client {
     async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions> {
         self.repo_form_options(org, repo).await
     }
-    async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<Created> {
         self.create_issue(p).await
     }
     fn rate_limit(&self) -> Option<RateLimitData> {

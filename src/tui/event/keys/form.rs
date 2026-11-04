@@ -169,9 +169,10 @@ pub(crate) fn submit_issue_form(
     tokio::spawn(async move {
         // The created issue goes straight into the list, no refetch (#249).
         let msg = match client.create_issue(&params).await {
-            Ok(issue) => AppEvent::IssueCreated {
+            Ok(created) => AppEvent::IssueCreated {
                 repo,
-                issue: Box::new(issue),
+                issue: Box::new(created.issue),
+                warning: created.warning,
             },
             Err(crate::provider::error::ProviderError::CreatedUnread { number }) => {
                 AppEvent::CreatedUnread { repo, number }
