@@ -98,7 +98,23 @@ A GitHub token is resolved in this order:
 3. `GH_TOKEN` environment variable
 4. `gh auth token` (the GitHub CLI's stored login)
 
-On a machine with `gh` logged in, no configuration is needed. The token needs `repo` scope (read for browsing; write operations use the same token).
+On a machine with `gh` logged in, no configuration is needed.
+
+The token needs these classic OAuth scopes:
+
+| Scope | Needed for | Without it |
+|---|---|---|
+| `repo` | browsing, every issue and comment write, the runs tab | nothing works |
+| `read:project` | opening the new-issue form (`n`): its options query lists the repo's projects | the form never finishes loading its options, so issues cannot be created ([#253](https://github.com/pgmac-net/gh-issues-tui/issues/253)) |
+| `project` | adding a new issue to a project from the form; includes `read:project` | the create reports a failure even though the issue was created ([#254](https://github.com/pgmac-net/gh-issues-tui/issues/254)) |
+
+`gh auth login`'s default scopes include `repo` but no project scope. To add it to an existing login:
+
+```sh
+gh auth refresh -h github.com -s project
+```
+
+If `GITHUB_TOKEN` or `GH_TOKEN` is set in your environment, `gh` uses that token and leaves the stored login alone, and so does this app (see the order above). Unset the variable first, for example `env -u GITHUB_TOKEN gh auth refresh -h github.com -s project`. Check the result with `gh auth status`, which lists the token's scopes.
 
 ### Configuration
 
