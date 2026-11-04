@@ -22,6 +22,14 @@ bottom, wrapping at both ends.
   option lists are long and benefit from the pickers' type-ahead filter.
 - **`[ Create ]`** — `Enter`/`Space` submits when a title is present and the
   repo's picker options have loaded.
+- **After `[ Create ]`** (#249) — the new issue appears at the top of its repo
+  group as soon as the API answers, selected, with its group expanded. There is
+  no refetch, so `r` works straight away. If the active filters hide it, the
+  status line reads `created #N in repo (hidden by filters)`. It is pinned until
+  a refetch includes it, so a refresh from a lagging replica cannot drop it
+  ([ADR 0011](adr/0011-created-and-moved-issues-are-pinned-until-a-refetch-sees-them.md)).
+  On Jira, if reading the issue back fails, the status reads
+  `created #N in repo — not shown yet, r to refresh` and the org is refetched.
 - **`[ Cancel ]`** — `Enter`/`Space` discards the form.
 - **`Esc`** cancels from any field, matching the rest of the app.
 - `j`/`k` no longer move between fields (they're literal characters when the

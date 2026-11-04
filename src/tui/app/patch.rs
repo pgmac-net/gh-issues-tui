@@ -8,8 +8,10 @@
 //! same window from the other side via [`keep_newer_loaded`].
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use super::App;
+use super::pins::Pins;
 use crate::provider::types::{Issue, RepoIssues};
 
 /// A repo's web URL from one of its issues' (`…/repo/issues/42` → `…/repo`),
@@ -58,15 +60,63 @@ impl App {
     /// group when it is not loaded. No org refetch, as for any patch (ADR
     /// 0005). On GitHub the moved issue has a new id and number. The
     /// selection follows it when it is still shown. Returns whether it is.
-    pub fn apply_move(&mut self, from_id: &str, target: &str, issue: Issue) -> bool {
+    /// The moved issue is pinned (#249), so a refetch that cannot see it yet
+    /// does not drop it.
+    pub fn apply_move(&mut self, from_id: &str, target: &str, issue: Issue, now: Instant) -> bool {
         self.data_gen += 1;
         let prev_selected = self.selected_issue().map(|i| i.id.clone());
         for repo in &mut self.repos {
             repo.issues.retain(|i| i.id != from_id);
         }
         self.invalidate_comments(from_id);
+        self.pins.release(from_id);
         let id = issue.id.clone();
         self.vocab.absorb_issue(&issue);
+        self.place_issue(target, issue);
+        self.pins.pin(id.clone(), now);
+        self.stamp_label_ranks();
+        self.rebuild_rows();
+        let follow = if prev_selected.as_deref() == Some(from_id) {
+            Some(id.clone())
+        } else {
+            prev_selected
+        };
+        self.reselect(follow);
+        self.rows
+            .iter()
+            .any(|row| self.row_issue_id(row) == Some(id.as_str()))
+    }
+
+    /// An issue was created in `repo` (#249): show the copy the backend
+    /// reported, with no refetch (ADR 0005). It is pinned until a refetch
+    /// sees it (ADR 0011), its group is expanded and it is selected. Returns
+    /// whether it is shown — the filters may hide it.
+    pub fn insert_created(&mut self, repo: &str, issue: Issue, now: Instant) -> bool {
+        self.data_gen += 1;
+        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        let id = issue.id.clone();
+        self.vocab.absorb_issue(&issue);
+        let slot = self.place_issue(repo, issue);
+        self.pins.pin(id.clone(), now);
+        // An explicit create in this repo beats a manual collapse, and a
+        // group first seen here must not fold under `default_collapsed`.
+        let group = self.repos[slot].repo.clone();
+        self.collapsed.remove(&group);
+        self.seen_repos.insert(group);
+        self.stamp_label_ranks();
+        self.rebuild_rows();
+        let shown = self
+            .rows
+            .iter()
+            .any(|row| self.row_issue_id(row) == Some(id.as_str()));
+        self.reselect(if shown { Some(id) } else { prev_selected });
+        shown
+    }
+
+    /// Put `issue` at the top of the `target` group, replacing any copy with
+    /// the same id, and create the group in name order when it is not loaded.
+    /// Returns the group's index. Callers rebuild rows.
+    fn place_issue(&mut self, target: &str, issue: Issue) -> usize {
         let slot = match self
             .repos
             .iter()
@@ -90,19 +140,10 @@ impl App {
                 at
             }
         };
+        let id = issue.id.clone();
         self.repos[slot].issues.retain(|i| i.id != id);
         self.repos[slot].issues.insert(0, issue);
-        self.stamp_label_ranks();
-        self.rebuild_rows();
-        let follow = if prev_selected.as_deref() == Some(from_id) {
-            Some(id.clone())
-        } else {
-            prev_selected
-        };
-        self.reselect(follow);
-        self.rows
-            .iter()
-            .any(|row| self.row_issue_id(row) == Some(id.as_str()))
+        slot
     }
 
     /// A comment was added to `issue_id`: the list shows the count, and no
@@ -124,22 +165,65 @@ impl App {
 /// loaded copy wins. That is a patch the refetch read too early to see —
 /// from a lagging replica, or a fetch started before the mutation landed.
 /// Equal timestamps take the incoming copy. Issues absent from `incoming`
-/// stay absent: membership is always the refetch's to decide.
+/// stay absent — membership is the refetch's to decide — with one exception
+/// (ADR 0011): a **pinned** issue (created or moved this session, #249) that
+/// the refetch lacks is put back in its group, since the refetch may simply
+/// not see it yet. A pinned issue the refetch does include is released.
 pub(super) fn keep_newer_loaded(
     loaded: Vec<RepoIssues>,
     mut incoming: Vec<RepoIssues>,
+    pins: &mut Pins,
 ) -> Vec<RepoIssues> {
-    let mut newer: HashMap<String, Issue> = loaded
-        .into_iter()
-        .flat_map(|r| r.issues)
-        .map(|i| (i.id.clone(), i))
-        .collect();
+    // Loaded issues by id, with the group each sat in and its URL.
+    let mut newer: HashMap<String, (String, String, Issue)> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for repo in loaded {
+        for issue in repo.issues {
+            order.push(issue.id.clone());
+            newer.insert(
+                issue.id.clone(),
+                (repo.repo.clone(), repo.repo_url.clone(), issue),
+            );
+        }
+    }
     for issue in incoming.iter_mut().flat_map(|r| r.issues.iter_mut()) {
-        if let Some(local) = newer.remove(&issue.id)
+        pins.release(&issue.id);
+        if let Some((_, _, local)) = newer.remove(&issue.id)
             && local.updated_at > issue.updated_at
         {
             *issue = local;
         }
+    }
+    // Put back pinned issues the refetch did not include, in loaded order.
+    for id in order {
+        if !pins.contains(&id) {
+            continue;
+        }
+        let Some((group, url, issue)) = newer.remove(&id) else {
+            continue;
+        };
+        let slot = match incoming
+            .iter()
+            .position(|r| r.repo.eq_ignore_ascii_case(&group))
+        {
+            Some(i) => i,
+            None => {
+                let at = incoming
+                    .iter()
+                    .position(|r| r.repo.to_lowercase() > group.to_lowercase())
+                    .unwrap_or(incoming.len());
+                incoming.insert(
+                    at,
+                    RepoIssues {
+                        repo: group,
+                        repo_url: url,
+                        issues: Vec::new(),
+                    },
+                );
+                at
+            }
+        };
+        incoming[slot].issues.insert(0, issue);
     }
     incoming
 }

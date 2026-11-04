@@ -42,5 +42,5 @@ Each is classified as `ProviderError::NotFound` and turned into `None` by `provi
 
 ## Not changed
 
-- Create and move still fetch the org. Since #230, startup and showing closed issues go through the filtered scope and the auto-widen instead: see [filter-pushdown.md](filter-pushdown.md).
+- Since #226 (move) and #249 (create), neither fetches the org: both place the issue the backend reports and pin it until a refetch sees it ([ADR 0011](adr/0011-created-and-moved-issues-are-pinned-until-a-refetch-sees-them.md)). Since #230, startup and showing closed issues go through the filtered scope and the auto-widen: see [filter-pushdown.md](filter-pushdown.md).
 - The info bar's "last fetch" cost is the last **org** fetch's; partial refreshes do not update it.

@@ -30,6 +30,11 @@ pub enum ProviderError {
     /// Displays like the `Api` error it used to be.
     #[error("API errors: {0}")]
     NotFound(String),
+
+    /// The issue was created but could not be read back (#249): only Jira,
+    /// whose create returns just the key. Not a failure — the issue exists.
+    #[error("created #{number} but could not read it back")]
+    CreatedUnread { number: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
@@ -47,6 +52,13 @@ pub fn found<T>(result: Result<T>) -> Result<Option<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn created_unread_names_the_number_and_is_not_not_found() {
+        let e = ProviderError::CreatedUnread { number: 7 };
+        assert_eq!(e.to_string(), "created #7 but could not read it back");
+        assert!(found::<u8>(Err(e)).is_err(), "a created issue is not gone");
+    }
 
     #[test]
     fn found_maps_only_not_found_to_none() {

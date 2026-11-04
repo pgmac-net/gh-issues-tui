@@ -408,9 +408,6 @@ pub(crate) fn spawn_runs(
 /// [`with_issue_patch`] instead, which patches the list in place (#196).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AfterMutation {
-    /// The mutation changed which issues exist (create) — refetch the org.
-    /// A move no longer does: it places the moved issue (#226).
-    RefetchOrg,
     /// A comment was added: bump the list's count, refetch the thread.
     CommentAdded,
     /// A comment was edited: refetch the thread; the count is unchanged.

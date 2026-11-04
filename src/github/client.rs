@@ -650,10 +650,11 @@ impl Client {
         parse_at(&data, &["repository", "issueTypes", "nodes"])
     }
 
-    /// Create an issue, returning `(number, url)`. When `project_id` is set
-    /// the new issue is added to that ProjectV2 with a follow-up mutation
-    /// (`CreateIssueInput` has no ProjectsV2 field).
-    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+    /// Create an issue, returning it as the backend holds it after the write
+    /// (#249), so the list can show it without a refetch. When `project_id`
+    /// is set the new issue is added to that ProjectV2 with a follow-up
+    /// mutation (`CreateIssueInput` has no ProjectsV2 field).
+    pub async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
         let mut input = json!({
             "repositoryId": p.repo_id,
             "title": p.title,
@@ -672,24 +673,10 @@ impl Client {
             input["issueTypeId"] = json!(t);
         }
         let data = self
-            .graphql(
-                "mutation($input: CreateIssueInput!) {
-                   createIssue(input: $input) { issue { id number url } }
-                 }",
-                json!({ "input": input }),
-            )
+            .graphql(CREATE_ISSUE_MUTATION, json!({ "input": input }))
             .await?;
-        let issue = data
-            .pointer("/createIssue/issue")
-            .filter(|v| !v.is_null())
-            .ok_or_else(|| ProviderError::Shape("createIssue returned no issue".into()))?;
-        let issue_id = issue.get("id").and_then(Value::as_str).unwrap_or_default();
-        let number = issue.get("number").and_then(Value::as_u64).unwrap_or(0);
-        let url = issue
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let issue = issue_from_payload(&data, "createIssue")?;
+        let issue_id = issue.id.clone();
 
         if let Some(pid) = &p.project_id {
             self.graphql(
@@ -702,7 +689,7 @@ impl Client {
             )
             .await?;
         }
-        Ok((number, url))
+        Ok(issue)
     }
 
     pub async fn repo_labels(&self, org: &str, repo: &str) -> Result<Vec<RepoLabel>> {
@@ -1191,6 +1178,12 @@ const REOPEN_ISSUE_MUTATION: &str = concat!(
 
 const TRANSFER_ISSUE_MUTATION: &str = concat!(
     "mutation($id: ID!, $repo: ID!) { transferIssue(input: {issueId: $id, repositoryId: $repo, createLabelsIfMissing: true}) { ",
+    mutated_issue_fields!(),
+    " } }"
+);
+
+const CREATE_ISSUE_MUTATION: &str = concat!(
+    "mutation($input: CreateIssueInput!) { createIssue(input: $input) { ",
     mutated_issue_fields!(),
     " } }"
 );
@@ -1762,7 +1755,7 @@ impl crate::provider::IssueProvider for Client {
         self.repo_form_options(org, repo).await
     }
 
-    async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)> {
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue> {
         self.create_issue(p).await
     }
 
@@ -2110,6 +2103,8 @@ mod tests {
             UPDATE_ISSUE_MUTATION,
             // #226: a move is placed from its answer, not an org refetch.
             TRANSFER_ISSUE_MUTATION,
+            // #249: so is a create.
+            CREATE_ISSUE_MUTATION,
         ] {
             for field in [
                 "issue {",
@@ -2144,6 +2139,26 @@ mod tests {
         assert_eq!(issue.assignees, vec!["pgmac".to_string()]);
         assert_eq!(issue.labels[0].name, "bug");
         assert!(issue.closed_at.is_some());
+    }
+
+    #[test]
+    fn create_payload_maps_to_the_created_issue() {
+        let data = json!({ "createIssue": { "issue": {
+            "id": "I_9", "number": 249, "title": "Slow to display",
+            "body": "b", "state": "OPEN", "url": "https://github.com/o/r/issues/249",
+            "author": { "login": "pgmac" },
+            "comments": { "totalCount": 0 },
+            "createdAt": "2026-11-04T00:00:00Z",
+            "updatedAt": "2026-11-04T00:00:00Z",
+            "closedAt": null,
+            "assignees": { "nodes": [] },
+            "labels": { "nodes": [{ "name": "bug", "color": "d73a4a" }] }
+        }}});
+        let issue = issue_from_payload(&data, "createIssue").unwrap();
+        assert_eq!(issue.id, "I_9");
+        assert_eq!(issue.number, 249);
+        assert_eq!(issue.state, IssueState::Open);
+        assert_eq!(issue.labels[0].name, "bug");
     }
 
     #[test]

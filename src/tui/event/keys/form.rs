@@ -161,12 +161,15 @@ pub(crate) fn submit_issue_form(
     let client = client.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
+        // The created issue goes straight into the list, no refetch (#249).
         let msg = match client.create_issue(&params).await {
-            Ok((number, _url)) => AppEvent::MutationDone {
-                msg: format!("created #{number} in {repo}"),
-                issue_id: None,
-                after: AfterMutation::RefetchOrg,
+            Ok(issue) => AppEvent::IssueCreated {
+                repo,
+                issue: Box::new(issue),
             },
+            Err(crate::provider::error::ProviderError::CreatedUnread { number }) => {
+                AppEvent::CreatedUnread { repo, number }
+            }
             Err(e) => AppEvent::MutationFailed(e.to_string()),
         };
         let _ = tx.send(msg);

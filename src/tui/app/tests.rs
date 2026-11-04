@@ -3148,7 +3148,7 @@ fn a_move_places_the_returned_issue_and_the_selection_follows() {
         url: "https://github.com/o/beta/issues/9".into(),
         ..issue(9, "first bug", IssueState::Open)
     };
-    assert!(app.apply_move("I_1", "beta", moved));
+    assert!(app.apply_move("I_1", "beta", moved, std::time::Instant::now()));
     let ids = |repo: &str| -> Vec<String> {
         app.repos
             .iter()
@@ -3172,7 +3172,7 @@ fn a_move_into_a_repo_not_loaded_creates_its_group() {
         url: "https://github.com/o/gamma/issues/1".into(),
         ..issue(10, "first bug", IssueState::Open)
     };
-    app.apply_move("I_1", "gamma", moved);
+    app.apply_move("I_1", "gamma", moved, std::time::Instant::now());
     let g = app.repos.iter().find(|r| r.repo == "gamma").unwrap();
     assert_eq!(g.repo_url, "https://github.com/o/gamma");
     assert_eq!(g.issues[0].id, "I_10");
@@ -4317,4 +4317,219 @@ fn detail_right_unfolds_a_folded_comment_and_is_otherwise_a_no_op() {
     assert!(app.detail_right());
     assert_eq!(app.folded_comments.len(), 1, "only the selected one opened");
     assert_eq!(app.focus, Focus::Detail);
+}
+
+// ---- #249: created issues are inserted and pinned; moves are pinned ----
+
+fn ids_in(app: &App, repo: &str) -> Vec<String> {
+    app.repos
+        .iter()
+        .find(|r| r.repo == repo)
+        .map(|r| r.issues.iter().map(|i| i.id.clone()).collect())
+        .unwrap_or_default()
+}
+
+fn alpha_and_beta_without(app: &App, drop: &str) -> Vec<RepoIssues> {
+    app.repos
+        .iter()
+        .map(|r| RepoIssues {
+            issues: r.issues.iter().filter(|i| i.id != drop).cloned().collect(),
+            ..r.clone()
+        })
+        .collect()
+}
+
+#[test]
+fn a_created_issue_goes_to_the_top_of_its_group_and_is_selected() {
+    let mut app = two_repo_app();
+    app.collapsed.insert("beta".into());
+    app.rebuild_rows();
+    let before = app.data_gen;
+    let shown = app.insert_created(
+        "beta",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    assert!(shown);
+    assert_eq!(ids_in(&app, "beta")[0], "I_9");
+    assert!(!app.collapsed.contains("beta"), "its group is expanded");
+    assert_eq!(app.selected_issue().unwrap().id, "I_9");
+    assert!(app.pins.contains("I_9"));
+    assert!(app.data_gen > before, "the snapshot saves it");
+}
+
+#[test]
+fn a_created_issue_in_an_unloaded_repo_creates_its_group() {
+    let mut app = two_repo_app();
+    let created = Issue {
+        url: "https://github.com/o/gamma/issues/1".into(),
+        ..issue(10, "new ticket", IssueState::Open)
+    };
+    assert!(app.insert_created("gamma", created, std::time::Instant::now()));
+    let names: Vec<_> = app.repos.iter().map(|r| r.repo.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+    assert!(
+        !app.collapsed.contains("gamma"),
+        "a first-seen group is not folded by default_collapsed"
+    );
+}
+
+#[test]
+fn a_created_issue_hidden_by_filters_keeps_the_selection() {
+    let mut app = two_repo_app();
+    app.collapsed.clear();
+    app.rebuild_rows();
+    select_issue(&mut app, "I_3");
+    app.set_text_filter("docs".into());
+    let shown = app.insert_created(
+        "alpha",
+        issue(9, "unrelated", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    assert!(!shown);
+    assert_eq!(app.selected_issue().unwrap().id, "I_3");
+    assert!(app.pins.contains("I_9"));
+}
+
+#[test]
+fn a_refetch_without_a_pinned_issue_keeps_it() {
+    let mut app = two_repo_app();
+    app.insert_created(
+        "alpha",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    // A lagging replica: everything but the new issue.
+    let lagging = alpha_and_beta_without(&app, "I_9");
+    app.set_data(lagging);
+    assert!(ids_in(&app, "alpha").contains(&"I_9".to_string()));
+    assert!(app.pins.contains("I_9"), "still waiting to be seen");
+}
+
+#[test]
+fn a_refetch_that_includes_a_pinned_issue_releases_it() {
+    let mut app = two_repo_app();
+    app.insert_created(
+        "alpha",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    let fresh = app.repos.clone();
+    app.set_data(fresh);
+    assert!(!app.pins.contains("I_9"));
+    // Released: the next refetch without it decides membership again.
+    let gone = alpha_and_beta_without(&app, "I_9");
+    app.set_data(gone);
+    assert!(!ids_in(&app, "alpha").contains(&"I_9".to_string()));
+}
+
+#[test]
+fn an_expired_pin_lets_a_refetch_drop_the_issue() {
+    let mut app = two_repo_app();
+    let t0 = std::time::Instant::now();
+    app.insert_created("alpha", issue(9, "new ticket", IssueState::Open), t0);
+    app.prune_pins(t0 + crate::tui::app::pins::PIN_TTL);
+    let lagging = alpha_and_beta_without(&app, "I_9");
+    app.set_data(lagging);
+    assert!(!ids_in(&app, "alpha").contains(&"I_9".to_string()));
+}
+
+#[test]
+fn a_pinned_issue_survives_a_refetch_that_lost_its_whole_group() {
+    let mut app = two_repo_app();
+    app.insert_created(
+        "beta",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    let only_alpha: Vec<RepoIssues> = app
+        .repos
+        .iter()
+        .filter(|r| r.repo == "alpha")
+        .cloned()
+        .collect();
+    app.set_data(only_alpha);
+    assert_eq!(ids_in(&app, "beta"), vec!["I_9".to_string()]);
+}
+
+#[test]
+fn a_repo_refresh_without_a_pinned_issue_keeps_it() {
+    let mut app = two_repo_app();
+    app.insert_created(
+        "beta",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    app.replace_repo(
+        "beta",
+        Some(RepoIssues {
+            repo: "beta".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(3, "docs fix", IssueState::Open)],
+        }),
+    );
+    assert!(ids_in(&app, "beta").contains(&"I_9".to_string()));
+}
+
+#[test]
+fn a_repo_found_gone_drops_its_pins() {
+    let mut app = two_repo_app();
+    app.insert_created(
+        "beta",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    app.replace_repo("beta", None);
+    assert!(!app.pins.contains("I_9"));
+    assert!(ids_in(&app, "beta").is_empty());
+}
+
+#[test]
+fn an_issue_found_gone_is_unpinned() {
+    let mut app = two_repo_app();
+    app.insert_created(
+        "alpha",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    assert!(app.remove_issue("I_9"));
+    assert!(!app.pins.contains("I_9"));
+}
+
+#[test]
+fn an_org_switch_clears_pins() {
+    let mut app = two_repo_app();
+    app.insert_created(
+        "alpha",
+        issue(9, "new ticket", IssueState::Open),
+        std::time::Instant::now(),
+    );
+    app.switch_org("other".into());
+    assert!(!app.pins.contains("I_9"));
+}
+
+#[test]
+fn a_moved_issue_survives_a_lagging_refetch() {
+    let mut app = two_repo_app();
+    let moved = Issue {
+        url: "https://github.com/o/beta/issues/9".into(),
+        ..issue(9, "first bug", IssueState::Open)
+    };
+    app.apply_move("I_1", "beta", moved, std::time::Instant::now());
+    assert!(app.pins.contains("I_9"));
+    // A replica that has not seen the transfer land in `beta` yet.
+    let lagging = vec![
+        RepoIssues {
+            repo: "alpha".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(2, "feature idea", IssueState::Open)],
+        },
+        RepoIssues {
+            repo: "beta".into(),
+            repo_url: "u".into(),
+            issues: vec![issue(3, "docs fix", IssueState::Open)],
+        },
+    ];
+    app.set_data(lagging);
+    assert!(ids_in(&app, "beta").contains(&"I_9".to_string()));
 }

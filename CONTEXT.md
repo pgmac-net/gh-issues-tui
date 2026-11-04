@@ -71,3 +71,7 @@ Terms used across this repo's code and docs.
 **Revolution**: one pass through the indicator's whole glyph set. `spinner_hue_revolutions` revolutions make one rainbow cycle.
 
 **Config warning**: a startup problem with a config value that falls back instead of failing (so far the `spinner_*` keys). Printed to stderr and held on the status line until the first keypress.
+
+## Pins (#249)
+
+**Pin**: a mark on an issue this session created or moved, held until a refetch has included it (or 10 minutes pass, a refresh finds it gone, or the org changes). A refetch that lacks a pinned issue keeps it. *Avoid*: "optimistic insert" — the pinned issue is the copy the backend reported, never a guess.

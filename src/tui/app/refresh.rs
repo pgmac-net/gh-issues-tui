@@ -84,6 +84,8 @@ impl App {
             repo.issues.retain(|i| i.id != id);
             removed |= repo.issues.len() != before;
         }
+        // Gone is gone: a pin must not hold it (#249).
+        self.pins.release(id);
         if removed {
             self.data_gen += 1;
             self.invalidate_comments(id);
@@ -112,11 +114,18 @@ impl App {
         for issue in loaded.iter().flat_map(|r| &r.issues) {
             self.invalidate_comments(&issue.id);
         }
+        if incoming.is_none() {
+            // The repo itself is gone: nothing in it can be pinned back.
+            for issue in loaded.iter().flat_map(|r| &r.issues) {
+                self.pins.release(&issue.id);
+            }
+        }
         if let Some(fresh) = incoming {
             self.vocab.absorb_repos(std::slice::from_ref(&fresh));
-            let merged = keep_newer_loaded(loaded.into_iter().collect(), vec![fresh])
-                .pop()
-                .expect("one repo in, one repo out");
+            let merged =
+                keep_newer_loaded(loaded.into_iter().collect(), vec![fresh], &mut self.pins)
+                    .pop()
+                    .expect("one repo in, one repo out");
             let name = merged.repo.clone();
             // Keep the org query's name order wherever the repo lands.
             let at = slot.unwrap_or_else(|| {

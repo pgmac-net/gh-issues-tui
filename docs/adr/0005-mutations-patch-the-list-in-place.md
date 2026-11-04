@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (#196).
+Accepted (#196). Rule 4 amended and rule 5 superseded by
+[ADR 0011](0011-created-and-moved-issues-are-pinned-until-a-refetch-sees-them.md) (#249).
 
 ## Context
 

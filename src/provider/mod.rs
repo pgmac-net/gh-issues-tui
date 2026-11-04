@@ -93,7 +93,7 @@ pub trait IssueProvider: Send + Sync {
     async fn repo_form_options(&self, org: &str, repo: &str) -> Result<FormOptions>;
 
     /// Create an issue; returns its number and web URL.
-    async fn create_issue(&self, p: &NewIssueParams) -> Result<(u64, String)>;
+    async fn create_issue(&self, p: &NewIssueParams) -> Result<Issue>;
 
     /// The most recently observed rate limit state, if the provider tracks one.
     fn rate_limit(&self) -> Option<RateLimitData>;
@@ -270,8 +270,8 @@ mod tests {
         async fn repo_form_options(&self, _: &str, _: &str) -> Result<FormOptions> {
             Ok(FormOptions::default())
         }
-        async fn create_issue(&self, _: &NewIssueParams) -> Result<(u64, String)> {
-            Ok((0, String::new()))
+        async fn create_issue(&self, _: &NewIssueParams) -> Result<Issue> {
+            Ok(Issue::fixture("I_0", 0))
         }
         fn host(&self) -> String {
             String::new()
