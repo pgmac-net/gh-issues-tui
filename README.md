@@ -105,7 +105,7 @@ The token needs these classic OAuth scopes:
 | Scope | Needed for | Without it |
 |---|---|---|
 | `repo` | browsing, every issue and comment write, the runs tab | nothing works |
-| `read:project` | opening the new-issue form (`n`): its options query lists the repo's projects | the form never finishes loading its options, so issues cannot be created ([#253](https://github.com/pgmac-net/gh-issues-tui/issues/253)) |
+| `read:project` | listing the repo's projects in the new-issue form (`n`) | the form's project row reads `unavailable — token lacks read:project`; issues can still be created, without a project |
 | `project` | adding a new issue to a project from the form; includes `read:project` | the create reports a failure even though the issue was created ([#254](https://github.com/pgmac-net/gh-issues-tui/issues/254)) |
 
 `gh auth login`'s default scopes include `repo` but no project scope. To add it to an existing login:

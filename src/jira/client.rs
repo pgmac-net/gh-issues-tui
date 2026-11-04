@@ -457,6 +457,7 @@ impl Client {
             users,
             milestones: Vec::new(),
             projects: Vec::new(),
+            projects_unavailable: None,
             issue_types,
         })
     }

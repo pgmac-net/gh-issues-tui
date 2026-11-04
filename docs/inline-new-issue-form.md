@@ -22,6 +22,17 @@ bottom, wrapping at both ends.
   option lists are long and benefit from the pickers' type-ahead filter.
 - **`[ Create ]`** — `Enter`/`Space` submits when a title is present and the
   repo's picker options have loaded.
+- **Project row without `read:project`** (#253) — the repo's projects are
+  fetched by a query of their own, because GitHub fails a whole query that names
+  a field the token cannot read. If that query fails for any reason the form
+  still loads and the row reads `unavailable — token lacks read:project` (or
+  `unavailable — <short error>`), dim, and `Enter` on it does nothing. Issues can
+  still be created, just without a project.
+- **When the options cannot load at all** — the form keeps the error
+  (`IssueForm.options_error`) and draws `options failed: <error>` in place of the
+  `loading…` rows, so it no longer looks like it is loading forever. `[ Create ]`
+  answers `can't create: repo options failed — Esc to close`; closing the form and
+  pressing `n` again retries.
 - **After `[ Create ]`** (#249) — the new issue appears at the top of its repo
   group as soon as the API answers, selected, with its group expanded. There is
   no refetch, so `r` works straight away. If the active filters hide it, the
