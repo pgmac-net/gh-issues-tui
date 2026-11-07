@@ -650,6 +650,7 @@ pub(super) const LIST_HELP: &[(&str, &str)] = &[
         "Space / Enter",
         "toggle repo group / comment fold; issue: into pane",
     ),
+    ("Enter on ○", "dim row from another repo: jump to its issue"),
     ("[ / ]", "collapse / expand all in the focused pane"),
     (
         "Tab",
