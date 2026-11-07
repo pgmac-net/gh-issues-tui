@@ -130,6 +130,10 @@ impl App {
     /// only the fallback when the URL is not the usual
     /// `https://github.com/{owner}/{repo}` shape.
     pub fn current_repo(&self) -> Option<(String, String)> {
+        // An outside sub-issue (#261) carries its own owner and repo.
+        if let Some(o) = self.selected_outside() {
+            return Some((o.owner.clone(), o.repo.clone()));
+        }
         let repo = self.selected_issue_repo()?;
         let owner = repo
             .repo_url

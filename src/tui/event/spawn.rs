@@ -104,6 +104,39 @@ fn spawn_call<T, Fut>(
     });
 }
 
+/// After a refresh covering `scope` settles: fetch the outside sub-issues of
+/// the parents there that are short of them (#261, ADR 0013). Nothing when
+/// the backend can't, or no parent is short.
+pub(crate) fn spawn_sub_issues(
+    client: &Provider,
+    app: &mut App,
+    scope: SubIssueScope,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    if !client.supports_sub_issues() {
+        return;
+    }
+    if let Some(batch) = app.sub_issue_batch(&scope) {
+        spawn_sub_issue_batch(client, batch, tx);
+    }
+}
+
+/// Fetch one batch of outside sub-issues: a first level, or the next one an
+/// answer asked for.
+pub(crate) fn spawn_sub_issue_batch(
+    client: &Provider,
+    batch: SubIssueBatch,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let parents = batch.parents.clone();
+    spawn_call(
+        client,
+        tx,
+        move |c| async move { c.sub_issues(&parents).await },
+        move |result| AppEvent::SubIssues { batch, result },
+    );
+}
+
 /// Fetch the org's repo names for the move picker (#230).
 pub(crate) fn spawn_repo_names(
     client: &Provider,

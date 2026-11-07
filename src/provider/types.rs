@@ -75,6 +75,24 @@ pub struct IssueStub {
     pub owner: String,
 }
 
+/// A sub-issue fetched for its parent because it is not in the loaded scope
+/// (#261, ADR 0013): the whole issue, and the repo and owner it lives in,
+/// which a loaded issue gets from its group instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutsideIssue {
+    pub issue: Issue,
+    pub repo: String,
+    pub owner: String,
+}
+
+/// One parent's sub-issues as [`crate::provider::IssueProvider::sub_issues`]
+/// reports them: all of them, loaded or not.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubIssues {
+    pub parent: String,
+    pub children: Vec<OutsideIssue>,
+}
+
 /// Sub-issues done and in total, as the backend reports them (#234).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubIssueProgress {

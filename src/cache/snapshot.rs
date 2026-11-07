@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::fsio;
-use crate::provider::types::RepoIssues;
+use crate::provider::types::{RepoIssues, SubIssues};
 use crate::tui::app::Loaded;
 
 /// Bumped whenever the stored shape changes; an older file reads as missing.
@@ -23,6 +23,11 @@ pub struct Snapshot {
     /// What the data was fetched at.
     pub loaded: Loaded,
     pub repos: Vec<RepoIssues>,
+    /// Outside sub-issues (#261, ADR 0013), drawn at startup with the rest.
+    /// Not part of the loaded scope, so [`Self::usable_for`] ignores them.
+    /// Missing in older files, which read as none fetched.
+    #[serde(default)]
+    pub outside: Vec<SubIssues>,
 }
 
 impl Snapshot {
@@ -32,7 +37,14 @@ impl Snapshot {
             saved_at,
             loaded,
             repos,
+            outside: Vec::new(),
         }
+    }
+
+    /// The same snapshot holding `outside` sub-issues too.
+    pub fn with_outside(mut self, outside: Vec<SubIssues>) -> Self {
+        self.outside = outside;
+        self
     }
 
     /// A *usable* snapshot covers what is wanted. Any other is treated as
@@ -90,6 +102,37 @@ mod tests {
         assert_eq!(s.saved_at, at);
         assert_eq!(s.loaded, loaded(true, None));
         assert_eq!(s.repos[0].issues[0].id, "I_1");
+    }
+
+    /// #261: outside sub-issues round-trip, and a file from before them
+    /// (no `outside` key) still loads, with none.
+    #[test]
+    fn outside_sub_issues_round_trip_and_older_files_read_as_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = path(tmp.path());
+        let outside = vec![SubIssues {
+            parent: "I_1".into(),
+            children: vec![crate::provider::types::OutsideIssue {
+                issue: Issue::fixture("I_9", 9),
+                repo: "other".into(),
+                owner: "o".into(),
+            }],
+        }];
+        let s = Snapshot::new(Utc::now(), loaded(false, None), repos()).with_outside(outside);
+        save(&p, &s).unwrap();
+        let back = load(&p).unwrap();
+        assert_eq!(back.outside[0].children[0].issue.id, "I_9");
+        assert_eq!(back.outside[0].children[0].owner, "o");
+
+        let mut old = serde_json::to_value(&s).unwrap();
+        old.as_object_mut().unwrap().remove("outside");
+        std::fs::write(&p, old.to_string()).unwrap();
+        let back = load(&p).unwrap();
+        assert!(back.outside.is_empty());
+        assert!(
+            back.usable_for(&loaded(false, None)),
+            "outside never decides usability"
+        );
     }
 
     #[test]

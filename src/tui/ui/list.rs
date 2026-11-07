@@ -147,7 +147,15 @@ fn context_item(
     let dim = Style::default().fg(t.dim);
     let group = &app.repos[group_idx].repo;
     let (id, number, title, home, progress) = if let Some(issue) = app.context_issue(row) {
-        let home = app.issue_repo(&issue.id).unwrap_or(group).to_string();
+        // An outside sub-issue (#261) names its own repo, and owner when
+        // that is not the browsed org; a loaded one its group.
+        let home = match app.row_outside(row) {
+            Some(o) if o.owner.is_empty() || o.owner.eq_ignore_ascii_case(&app.org) => {
+                o.repo.clone()
+            }
+            Some(o) => format!("{}/{}", o.owner, o.repo),
+            None => app.issue_repo(&issue.id).unwrap_or(group).to_string(),
+        };
         (
             issue.id.clone(),
             issue.number,

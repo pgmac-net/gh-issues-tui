@@ -14,6 +14,9 @@ impl App {
         // `set_data` ends a load, but a snapshot is not one: the startup
         // fetch is still to come, and the indicator says "refreshing…".
         let loading = self.loading;
+        // Outside sub-issues first (#261), so the rows `set_data` builds
+        // already hold them.
+        self.restore_outside(snapshot.outside);
         self.set_data(snapshot.repos);
         self.loading = loading;
         self.loaded = Some(snapshot.loaded);
@@ -59,11 +62,10 @@ impl App {
         if self.repos.is_empty() {
             return None;
         }
-        Some(Snapshot::new(
-            self.fetched_at?,
-            self.loaded.clone()?,
-            self.repos.clone(),
-        ))
+        Some(
+            Snapshot::new(self.fetched_at?, self.loaded.clone()?, self.repos.clone())
+                .with_outside(self.outside.entries().to_vec()),
+        )
     }
 
     /// `cached 3h ago · refreshing…` while a snapshot is showing, or

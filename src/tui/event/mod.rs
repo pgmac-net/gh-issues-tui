@@ -28,11 +28,12 @@ mod keys;
 mod persist;
 mod spawn;
 
+use crate::tui::app::outside::SubIssueScope;
 use keys::{HarnessCtx, handle_key};
 use spawn::{
     AfterMutation, refetch_if_widened, spawn_comments, spawn_fetch, spawn_filtered_fetch,
     spawn_label_ranks, spawn_org_refresh, spawn_priority_ranks, spawn_readiness, spawn_runs,
-    spawn_semantic_search,
+    spawn_semantic_search, spawn_sub_issue_batch, spawn_sub_issues,
 };
 
 pub enum AppEvent {
@@ -48,6 +49,12 @@ pub enum AppEvent {
     RepoRefreshed {
         repo: String,
         result: Result<Option<RepoIssues>, String>,
+    },
+    /// Outside sub-issues for one batch of parents (#261); `Ok(None)` when the
+    /// backend can't fetch them.
+    SubIssues {
+        batch: crate::tui::app::outside::SubIssueBatch,
+        result: Result<Option<Vec<crate::provider::types::SubIssues>>, String>,
     },
     /// The org's repo names, fetched for the move picker (#230).
     RepoNames {
@@ -636,7 +643,21 @@ pub(crate) fn handle_app_event(
                 app.repos.iter().map(|r| r.issues.len()).sum::<usize>(),
                 app.repos.len()
             ));
+            spawn_sub_issues(client, app, SubIssueScope::All, tx);
         }
+        AppEvent::SubIssues { batch, result } => match result {
+            Ok(Some(answer)) => {
+                let mut next = None;
+                nav(app, client, tx, |app| {
+                    next = app.apply_sub_issues(&batch, answer);
+                });
+                if let Some(next) = next {
+                    spawn_sub_issue_batch(client, next, tx);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => app.status = Some(format!("sub-issues failed: {e}")),
+        },
         AppEvent::LabelRanks { org, result } => app.apply_label_ranks(&org, result),
         AppEvent::Readiness {
             issue_id,
@@ -665,9 +686,10 @@ pub(crate) fn handle_app_event(
                 // The thread may have moved on too; reload it if it is showing.
                 if comments_refresh_target(app).as_deref() == Some(issue_id.as_str()) {
                     app.invalidate_comments(&issue_id);
-                    spawn_comments(client, issue_id, tx);
+                    spawn_comments(client, issue_id.clone(), tx);
                 }
                 spawn_label_ranks(app, ranker, tx);
+                spawn_sub_issues(client, app, SubIssueScope::Issue(issue_id), tx);
             }
             Ok(None) => {
                 app.loading = false;
@@ -702,6 +724,7 @@ pub(crate) fn handle_app_event(
                     format!("{verb} repo {repo} ({})", app.repo_issue_count(&repo))
                 });
                 spawn_label_ranks(app, ranker, tx);
+                spawn_sub_issues(client, app, SubIssueScope::Repo(repo), tx);
             }
             Err(e) => refresh_failed(app, "refresh", &e),
         },
@@ -1009,6 +1032,7 @@ pub(crate) mod prelude {
     pub use crate::provider::Provider;
     pub use crate::provider::scope::FetchScope;
     pub use crate::provider::types::{Issue, IssueState, PrRef, RepoLabel};
+    pub use crate::tui::app::outside::{SubIssueBatch, SubIssueScope};
     pub use crate::tui::app::{
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailGeometry, EditorState, EditorTarget,
         FetchTarget, Focus, HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW,

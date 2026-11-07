@@ -95,6 +95,25 @@ queries. The client accumulates it across a fetch
 shows `API <remaining>/<limit> (last fetch <n>)`, so the burn is visible while
 using the tool rather than discovered at exhaustion.
 
+## Outside sub-issues (#261)
+
+A parent's sub-issues that aren't loaded are fetched after each refresh that
+covers the parent, only for parents whose `subIssuesSummary.total` is more than
+the sub-issues loaded for them (`SUB_ISSUES_QUERY`, ADR 0013):
+
+```
+nodes(ids: [up to 25 parents]) { ... on Issue { subIssues(first: 50) { nodes { <issue_fields> repository { … } } } } }
+```
+
+`nodes(ids:)` is a list, so `subIssues` is billed per **parent** slot, about
+`1 + parents × 50/100`: 13 points for a full batch of 25. Measured: **1 point**
+for one parent (`terraform-pgpve#32`). Labels and assignees are *not* nested in
+it, since inside `subIssues` they would be billed per child slot; the children
+go through the same 2-points-per-100 hydrate as the bulk list. Each deeper
+level that is still short is one more batch, usually none. A refresh where no
+parent is short sends nothing. `the_sub_issues_query_nests_only_its_own_page`
+guards the shape.
+
 ## Second amplifier: comment fetches
 
 Independently of points, `nav` spawned a comments request on *every* selection

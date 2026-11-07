@@ -31,7 +31,7 @@ Sub-issues nest under their parent in the issue list, to any depth. A parent the
         ● #20  Child in another repo
   ```
 
-  - Only **loaded** sub-issues show; others (another owner, outside the loaded scope) are [#261](https://github.com/pgmac-net/gh-issues-tui/issues/261).
+  - Loaded sub-issues show from what is loaded. **Outside sub-issues** (#261, [ADR 0013](adr/0013-outside-sub-issues-are-fetched-whole-per-refresh-and-kept-apart.md)): the ones that aren't loaded (another owner, a repo not fetched, closed while showing open, outside a pushed-down filter) are fetched for their parent after each refresh, whole, and drawn the same way when they pass the filters. They are read-only: write keys say so, `Enter` and `o` open them in the browser, `→`/`Space` show their detail and comments, `r` refreshes the group. GitHub only; Linear and Jira are [#263](https://github.com/pgmac-net/gh-issues-tui/issues/263). Detail: [outside-sub-issues.md](outside-sub-issues.md).
   - A child must pass every filter except the repo filter, so `terraform-pgpve` filtered to itself still shows `homelabia#221` under `#32`.
   - Only a visible issue of the group holds them: a context row never pulls in children, a filtered-out parent shows none, and a group with nothing visible is not brought back.
   - They sort with the parent's own children, by the current sort.
@@ -54,7 +54,7 @@ Full lists of sub-issues, dependencies and related issues are a follow-up design
 | Key | On a parent | On a sub-issue | On a top-level issue |
 |---|---|---|---|
 | `→` / `Space` / `Enter` | collapsed: expand; expanded: open the detail pane | open the detail pane | open the detail pane |
-| `Enter` on a dim row from another repo | jump to its home row | jump to its home row | n/a |
+| `Enter` on a dim row from another repo | jump to its home row (an outside one: open it in the browser) | same | n/a |
 | `←` | expanded: collapse | go to its parent | go to the repo header |
 | `[` / `]` | collapse / expand every repo group and every parent |||
 

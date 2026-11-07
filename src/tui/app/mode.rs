@@ -38,6 +38,9 @@ pub enum ContextRef {
         issue_idx: usize,
         level: usize,
     },
+    /// An outside sub-issue (#261, ADR 0013): `App.outside`'s entry and the
+    /// child in it. Read-only.
+    Outside { entry: usize, child: usize },
 }
 
 /// The filter-editor fields, in display order.

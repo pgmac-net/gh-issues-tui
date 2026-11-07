@@ -12,7 +12,7 @@ use error::{ProviderError, Result};
 use scope::FetchScope;
 use types::{
     Comment, Created, FormOptions, Issue, IssueState, NewIssueParams, PrLookup, PrRef,
-    RateLimitData, RepoIssues, RepoLabel,
+    RateLimitData, RepoIssues, RepoLabel, SubIssues,
 };
 
 use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
@@ -116,6 +116,20 @@ pub trait IssueProvider: Send + Sync {
     /// cannot tell the two apart before fetching.
     async fn pull_request(&self, _pr: &PrRef) -> Result<PrLookup> {
         Err(ProviderError::Unsupported("pull request summaries"))
+    }
+
+    /// The sub-issues of each of `parent_ids`, whole, with the repo and owner
+    /// each lives in (#261, ADR 0013). One entry per parent the backend
+    /// resolved; a parent it no longer resolves is left out. `Ok(None)` when
+    /// the backend can't, which is the default: GitHub only so far (#263).
+    async fn sub_issues(&self, _parent_ids: &[String]) -> Result<Option<Vec<SubIssues>>> {
+        Ok(None)
+    }
+
+    /// Capability probe for [`IssueProvider::sub_issues`]: `false` spares a
+    /// spawn after every refresh on a backend that would answer `None`.
+    fn supports_sub_issues(&self) -> bool {
+        false
     }
 
     /// Capability probe for [`IssueProvider::move_issue`]. The UI checks

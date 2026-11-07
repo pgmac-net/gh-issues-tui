@@ -1,5 +1,5 @@
 use super::prelude::*;
-use super::subtree::{cross_repo_links, global_rank, group_rows, loaded_index};
+use super::subtree::{Forest, cross_repo_links, global_rank, loaded_index};
 
 /// The visible row list and everything that moves through it: rebuilding
 /// rows from data + filters + sort + collapse, the selection, and the
@@ -27,8 +27,33 @@ impl App {
                     .collect()
             })
             .collect();
-        let foreign = cross_repo_links(&self.repos, &passing);
-        let rank = global_rank(&self.repos, self.sort_key, self.sort_desc);
+        // Outside sub-issues (#261): every one not also loaded (the loaded
+        // copy wins) is a context row an ancestor can be drawn as, and the
+        // ones that pass the filters hang under their visible parents.
+        let mut outside_ids: HashMap<&str, (usize, usize)> = HashMap::new();
+        let mut outside_passing = Vec::new();
+        for (e, entry) in self.outside.entries().iter().enumerate() {
+            for (c, child) in entry.children.iter().enumerate() {
+                let id = child.issue.id.as_str();
+                if loaded.contains_key(id) || outside_ids.contains_key(id) {
+                    continue;
+                }
+                outside_ids.insert(id, (e, c));
+                if self.filters.matches(&child.issue, self.state_filter) {
+                    outside_passing.push((e, c));
+                }
+            }
+        }
+        let foreign = cross_repo_links(&self.repos, &passing, &self.outside, &outside_passing);
+        let rank = global_rank(&self.repos, &self.outside, self.sort_key, self.sort_desc);
+        let forest = Forest {
+            repos: &self.repos,
+            outside: &self.outside,
+            loaded: &loaded,
+            outside_ids: &outside_ids,
+            collapsed: &self.collapsed_issues,
+            rank: &rank,
+        };
         let mut rows = Vec::new();
         for (ri, repo) in self.repos.iter().enumerate() {
             if !self.filters.repo_matches(&repo.repo, repo_exact) {
@@ -43,15 +68,7 @@ impl App {
             rows.push(Row::RepoHeader { repo_idx: ri });
             if !self.collapsed.contains(&repo.repo) {
                 // Issues nest under their sub-issue parents (#234).
-                rows.extend(group_rows(
-                    &self.repos,
-                    ri,
-                    visible,
-                    &loaded,
-                    &self.collapsed_issues,
-                    &foreign[ri],
-                    &rank,
-                ));
+                rows.extend(forest.group_rows(ri, visible, &foreign[ri]));
             }
         }
         self.rows = rows;
@@ -76,6 +93,12 @@ impl App {
                 of: ContextRef::Loaded { repo_idx: home, .. },
                 ..
             }) if home != repo_idx => self.repos.get(*repo_idx).map(|r| r.repo.clone()),
+            // An outside sub-issue (#261) can be drawn in several groups too.
+            Some(Row::Context {
+                repo_idx,
+                of: ContextRef::Outside { .. },
+                ..
+            }) => self.repos.get(*repo_idx).map(|r| r.repo.clone()),
             _ => None,
         };
         RowKey { id, link_in }
@@ -93,7 +116,7 @@ impl App {
         // home row is a different place, reached only by `Enter` (#260).
         if let Some(group) = &key.link_in
             && let Some(idx) = self.rows.iter().position(|row| {
-                matches!(row, Row::Context { repo_idx, of: ContextRef::Loaded { .. }, .. }
+                matches!(row, Row::Context { repo_idx, of: ContextRef::Loaded { .. } | ContextRef::Outside { .. }, .. }
                     if self.repos[*repo_idx].repo == *group)
                     && self.row_issue_id(row) == Some(id.as_str())
             })
@@ -149,13 +172,24 @@ impl App {
     /// issue is selected (e.g. a repo header row).
     pub fn selected_short_ref(&self) -> Option<String> {
         let issue = self.selected_issue()?;
-        let repo = self.selected_issue_repo()?;
+        let (owner, repo) = self.selected_home()?;
         Some(
             self.copy_format
-                .replace("{owner}", &self.org)
-                .replace("{repo}", &repo.repo)
+                .replace("{owner}", &owner)
+                .replace("{repo}", &repo)
                 .replace("{number}", &issue.number.to_string()),
         )
+    }
+
+    /// The owner and repo the selected issue lives in. An outside sub-issue
+    /// (#261) knows its own, which may be another owner; anything else is in
+    /// the browsed org, in [`Self::selected_issue_repo`].
+    pub fn selected_home(&self) -> Option<(String, String)> {
+        if let Some(o) = self.selected_outside() {
+            return Some((o.owner.clone(), o.repo.clone()));
+        }
+        let repo = self.selected_issue_repo()?;
+        Some((self.org.clone(), repo.repo.clone()))
     }
 
     pub fn toggle_collapse(&mut self) {
