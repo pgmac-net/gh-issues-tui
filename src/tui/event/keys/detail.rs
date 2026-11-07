@@ -64,7 +64,7 @@ pub(crate) fn handle_priority_set_key(
                 app.mode = Mode::ConfirmPriority;
                 return;
             }
-            let (org, repo) = match app.selected_repo() {
+            let (org, repo) = match app.selected_issue_repo() {
                 Some(r) => (app.org.clone(), r.repo.clone()),
                 None => return,
             };
@@ -118,7 +118,7 @@ pub(crate) fn handle_labels_set_key(
                 app.status = Some("selection changed — labels not set".into());
                 return;
             }
-            let (org, repo) = match app.selected_repo() {
+            let (org, repo) = match app.selected_issue_repo() {
                 Some(r) => (app.org.clone(), r.repo.clone()),
                 None => return,
             };

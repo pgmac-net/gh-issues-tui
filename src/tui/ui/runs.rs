@@ -74,7 +74,7 @@ pub(super) fn draw_detail_runs(f: &mut Frame, app: &App, t: &Theme, area: Rect, 
     let top = layout::scroll_top(app.runs.top.get(), sel, inner_h, rows.len());
     app.runs.top.set(top);
 
-    let current_repo = app.selected_repo().map(|r| r.repo.as_str());
+    let current_repo = app.selected_issue_repo().map(|r| r.repo.as_str());
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()

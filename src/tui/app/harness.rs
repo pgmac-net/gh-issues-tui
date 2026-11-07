@@ -313,7 +313,7 @@ impl App {
     /// sessions and to expand the `{ref}` placeholder.
     pub fn selected_issue_ref(&self) -> Option<String> {
         let issue = self.selected_issue()?;
-        let repo = self.selected_repo()?;
+        let repo = self.selected_issue_repo()?;
         Some(format!("{}/{}#{}", self.org, repo.repo, issue.number))
     }
 

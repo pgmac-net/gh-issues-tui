@@ -119,7 +119,7 @@ impl App {
     /// fetched, plus every repo seen). Empty when nothing is selected or no
     /// other repo is known.
     pub fn move_targets(&self) -> Vec<String> {
-        let Some(current) = self.selected_repo().map(|r| r.repo.clone()) else {
+        let Some(current) = self.selected_issue_repo().map(|r| r.repo.clone()) else {
             return Vec::new();
         };
         self.known_repos()

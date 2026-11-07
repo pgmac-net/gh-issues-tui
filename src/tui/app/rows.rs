@@ -1,5 +1,5 @@
 use super::prelude::*;
-use super::subtree::{group_rows, loaded_index};
+use super::subtree::{cross_repo_links, global_rank, group_rows, loaded_index};
 
 /// The visible row list and everything that moves through it: rebuilding
 /// rows from data + filters + sort + collapse, the selection, and the
@@ -12,18 +12,29 @@ impl App {
         }
         let repo_exact = self.repo_filter_exact();
         let loaded = loaded_index(&self.repos);
+        // What passes every filter but the repo filter, in every repo: the
+        // issues a group shows, and the sub-issues other repos show under
+        // them (#260, ADR 0012).
+        let passing: Vec<Vec<usize>> = self
+            .repos
+            .iter()
+            .map(|repo| {
+                repo.issues
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, i)| self.filters.matches(i, self.state_filter))
+                    .map(|(idx, _)| idx)
+                    .collect()
+            })
+            .collect();
+        let foreign = cross_repo_links(&self.repos, &passing);
+        let rank = global_rank(&self.repos, self.sort_key, self.sort_desc);
         let mut rows = Vec::new();
         for (ri, repo) in self.repos.iter().enumerate() {
             if !self.filters.repo_matches(&repo.repo, repo_exact) {
                 continue;
             }
-            let visible: Vec<usize> = repo
-                .issues
-                .iter()
-                .enumerate()
-                .filter(|(_, i)| self.filters.matches(i, self.state_filter))
-                .map(|(idx, _)| idx)
-                .collect();
+            let visible = &passing[ri];
             // An exact repo filter names the repo outright: keep its header
             // even when empty, or `n` has nothing to attach to (#198).
             if visible.is_empty() && self.filters.hide_empty && !repo_exact {
@@ -35,9 +46,11 @@ impl App {
                 rows.extend(group_rows(
                     &self.repos,
                     ri,
-                    &visible,
+                    visible,
                     &loaded,
                     &self.collapsed_issues,
+                    &foreign[ri],
+                    &rank,
                 ));
             }
         }
@@ -81,12 +94,26 @@ impl App {
         }
     }
 
+    /// The repo the selected *issue* lives in. [`Self::selected_repo`] is the
+    /// group it is drawn in, which differs for a context row from another
+    /// repo (#260, ADR 0012). Issue-scoped keys (labels, priority, refs, PR
+    /// shorthand, runs) use this one; group-scoped keys keep the group.
+    pub fn selected_issue_repo(&self) -> Option<&RepoIssues> {
+        match self.rows.get(self.selected)? {
+            Row::Context {
+                of: ContextRef::Loaded { repo_idx, .. },
+                ..
+            } => self.repos.get(*repo_idx),
+            _ => self.selected_repo(),
+        }
+    }
+
     /// Short reference for the selected issue, rendered from
     /// `copy_format` (`{owner}`, `{repo}`, `{number}`). `None` when no
     /// issue is selected (e.g. a repo header row).
     pub fn selected_short_ref(&self) -> Option<String> {
         let issue = self.selected_issue()?;
-        let repo = self.selected_repo()?;
+        let repo = self.selected_issue_repo()?;
         Some(
             self.copy_format
                 .replace("{owner}", &self.org)

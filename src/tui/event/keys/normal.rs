@@ -286,7 +286,7 @@ pub(crate) fn handle_normal_key(
             let target = app
                 .selected_issue()
                 .map(|i| i.id.clone())
-                .zip(app.selected_repo().map(|r| r.repo.clone()));
+                .zip(app.selected_issue_repo().map(|r| r.repo.clone()));
             if let Some((issue_id, repo)) = target {
                 app.picker.label_issue = Some(issue_id.clone());
                 app.status = Some("loading labels…".into());
@@ -304,7 +304,7 @@ pub(crate) fn handle_normal_key(
             let target = app
                 .selected_issue()
                 .map(|i| i.id.clone())
-                .zip(app.selected_repo().map(|r| r.repo.clone()));
+                .zip(app.selected_issue_repo().map(|r| r.repo.clone()));
             if let Some((issue_id, repo)) = target {
                 app.picker.priority_issue = Some(issue_id.clone());
                 app.status = Some("loading priorities…".into());
