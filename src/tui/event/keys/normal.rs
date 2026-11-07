@@ -28,6 +28,21 @@ pub(crate) fn handle_normal_key(
         ));
         return;
     }
+    // An outside sub-issue (#261, ADR 0013) is a whole issue but not in the
+    // loaded scope, so a patch would have nothing to land on: read-only too.
+    if let Some(o) = app.selected_outside()
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(
+            key.code,
+            KeyCode::Char('x' | 'e' | 'c' | 'a' | 'l' | 't' | 'p' | 'm' | 'A')
+        )
+    {
+        app.status = Some(format!(
+            "{}#{} isn't loaded here, so it's read-only (o opens it)",
+            o.repo, o.issue.number
+        ));
+        return;
+    }
     match key.code {
         KeyCode::Char('q') => {
             if app.detail.open {
@@ -175,6 +190,15 @@ pub(crate) fn handle_normal_key(
                     nav(app, client, tx, |a| {
                         a.follow_link();
                     });
+                } else if key.code == KeyCode::Enter
+                    && let Some(url) = app.selected_outside().map(|o| o.issue.url.clone())
+                {
+                    // An outside sub-issue has no row of its own to jump to
+                    // (#261): the browser is the nearest thing.
+                    app.status = Some(match open::that(&url) {
+                        Ok(()) => format!("opened {url} (not loaded here)"),
+                        Err(e) => format!("open failed: {e}"),
+                    });
                 } else {
                     tree_right(app, client, tx);
                 }
@@ -257,7 +281,16 @@ pub(crate) fn handle_normal_key(
             }
         }
         KeyCode::Char('O') => {
-            if let Some(url) = app.selected_issue_repo().map(|r| r.repo_url.clone()) {
+            // An outside sub-issue's repo is its own (#261), read from its URL.
+            let outside = app.selected_outside().and_then(|o| {
+                o.issue
+                    .url
+                    .rsplit_once("/issues/")
+                    .map(|(repo, _)| repo.to_string())
+            });
+            if let Some(url) =
+                outside.or_else(|| app.selected_issue_repo().map(|r| r.repo_url.clone()))
+            {
                 match open::that(&url) {
                     Ok(()) => app.status = Some(format!("opened {url}")),
                     Err(e) => app.status = Some(format!("open failed: {e}")),
@@ -461,6 +494,80 @@ mod tests {
                 "{c}"
             );
         }
+    }
+
+    /// `tf#32` with an outside sub-issue `homelabia#221`, selected (#261).
+    fn outside_app() -> App {
+        use crate::provider::types::{
+            IssueStub, OutsideIssue, RepoIssues, SubIssueProgress, SubIssues,
+        };
+        use crate::tui::app::outside::SubIssueScope;
+        let mut app = App::new("org".into(), None, false, false, String::new());
+        app.set_data(vec![RepoIssues {
+            repo: "tf".into(),
+            repo_url: "https://github.com/org/tf".into(),
+            issues: vec![Issue {
+                sub_issues: Some(SubIssueProgress {
+                    completed: 0,
+                    total: 1,
+                }),
+                ..Issue::fixture("I_32", 32)
+            }],
+        }]);
+        let batch = app.sub_issue_batch(&SubIssueScope::All).unwrap();
+        let parent = IssueStub {
+            id: "I_32".into(),
+            number: 32,
+            title: "p".into(),
+            state: IssueState::Open,
+            url: "https://github.com/org/tf/issues/32".into(),
+            repo: "tf".into(),
+            owner: "org".into(),
+        };
+        app.apply_sub_issues(
+            &batch,
+            vec![SubIssues {
+                parent: "I_32".into(),
+                children: vec![OutsideIssue {
+                    issue: Issue {
+                        ancestors: vec![parent],
+                        ..Issue::fixture("I_221", 221)
+                    },
+                    repo: "homelabia".into(),
+                    owner: "org".into(),
+                }],
+            }],
+        );
+        app.selected = app
+            .rows
+            .iter()
+            .position(|r| app.row_outside(r).is_some())
+            .unwrap();
+        app
+    }
+
+    /// #261: an outside sub-issue is read-only; every write key says so.
+    #[tokio::test]
+    async fn write_keys_on_an_outside_sub_issue_say_it_is_not_loaded() {
+        for c in ['x', 'e', 'c', 'a', 'l', 't', 'p', 'm', 'A'] {
+            let mut app = outside_app();
+            press(&mut app, key(KeyCode::Char(c)));
+            assert_eq!(app.mode, Mode::Normal, "{c} opened something");
+            assert_eq!(
+                app.status.as_deref(),
+                Some("homelabia#221 isn't loaded here, so it's read-only (o opens it)"),
+                "{c}"
+            );
+        }
+    }
+
+    /// #261: `→` opens the detail pane on it like any row.
+    #[tokio::test]
+    async fn right_on_an_outside_sub_issue_opens_its_detail() {
+        let mut app = outside_app();
+        press(&mut app, key(KeyCode::Right));
+        assert!(app.detail.open);
+        assert_eq!(app.selected_issue().map(|i| i.number), Some(221));
     }
 
     /// `api#10` with its sub-issue `web#20`; the dim `api#10` row in `web` is

@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::outside::Outside;
 use super::prelude::*;
 use super::rows::TreeRight;
 use crate::provider::types::IssueStub;
@@ -56,47 +57,98 @@ pub(super) fn loaded_index(repos: &[RepoIssues]) -> HashMap<&str, (usize, usize)
         .collect()
 }
 
-/// A loaded sub-issue from another repo that hangs under a visible issue of a
-/// group (#260, ADR 0012): the *anchor*, `anchor_level` steps up its
-/// `ancestors`. Drawn there as a context row; its home row stays at home.
+/// Where an issue the tree draws comes from: a loaded issue (`[repo][issue]`)
+/// or an outside sub-issue (`App.outside` entry and child, #261).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Src {
+    Loaded(usize, usize),
+    Outside(usize, usize),
+}
+
+/// A sub-issue that hangs under a visible issue of a group without being one
+/// of its visible issues: a loaded one from another repo (#260, ADR 0012) or
+/// an outside one (#261, ADR 0013). The *anchor* is `anchor_level` steps up
+/// its `ancestors`. Drawn there as a context row.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Foreign {
-    repo_idx: usize,
-    issue_idx: usize,
+    src: Src,
     anchor_level: usize,
 }
 
-/// Where every loaded issue sorts across all repos under the active sort,
-/// indexed `[repo][issue]`. A cross-repo child is ranked on the same scale as
-/// its parent's own children, so the two interleave. Ties keep repo order, and
-/// so each repo's own order is unchanged.
-pub(super) fn global_rank(repos: &[RepoIssues], key: SortKey, descending: bool) -> Vec<Vec<usize>> {
-    let mut all: Vec<(usize, usize)> = repos
-        .iter()
-        .enumerate()
-        .flat_map(|(ri, r)| (0..r.issues.len()).map(move |ii| (ri, ii)))
-        .collect();
-    all.sort_by(|a, b| {
-        cmp_issues(
-            &repos[a.0].issues[a.1],
-            &repos[b.0].issues[b.1],
-            key,
-            descending,
-        )
-    });
-    let mut rank: Vec<Vec<usize>> = repos.iter().map(|r| vec![0; r.issues.len()]).collect();
-    for (pos, (ri, ii)) in all.into_iter().enumerate() {
-        rank[ri][ii] = pos;
-    }
-    rank
+/// Where every issue the tree may draw sorts under the active sort, loaded and
+/// outside on one scale, so a sub-issue sorts among its parent's children
+/// wherever it comes from. Ties keep repo order, so each repo's own order is
+/// unchanged.
+pub(super) struct Ranks {
+    loaded: Vec<Vec<usize>>,
+    outside: Vec<Vec<usize>>,
 }
 
-/// For each repo, the other repos' passing issues that hang under one of its
-/// passing issues. `passing[ri]` holds the indices of repo `ri`'s issues that
-/// pass every filter except the repo filter, which is what makes a child
-/// from a repo that is filtered out still show under its parent. Only a
-/// passing issue anchors, so a context row never pulls in descendants.
-pub(super) fn cross_repo_links(repos: &[RepoIssues], passing: &[Vec<usize>]) -> Vec<Vec<Foreign>> {
+impl Ranks {
+    fn of(&self, src: Src) -> usize {
+        match src {
+            Src::Loaded(r, i) => self.loaded[r][i],
+            Src::Outside(e, c) => self.outside[e][c],
+        }
+    }
+}
+
+/// Rank everything under `key`, `descending`.
+pub(super) fn global_rank(
+    repos: &[RepoIssues],
+    outside: &Outside,
+    key: SortKey,
+    descending: bool,
+) -> Ranks {
+    let issue = |src: Src| -> &Issue {
+        match src {
+            Src::Loaded(r, i) => &repos[r].issues[i],
+            Src::Outside(e, c) => &outside.entries()[e].children[c].issue,
+        }
+    };
+    let mut all: Vec<Src> = repos
+        .iter()
+        .enumerate()
+        .flat_map(|(ri, r)| (0..r.issues.len()).map(move |ii| Src::Loaded(ri, ii)))
+        .chain(
+            outside
+                .entries()
+                .iter()
+                .enumerate()
+                .flat_map(|(e, s)| (0..s.children.len()).map(move |c| Src::Outside(e, c))),
+        )
+        .collect();
+    all.sort_by(|a, b| cmp_issues(issue(*a), issue(*b), key, descending));
+    let mut ranks = Ranks {
+        loaded: repos.iter().map(|r| vec![0; r.issues.len()]).collect(),
+        outside: outside
+            .entries()
+            .iter()
+            .map(|s| vec![0; s.children.len()])
+            .collect(),
+    };
+    for (pos, src) in all.into_iter().enumerate() {
+        match src {
+            Src::Loaded(r, i) => ranks.loaded[r][i] = pos,
+            Src::Outside(e, c) => ranks.outside[e][c] = pos,
+        }
+    }
+    ranks
+}
+
+/// For each repo group, the sub-issues that hang under one of its passing
+/// issues without being one: other repos' passing issues (#260), and the
+/// outside sub-issues in `outside_passing` (#261). `passing[ri]` holds repo
+/// `ri`'s issues that pass every filter but the repo filter, which is what
+/// lets a child from a repo that is filtered out still show under its
+/// parent. Only a passing issue anchors, so a context row never pulls in
+/// descendants. Each anchors once per group, at its nearest ancestor there.
+pub(super) fn cross_repo_links(
+    repos: &[RepoIssues],
+    passing: &[Vec<usize>],
+    outside: &Outside,
+    outside_passing: &[(usize, usize)],
+) -> Vec<Vec<Foreign>> {
     let mut owner: HashMap<&str, usize> = HashMap::new();
     for (ri, idxs) in passing.iter().enumerate() {
         for &ii in idxs {
@@ -104,78 +156,119 @@ pub(super) fn cross_repo_links(repos: &[RepoIssues], passing: &[Vec<usize>]) -> 
         }
     }
     let mut out: Vec<Vec<Foreign>> = vec![Vec::new(); repos.len()];
-    for (rj, idxs) in passing.iter().enumerate() {
-        for &jj in idxs {
-            let issue = &repos[rj].issues[jj];
-            // An issue anchors once per group: at its nearest ancestor there.
-            let mut anchored: Vec<usize> = Vec::new();
-            for (level, anc) in issue.ancestors.iter().enumerate() {
-                let Some(&ri) = owner.get(anc.id.as_str()) else {
-                    continue;
-                };
-                if ri != rj && !anchored.contains(&ri) {
-                    anchored.push(ri);
-                    out[ri].push(Foreign {
-                        repo_idx: rj,
-                        issue_idx: jj,
-                        anchor_level: level,
-                    });
-                }
+    let mut anchor = |src: Src, issue: &Issue, home: Option<usize>| {
+        let mut anchored: Vec<usize> = Vec::new();
+        for (level, anc) in issue.ancestors.iter().enumerate() {
+            let Some(&ri) = owner.get(anc.id.as_str()) else {
+                continue;
+            };
+            if Some(ri) != home && !anchored.contains(&ri) {
+                anchored.push(ri);
+                out[ri].push(Foreign {
+                    src,
+                    anchor_level: level,
+                });
             }
         }
+    };
+    for (rj, idxs) in passing.iter().enumerate() {
+        for &jj in idxs {
+            anchor(Src::Loaded(rj, jj), &repos[rj].issues[jj], Some(rj));
+        }
+    }
+    // An outside sub-issue has no group of its own, so it may hang in any.
+    for &(e, c) in outside_passing {
+        anchor(
+            Src::Outside(e, c),
+            &outside.entries()[e].children[c].issue,
+            None,
+        );
     }
     out
 }
 
-/// What linking a node to its ancestors reads: the repos, which loaded issue
-/// an id is, and which visible issue an id names (the first one wins).
-struct Linker<'a> {
-    repos: &'a [RepoIssues],
-    loaded: &'a HashMap<&'a str, (usize, usize)>,
-    by_id: HashMap<&'a str, Key>,
+/// What building one group's forest reads: the loaded and outside issues,
+/// where each id is, the collapse state and the sort rank.
+pub(super) struct Forest<'a> {
+    pub repos: &'a [RepoIssues],
+    pub outside: &'a Outside,
+    pub loaded: &'a HashMap<&'a str, (usize, usize)>,
+    /// Where each outside sub-issue is, by id (loaded copies win).
+    pub outside_ids: &'a HashMap<&'a str, (usize, usize)>,
+    pub collapsed: &'a HashSet<String>,
+    pub rank: &'a Ranks,
 }
 
-impl Linker<'_> {
+impl Forest<'_> {
+    fn issue(&self, src: Src) -> &Issue {
+        match src {
+            Src::Loaded(r, i) => &self.repos[r].issues[i],
+            Src::Outside(e, c) => &self.outside.entries()[e].children[c].issue,
+        }
+    }
+
+    /// How an ancestor that is not a visible issue here is drawn: loaded,
+    /// outside, or (known only from `from`'s ancestry) a stub. A stub is read
+    /// back from a loaded descendant; an outside one has no repo slot, so it
+    /// gives `None` and the chain stops there.
+    fn context_of(&self, id: &str, from: Src, level: usize) -> Option<ContextRef> {
+        if let Some(&(repo_idx, issue_idx)) = self.loaded.get(id) {
+            return Some(ContextRef::Loaded {
+                repo_idx,
+                issue_idx,
+            });
+        }
+        if let Some(&(entry, child)) = self.outside_ids.get(id) {
+            return Some(ContextRef::Outside { entry, child });
+        }
+        match from {
+            Src::Loaded(repo_idx, issue_idx) => Some(ContextRef::Stub {
+                repo_idx,
+                issue_idx,
+                level,
+            }),
+            Src::Outside(..) => None,
+        }
+    }
+
     /// Link `start` to its first `levels` ancestors, adding any not already
-    /// present as a context node. `from` is the issue `start` stands for, which
-    /// an unloaded ancestor's stub is read back from. `order` is its sort
-    /// rank: an ancestor sorts where its first descendant would.
+    /// present as a context node. `from` is the issue `start` stands for.
+    /// `order` is its sort rank: an ancestor sorts where its first descendant
+    /// would.
     fn link(
         &self,
         nodes: &mut HashMap<Key, Node>,
+        by_id: &HashMap<&str, Key>,
         start: Key,
-        from: (usize, usize),
+        from: Src,
         levels: usize,
-        order: usize,
     ) {
-        let ancestors = &self.repos[from.0].issues[from.1].ancestors;
+        let order = self.rank.of(from);
         let mut child = start;
-        for (level, stub) in ancestors.iter().enumerate().take(levels) {
-            let parent_key = self
-                .by_id
+        for (level, stub) in self.issue(from).ancestors.iter().enumerate().take(levels) {
+            let parent_key = by_id
                 .get(stub.id.as_str())
                 .cloned()
                 .unwrap_or_else(|| Key::Ancestor(stub.id.clone()));
+            if !nodes.contains_key(&parent_key) {
+                let Some(of) = self.context_of(&stub.id, from, level) else {
+                    return;
+                };
+                nodes.insert(
+                    parent_key.clone(),
+                    Node {
+                        kind: NodeKind::Context(of),
+                        id: stub.id.clone(),
+                        parent: None,
+                        children: Vec::new(),
+                        order,
+                    },
+                );
+            }
             if let Some(node) = nodes.get_mut(&child) {
                 node.parent.get_or_insert_with(|| parent_key.clone());
             }
-            let parent = nodes.entry(parent_key.clone()).or_insert_with(|| Node {
-                kind: NodeKind::Context(match self.loaded.get(stub.id.as_str()) {
-                    Some(&(repo_idx, issue_idx)) => ContextRef::Loaded {
-                        repo_idx,
-                        issue_idx,
-                    },
-                    None => ContextRef::Stub {
-                        repo_idx: from.0,
-                        issue_idx: from.1,
-                        level,
-                    },
-                }),
-                id: stub.id.clone(),
-                parent: None,
-                children: Vec::new(),
-                order,
-            });
+            let parent = nodes.get_mut(&parent_key).expect("inserted above");
             parent.order = parent.order.min(order);
             if !parent.children.contains(&child) {
                 parent.children.push(child.clone());
@@ -183,99 +276,83 @@ impl Linker<'_> {
             child = parent_key;
         }
     }
-}
 
-/// The rows below repo group `ri`'s header: its `visible` issues (in sort
-/// order) as a forest, with collapsed nodes' descendants left out. `foreign`
-/// are the other repos' sub-issues that hang under them (#260) and `rank`
-/// puts both on one sort scale.
-pub(super) fn group_rows(
-    repos: &[RepoIssues],
-    ri: usize,
-    visible: &[usize],
-    loaded: &HashMap<&str, (usize, usize)>,
-    collapsed: &HashSet<String>,
-    foreign: &[Foreign],
-    rank: &[Vec<usize>],
-) -> Vec<Row> {
-    let issues = &repos[ri].issues;
-    let mut nodes: HashMap<Key, Node> = HashMap::new();
-    // Which visible issue an id names, for linking: the first one wins.
-    let mut by_id: HashMap<&str, Key> = HashMap::new();
-    for (pos, &ii) in visible.iter().enumerate() {
-        by_id
-            .entry(issues[ii].id.as_str())
-            .or_insert(Key::Visible(pos));
-        nodes.insert(
-            Key::Visible(pos),
-            Node {
-                kind: NodeKind::Issue(ii),
-                id: issues[ii].id.clone(),
+    /// The rows below repo group `ri`'s header: its `visible` issues (in sort
+    /// order) as a forest, plus the `foreign` sub-issues that hang under them,
+    /// with collapsed nodes' descendants left out.
+    pub(super) fn group_rows(&self, ri: usize, visible: &[usize], foreign: &[Foreign]) -> Vec<Row> {
+        let issues = &self.repos[ri].issues;
+        let mut nodes: HashMap<Key, Node> = HashMap::new();
+        // Which visible issue an id names, for linking: the first one wins.
+        let mut by_id: HashMap<&str, Key> = HashMap::new();
+        for (pos, &ii) in visible.iter().enumerate() {
+            by_id
+                .entry(issues[ii].id.as_str())
+                .or_insert(Key::Visible(pos));
+            nodes.insert(
+                Key::Visible(pos),
+                Node {
+                    kind: NodeKind::Issue(ii),
+                    id: issues[ii].id.clone(),
+                    parent: None,
+                    children: Vec::new(),
+                    order: self.rank.of(Src::Loaded(ri, ii)),
+                },
+            );
+        }
+        // Walk each visible issue's ancestry, linking child to parent and
+        // adding any ancestor not already present as a context node.
+        for (pos, &ii) in visible.iter().enumerate() {
+            let levels = issues[ii].ancestors.len();
+            self.link(
+                &mut nodes,
+                &by_id,
+                Key::Visible(pos),
+                Src::Loaded(ri, ii),
+                levels,
+            );
+        }
+        // Then each foreign sub-issue, up to and including its anchor.
+        for f in foreign {
+            let issue = self.issue(f.src);
+            // An id that repeats a visible issue's would merge into it: skip.
+            if by_id.contains_key(issue.id.as_str()) {
+                continue;
+            }
+            let start = Key::Ancestor(issue.id.clone());
+            let order = self.rank.of(f.src);
+            let of = match f.src {
+                Src::Loaded(repo_idx, issue_idx) => ContextRef::Loaded {
+                    repo_idx,
+                    issue_idx,
+                },
+                Src::Outside(entry, child) => ContextRef::Outside { entry, child },
+            };
+            let node = nodes.entry(start.clone()).or_insert_with(|| Node {
+                kind: NodeKind::Context(of),
+                id: issue.id.clone(),
                 parent: None,
                 children: Vec::new(),
-                order: rank[ri][ii],
-            },
-        );
-    }
-    let linker = Linker {
-        repos,
-        loaded,
-        by_id,
-    };
-    // Walk each visible issue's ancestry, linking child to parent and adding
-    // any ancestor not already present as a context node.
-    for (pos, &ii) in visible.iter().enumerate() {
-        let levels = issues[ii].ancestors.len();
-        linker.link(
-            &mut nodes,
-            Key::Visible(pos),
-            (ri, ii),
-            levels,
-            rank[ri][ii],
-        );
-    }
-    // Then each other-repo sub-issue, up to and including its anchor (#260).
-    for f in foreign {
-        let issue = &repos[f.repo_idx].issues[f.issue_idx];
-        // An id that repeats a visible issue's would merge into it: skip.
-        if linker.by_id.contains_key(issue.id.as_str()) {
-            continue;
+                order,
+            });
+            node.order = node.order.min(order);
+            self.link(&mut nodes, &by_id, start, f.src, f.anchor_level + 1);
         }
-        let start = Key::Ancestor(issue.id.clone());
-        let order = rank[f.repo_idx][f.issue_idx];
-        let node = nodes.entry(start.clone()).or_insert_with(|| Node {
-            kind: NodeKind::Context(ContextRef::Loaded {
-                repo_idx: f.repo_idx,
-                issue_idx: f.issue_idx,
-            }),
-            id: issue.id.clone(),
-            parent: None,
-            children: Vec::new(),
-            order,
-        });
-        node.order = node.order.min(order);
-        linker.link(
-            &mut nodes,
-            start,
-            (f.repo_idx, f.issue_idx),
-            f.anchor_level + 1,
-            order,
-        );
-    }
 
-    let mut roots: Vec<&Key> = nodes
-        .iter()
-        .filter(|(_, n)| n.parent.is_none())
-        .map(|(k, _)| k)
-        .collect();
-    roots.sort_by_key(|k| nodes[*k].order);
+        let mut roots: Vec<&Key> = nodes
+            .iter()
+            .filter(|(_, n)| n.parent.is_none())
+            .map(|(k, _)| k)
+            .collect();
+        roots.sort_by_key(|k| nodes[*k].order);
 
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    for root in roots {
-        emit(root, 0, ri, &nodes, collapsed, &mut seen, &mut out);
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for root in roots {
+            emit(root, 0, ri, &nodes, self.collapsed, &mut seen, &mut out);
+        }
+        out
     }
-    out
 }
 
 /// Push `key` and, unless it is collapsed, its children in sort order. `seen`
@@ -343,6 +420,11 @@ impl App {
                     },
                 ..
             } => (*repo_idx, *issue_idx),
+            // An outside sub-issue (#261) is a whole issue too, read-only.
+            Row::Context {
+                of: ContextRef::Outside { entry, child },
+                ..
+            } => return self.outside.child(*entry, *child).map(|o| &o.issue),
             _ => return None,
         };
         self.repos.get(repo_idx)?.issues.get(issue_idx)

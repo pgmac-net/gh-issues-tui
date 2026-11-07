@@ -11,9 +11,9 @@ use crate::provider::http::{
 use crate::provider::scope::FetchScope;
 use crate::provider::types::{
     CheckContextInfo, CheckRollup, Comment, Created, FormOptions, IdName, Issue, IssueRef,
-    IssueState, IssueStub, Label, NewIssueParams, PrLookup, PrRef, PrState, PrSummary,
-    RateLimitData, Relations, RepoIssues, RepoLabel, ReviewDecision, ReviewSummary,
-    SubIssueProgress, WorkflowRunInfo,
+    IssueState, IssueStub, Label, NewIssueParams, OutsideIssue, PrLookup, PrRef, PrState,
+    PrSummary, RateLimitData, Relations, RepoIssues, RepoLabel, ReviewDecision, ReviewSummary,
+    SubIssueProgress, SubIssues, WorkflowRunInfo,
 };
 use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
 
@@ -25,6 +25,10 @@ const REPOS_PAGE: u32 = 100;
 const ISSUES_PAGE: u32 = 100;
 /// GitHub rejects `nodes(ids:)` with more than 100 ids.
 const HYDRATE_BATCH: usize = 100;
+
+/// Parents per [`SUB_ISSUES_QUERY`] request (#261). Each parent slot is billed
+/// for its `subIssues` page, so 25 parents cost about 13 points.
+const SUB_ISSUES_BATCH: usize = 25;
 const MIN_REPOS_PAGE: u32 = 5;
 const MIN_ISSUES_PAGE: u32 = 10;
 
@@ -441,6 +445,63 @@ impl Client {
             }
         }
         Ok(())
+    }
+
+    /// The sub-issues of each of `parent_ids` (#261), whole: one batched
+    /// `nodes(ids:)` request per [`SUB_ISSUES_BATCH`] parents, then the usual
+    /// label/assignee hydrate over every child.
+    pub async fn sub_issues(&self, parent_ids: &[String]) -> Result<Vec<SubIssues>> {
+        let mut out: Vec<SubIssues> = Vec::new();
+        for chunk in parent_ids.chunks(SUB_ISSUES_BATCH) {
+            let data = self
+                .graphql(SUB_ISSUES_QUERY, json!({ "ids": chunk }))
+                .await?;
+            let nodes = data
+                .get("nodes")
+                .and_then(Value::as_array)
+                .ok_or_else(|| ProviderError::Shape("missing nodes".into()))?;
+            for node in nodes {
+                // A parent GitHub no longer resolves (deleted, transferred,
+                // hidden) is null or empty: leave it out.
+                if node.is_null() || node.get("id").is_none() {
+                    continue;
+                }
+                let parent: SubIssuesParentNode = serde_json::from_value(node.clone())
+                    .map_err(|e| ProviderError::Shape(e.to_string()))?;
+                out.push(SubIssues {
+                    parent: parent.id,
+                    children: parent
+                        .sub_issues
+                        .nodes
+                        .into_iter()
+                        .map(|n| OutsideIssue {
+                            issue: n.issue.to_issue(),
+                            repo: n.repository.name,
+                            owner: n.repository.owner.login,
+                        })
+                        .collect(),
+                });
+            }
+        }
+        // Hydrate every child at once, through the bulk list's own path.
+        let mut all = vec![RepoIssues {
+            repo: String::new(),
+            repo_url: String::new(),
+            issues: out
+                .iter()
+                .flat_map(|s| s.children.iter().map(|c| c.issue.clone()))
+                .collect(),
+        }];
+        self.hydrate_issues(&mut all).await?;
+        let mut hydrated = all.remove(0).issues.into_iter();
+        for s in &mut out {
+            for c in &mut s.children {
+                if let Some(h) = hydrated.next() {
+                    c.issue = h;
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Fetch the comment thread of an issue by node id.
@@ -950,6 +1011,27 @@ struct ParentRepo {
     owner: ActorNode,
 }
 
+/// One parent in a [`SUB_ISSUES_QUERY`] answer.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubIssuesParentNode {
+    id: String,
+    sub_issues: SubIssuesConn,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubIssuesConn {
+    nodes: Vec<SubIssueNode>,
+}
+
+/// A sub-issue: the list fetch's fields plus where it lives.
+#[derive(Debug, Deserialize)]
+struct SubIssueNode {
+    #[serde(flatten)]
+    issue: IssueNode,
+    repository: ParentRepo,
+}
+
 #[derive(Debug, Deserialize)]
 struct SubIssuesSummaryNode {
     completed: u32,
@@ -1171,6 +1253,14 @@ macro_rules! issue_fields {
     };
 }
 
+/// How many sub-issues one parent's page holds in [`SUB_ISSUES_QUERY`]. A
+/// parent with more shows the first ones; its progress still says how many.
+macro_rules! sub_issues_first {
+    () => {
+        "50"
+    };
+}
+
 /// What a context row needs of an ancestor it may never load (#234).
 macro_rules! stub_fields {
     () => {
@@ -1316,6 +1406,19 @@ const ISSUE_NODE_QUERY: &str = concat!(
     "query($id: ID!) { rateLimit { cost } node(id: $id) { ... on Issue { ",
     full_issue_fields!(),
     " } } }"
+);
+
+/// The sub-issues of a batch of parents (#261, ADR 0013), with the list
+/// fetch's scalar fields and where each lives. `nodes(ids:)` is a list, so
+/// `subIssues` is billed once per parent slot: about `1 + parents × 50/100`.
+/// Labels and assignees are *not* nested here (that would be billed per child
+/// slot); they are hydrated afterwards, as for the bulk list.
+const SUB_ISSUES_QUERY: &str = concat!(
+    "query($ids: [ID!]!) { rateLimit { cost } nodes(ids: $ids) { ... on Issue { id subIssues(first: ",
+    sub_issues_first!(),
+    ") { nodes { ",
+    issue_fields!(),
+    " repository { name owner { login } } } } } } }"
 );
 
 /// Labels and assignees for up to 100 issues at a time. `nodes(ids:)` is a
@@ -1750,6 +1853,10 @@ impl crate::provider::IssueProvider for Client {
     async fn issue(&self, issue_id: &str) -> Result<Option<Issue>> {
         self.issue(issue_id).await
     }
+
+    async fn sub_issues(&self, parent_ids: &[String]) -> Result<Option<Vec<SubIssues>>> {
+        self.sub_issues(parent_ids).await.map(Some)
+    }
     async fn repo_issues(
         &self,
         org: &str,
@@ -1820,6 +1927,10 @@ impl crate::provider::IssueProvider for Client {
     }
 
     fn supports_pr_summary(&self) -> bool {
+        true
+    }
+
+    fn supports_sub_issues(&self) -> bool {
         true
     }
 
@@ -2066,6 +2177,60 @@ mod tests {
             !fields.contains("first:"),
             "no connection may be paginated inside `issues` — see docs/graphql-api-cost.md"
         );
+    }
+
+    /// #261: the sub-issues batch nests exactly one paginated connection, the
+    /// `subIssues` page under each parent slot; labels and assignees would be
+    /// billed per child slot, so they are hydrated afterwards.
+    #[test]
+    fn the_sub_issues_query_nests_only_its_own_page() {
+        assert_eq!(
+            SUB_ISSUES_QUERY.matches("first:").count(),
+            1,
+            "{SUB_ISSUES_QUERY}"
+        );
+        assert!(SUB_ISSUES_QUERY.contains("nodes(ids: $ids)"));
+        assert!(SUB_ISSUES_QUERY.contains("subIssues(first: 50)"));
+        for banned in ["assignees", "labels"] {
+            assert!(!SUB_ISSUES_QUERY.contains(banned), "{banned}");
+        }
+        assert!(SUB_ISSUES_QUERY.contains("repository { name owner { login } } } } } } }"));
+        // And the bulk list still carries no sub-issue connection at all.
+        assert!(!issue_fields!().contains("subIssues("));
+    }
+
+    /// #261: a parent's sub-issues parse with where each lives, another owner
+    /// included.
+    #[test]
+    fn a_sub_issues_answer_parses_with_each_child_s_repo() {
+        let node = serde_json::json!({
+            "id": "I_32",
+            "subIssues": {"nodes": [{
+                "id": "I_221", "number": 221, "title": "burn-in", "body": "b", "state": "OPEN",
+                "url": "https://github.com/other/infra/issues/221",
+                "author": {"login": "a"}, "comments": {"totalCount": 2},
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-02T00:00:00Z",
+                "closedAt": null,
+                "subIssuesSummary": {"completed": 0, "total": 1},
+                "issueDependenciesSummary": {"blockedBy": 0, "blocking": 0},
+                "relatesTo": {"totalCount": 0},
+                "parent": {
+                    "id": "I_32", "number": 32, "title": "p", "state": "OPEN", "url": "u",
+                    "repository": {"name": "tf", "owner": {"login": "org"}},
+                    "parent": null
+                },
+                "repository": {"name": "infra", "owner": {"login": "other"}}
+            }]}
+        });
+        let parent: SubIssuesParentNode = serde_json::from_value(node).unwrap();
+        assert_eq!(parent.id, "I_32");
+        let child = &parent.sub_issues.nodes[0];
+        assert_eq!(child.repository.name, "infra");
+        assert_eq!(child.repository.owner.login, "other");
+        let issue = child.issue.to_issue();
+        assert_eq!(issue.number, 221);
+        assert_eq!(issue.ancestors[0].number, 32);
+        assert_eq!(issue.sub_issues.map(|s| s.total), Some(1));
     }
 
     /// #234: the ancestor chain reaches GitHub's 8-level sub-issue limit.

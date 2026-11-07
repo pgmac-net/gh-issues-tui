@@ -34,6 +34,13 @@ impl App {
     /// nothing loaded to patch, so `r` there refreshes the group it is drawn
     /// in, which is where the child that names it lives.
     pub fn refresh_target(&self) -> RefreshTarget {
+        // An outside sub-issue (#261) has nothing loaded to patch either: the
+        // group it is drawn in holds its parent, whose refresh refetches it.
+        if self.selected_outside().is_some() {
+            return self.selected_repo().map_or(RefreshTarget::Filtered, |r| {
+                RefreshTarget::Repo(r.repo.clone())
+            });
+        }
         match self.rows.get(self.selected) {
             Some(Row::Issue { .. } | Row::Context { .. }) => match self.selected_issue() {
                 Some(i) => RefreshTarget::Issue {

@@ -15,6 +15,7 @@ mod harness;
 pub mod help;
 mod indicator;
 mod mode;
+pub mod outside;
 mod patch;
 mod picker;
 mod pins;
@@ -57,6 +58,9 @@ pub struct App {
     pub org: String,
     /// Raw data as fetched.
     pub repos: Vec<RepoIssues>,
+    /// Outside sub-issues (#261, ADR 0013): fetched for their parents, never
+    /// part of `repos`, the loaded scope or any count.
+    pub outside: outside::Outside,
     /// Collapsed repo names (survives reload).
     pub collapsed: std::collections::HashSet<String>,
     /// Collapsed sub-issue parents, by issue id (#234). Survives reloads;
@@ -206,6 +210,7 @@ impl App {
         Self {
             org,
             repos: Vec::new(),
+            outside: outside::Outside::default(),
             collapsed: Default::default(),
             collapsed_issues: Default::default(),
             resume: None,
@@ -367,6 +372,7 @@ impl App {
     pub fn switch_org(&mut self, org: String) {
         self.org = org;
         self.repos.clear();
+        self.outside = outside::Outside::default();
         self.comment_cache.clear();
         self.folded_comments.clear();
         self.readiness.clear();

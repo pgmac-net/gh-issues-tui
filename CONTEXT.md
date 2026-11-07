@@ -64,6 +64,8 @@ Terms used across this repo's code and docs.
 
 **Home row**: an issue's own row, in its own repo's group. A context row from another repo is a link to it: `Enter` jumps there (#260); `←`/`→`/`Space` stay on the dim row.
 
+**Outside sub-issue**: a sub-issue fetched for its parent because it is not in the loaded scope (another owner or repo not fetched, closed while showing open, outside a pushed-down filter) (#261). A full issue, filtered like any other, held in `App.outside` apart from `App.repos`: drawn as a context row, never counted, read-only (`o` and `Enter` open it). *Avoid*: "stub", which has only what a descendant's ancestry carries; "loaded", which still means inside the loaded scope.
+
 **Anchor**: the visible issue of a group that a cross-repo descendant hangs under. Only visible issues anchor; a context row never does, so an epic drawn as context does not pull its whole tree into the group.
 
 **Stub**: a context row whose issue is not loaded, known only from a descendant's ancestry. Read-only; `o` opens it.

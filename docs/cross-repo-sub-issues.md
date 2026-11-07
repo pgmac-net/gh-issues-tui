@@ -35,9 +35,9 @@ The first version also jumped on `→` and `Space` (on an expanded parent), and 
 
 Other keys: `o` opens the issue itself; write keys on a loaded dim row act on that issue (in its own repo); `#N` jumps to a home row; `n` creates in the group you are looking at; `O` opens the issue's own repo.
 
-## Known limitation
+## Limitation, since lifted
 
-Only loaded sub-issues show. An exact repo filter narrows the fetch to that one repo (ADR 0008), so with `--org` started inside the parent's repo and no whole-org data cached, the other repos' sub-issues are not loaded and don't show. A whole-org session, or a cached whole-org snapshot, shows them. Tracked with the unloaded case in #261.
+This shipped with loaded sub-issues only: an exact repo filter narrows the fetch to that one repo (ADR 0008), so starting inside the parent's repo with nothing cached showed none from other repos. #261 lifted it: the missing ones are fetched for their parent as *outside sub-issues* ([outside-sub-issues.md](outside-sub-issues.md), ADR 0013).
 
 ## A bug this fixed
 
