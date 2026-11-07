@@ -257,7 +257,7 @@ pub(crate) fn handle_normal_key(
             }
         }
         KeyCode::Char('O') => {
-            if let Some(url) = app.selected_repo().map(|r| r.repo_url.clone()) {
+            if let Some(url) = app.selected_issue_repo().map(|r| r.repo_url.clone()) {
                 match open::that(&url) {
                     Ok(()) => app.status = Some(format!("opened {url}")),
                     Err(e) => app.status = Some(format!("open failed: {e}")),

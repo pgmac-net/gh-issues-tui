@@ -33,7 +33,7 @@ The first version also jumped on `→` and `Space` (on an expanded parent), and 
 - `Enter` is the only key that follows a link. `←`, `→` and `Space` collapse, expand, or open the detail pane on the dim row itself.
 - The selection is restored by a `RowKey` (issue id plus the group the row was drawn in), at every re-select: collapse, expand, refresh, patch, rank merge, created issue. A refresh no longer moves you off a dim row either.
 
-Other keys: `o` opens the issue itself; write keys on a loaded dim row act on that issue (in its own repo); `#N` jumps to a home row; `n` creates in the group you are looking at; `O` opens the group's repo URL.
+Other keys: `o` opens the issue itself; write keys on a loaded dim row act on that issue (in its own repo); `#N` jumps to a home row; `n` creates in the group you are looking at; `O` opens the issue's own repo.
 
 ## Known limitation
 
