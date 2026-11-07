@@ -77,7 +77,7 @@ impl App {
     /// Drop the issue with `id` — a refresh found it gone. Returns `false`
     /// when it was not loaded. Callers route through `nav()`.
     pub fn remove_issue(&mut self, id: &str) -> bool {
-        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        let prev_selected = self.selected_key();
         let mut removed = false;
         for repo in &mut self.repos {
             let before = repo.issues.len();
@@ -102,7 +102,7 @@ impl App {
     /// `set_data` does for the whole org.
     pub fn replace_repo(&mut self, name: &str, incoming: Option<RepoIssues>) {
         self.data_gen += 1;
-        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        let prev_selected = self.selected_key();
         let prev_header = match self.rows.get(self.selected) {
             Some(Row::RepoHeader { .. }) => self.selected_repo().map(|r| r.repo.clone()),
             _ => None,
@@ -206,7 +206,7 @@ mod tests {
     }
 
     fn select_issue(app: &mut App, id: &str) {
-        app.reselect(Some(id.into()));
+        app.reselect(Some(String::from(id)));
         assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some(id));
     }
 

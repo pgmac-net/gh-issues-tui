@@ -60,11 +60,47 @@ impl App {
         }
     }
 
-    /// Move the selection back onto the issue with `id`, when it is still in
-    /// the rows. A vanished (or absent) id leaves the index where
-    /// `rebuild_rows` clamped it.
-    pub(super) fn reselect(&mut self, id: Option<String>) {
-        let Some(id) = id else { return };
+    /// What to put the selection back on after the rows are rebuilt: the
+    /// selected issue's key. A loaded row only; `None` on a header or stub.
+    pub(super) fn selected_key(&self) -> Option<RowKey> {
+        let id = self.row_issue(self.rows.get(self.selected)?)?.id.clone();
+        Some(self.selected_key_for(id))
+    }
+
+    /// As [`Self::selected_key`] for `id`, which the selected row stands for
+    /// (a stub's id too).
+    pub(super) fn selected_key_for(&self, id: String) -> RowKey {
+        let link_in = match self.rows.get(self.selected) {
+            Some(Row::Context {
+                repo_idx,
+                of: ContextRef::Loaded { repo_idx: home, .. },
+                ..
+            }) if home != repo_idx => self.repos.get(*repo_idx).map(|r| r.repo.clone()),
+            _ => None,
+        };
+        RowKey { id, link_in }
+    }
+
+    /// Move the selection back onto the issue `key` names, when it is still
+    /// in the rows. A vanished (or absent) id leaves the index where
+    /// `rebuild_rows` clamped it. Takes an `Option<String>` id too.
+    pub(super) fn reselect(&mut self, key: Option<impl Into<RowKey>>) {
+        let Some(key) = key.map(Into::into) else {
+            return;
+        };
+        let id = key.id;
+        // A dim row for an issue from another repo stays on that dim row: its
+        // home row is a different place, reached only by `Enter` (#260).
+        if let Some(group) = &key.link_in
+            && let Some(idx) = self.rows.iter().position(|row| {
+                matches!(row, Row::Context { repo_idx, of: ContextRef::Loaded { .. }, .. }
+                    if self.repos[*repo_idx].repo == *group)
+                    && self.row_issue_id(row) == Some(id.as_str())
+            })
+        {
+            self.selected = idx;
+            return;
+        }
         // A visible row first; failing that, the same issue as a context row
         // (it was filtered out, but its descendants keep it on screen).
         let at = |want_issue: bool| {
@@ -385,6 +421,22 @@ impl App {
             .flat_map(|r| r.issues.iter())
             .filter(|i| self.filters.matches(i, self.state_filter))
             .count()
+    }
+}
+
+/// Which row to put the selection back on after a rebuild: an issue's id, and
+/// when the selection was a dim row for an issue from another repo, the group
+/// it was drawn in. Without the group the id alone names the issue's home row,
+/// and a refresh or a collapse would carry the selection there (#260).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RowKey {
+    pub(super) id: String,
+    pub(super) link_in: Option<String>,
+}
+
+impl From<String> for RowKey {
+    fn from(id: String) -> Self {
+        RowKey { id, link_in: None }
     }
 }
 

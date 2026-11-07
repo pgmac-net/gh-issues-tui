@@ -29,10 +29,16 @@ So a parent such as `terraform-pgpve#32`, whose sub-issues all live in
    group, a filtered-out parent shows no children, and `hide_empty` is never
    undone by context rows.
 4. **They sort with same-repo children by the active sort.**
-5. **A context row from another repo is a link home.** `Enter`/`→`/`Space`
-   expand it when it is a collapsed branch, else jump to its home row (as `#N`
-   jump does, widening filters if needed). This applies to ancestors as well
-   as descendants. A context row in its own repo keeps ADR 0009's behaviour.
+5. **A context row from another repo is a link home, and only `Enter`
+   follows it.** `Enter` jumps to its home row (as `#N` jump does, widening
+   filters if needed), for ancestors as well as descendants. `←`, `→` and
+   `Space` act on the dim row itself, as on any row: collapse, expand, or open
+   the detail pane. A context row in its own repo keeps ADR 0009's behaviour.
+   (First built with `→`/`Space` jumping too; that took the selection away
+   when you only meant to fold the tree.)
+   The selection also stays on a dim row across a refresh, a patch and a
+   collapse: it is re-found by issue id *and* the group it was drawn in
+   (`RowKey`), since the id alone names the home row.
 6. **Issue-scoped keys use the issue's home repo, not the group drawn in.**
    Labels, priority, copy ref, harness ref, PR shorthand and the runs tab
    resolve the repo from the selected issue; group-scoped keys (`n`, collapse,

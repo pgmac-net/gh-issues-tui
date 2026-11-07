@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use super::App;
 use super::pins::Pins;
+use super::rows::RowKey;
 use crate::provider::types::{Issue, RepoIssues};
 
 /// A repo's web URL from one of its issues' (`…/repo/issues/42` → `…/repo`),
@@ -34,7 +35,7 @@ impl App {
     /// drops out and the selection clamps to its neighbour. Callers route
     /// through `nav()` so the detail pane follows.
     pub fn patch_issue(&mut self, issue: Issue) -> bool {
-        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        let prev_selected = self.selected_key();
         let Some(slot) = self
             .repos
             .iter_mut()
@@ -64,7 +65,7 @@ impl App {
     /// does not drop it.
     pub fn apply_move(&mut self, from_id: &str, target: &str, issue: Issue, now: Instant) -> bool {
         self.data_gen += 1;
-        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        let prev_selected = self.selected_key();
         for repo in &mut self.repos {
             repo.issues.retain(|i| i.id != from_id);
         }
@@ -76,8 +77,8 @@ impl App {
         self.pins.pin(id.clone(), now);
         self.stamp_label_ranks();
         self.rebuild_rows();
-        let follow = if prev_selected.as_deref() == Some(from_id) {
-            Some(id.clone())
+        let follow = if prev_selected.as_ref().map(|k| k.id.as_str()) == Some(from_id) {
+            Some(RowKey::from(id.clone()))
         } else {
             prev_selected
         };
@@ -93,7 +94,7 @@ impl App {
     /// whether it is shown — the filters may hide it.
     pub fn insert_created(&mut self, repo: &str, issue: Issue, now: Instant) -> bool {
         self.data_gen += 1;
-        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        let prev_selected = self.selected_key();
         let id = issue.id.clone();
         self.vocab.absorb_issue(&issue);
         let slot = self.place_issue(repo, issue);
@@ -109,7 +110,11 @@ impl App {
             .rows
             .iter()
             .any(|row| self.row_issue_id(row) == Some(id.as_str()));
-        self.reselect(if shown { Some(id) } else { prev_selected });
+        self.reselect(if shown {
+            Some(RowKey::from(id))
+        } else {
+            prev_selected
+        });
         shown
     }
 

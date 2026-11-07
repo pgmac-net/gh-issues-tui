@@ -35,7 +35,7 @@ Sub-issues nest under their parent in the issue list, to any depth. A parent the
   - A child must pass every filter except the repo filter, so `terraform-pgpve` filtered to itself still shows `homelabia#221` under `#32`.
   - Only a visible issue of the group holds them: a context row never pulls in children, a filtered-out parent shows none, and a group with nothing visible is not brought back.
   - They sort with the parent's own children, by the current sort.
-  - `Enter`/`→`/`Space` on a dim row from another repo jumps to its home row (clearing filters that hide it). On a collapsed parent it expands first.
+  - `Enter` on a dim row from another repo jumps to its home row (clearing filters that hide it). `←`, `→` and `Space` stay on the dim row: they collapse, expand, or open the detail pane. A refresh keeps the selection on it too.
 - Context rows are never counted in the repo header or the list title.
 
 ### Detail pane
@@ -54,7 +54,7 @@ Full lists of sub-issues, dependencies and related issues are a follow-up design
 | Key | On a parent | On a sub-issue | On a top-level issue |
 |---|---|---|---|
 | `→` / `Space` / `Enter` | collapsed: expand; expanded: open the detail pane | open the detail pane | open the detail pane |
-| (same keys, on a dim row from another repo) | collapsed: expand; else jump to its home row | jump to its home row | n/a |
+| `Enter` on a dim row from another repo | jump to its home row | jump to its home row | n/a |
 | `←` | expanded: collapse | go to its parent | go to the repo header |
 | `[` / `]` | collapse / expand every repo group and every parent |||
 

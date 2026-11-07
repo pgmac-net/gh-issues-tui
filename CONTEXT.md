@@ -62,7 +62,7 @@ Terms used across this repo's code and docs.
 
 **Context row**: an issue drawn dim in a group where it is not a visible issue, to keep the tree whole. Two kinds: an ancestor above its sub-issues (filtered out, in another repo, or not loaded), and a **cross-repo descendant** below a visible parent (#260): a loaded sub-issue from another repo that passes every filter but the repo filter. Never counted. *Avoid*: "ghost row".
 
-**Home row**: an issue's own row, in its own repo's group. A context row from another repo is a link to it: `Enter`/`→`/`Space` jump there (#260).
+**Home row**: an issue's own row, in its own repo's group. A context row from another repo is a link to it: `Enter` jumps there (#260); `←`/`→`/`Space` stay on the dim row.
 
 **Anchor**: the visible issue of a group that a cross-repo descendant hangs under. Only visible issues anchor; a context row never does, so an epic drawn as context does not pull its whole tree into the group.
 

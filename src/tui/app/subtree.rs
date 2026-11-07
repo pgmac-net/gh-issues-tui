@@ -428,9 +428,10 @@ impl App {
             return;
         };
         if branch && !self.collapsed_issues.contains(&id) {
-            self.collapsed_issues.insert(id.clone());
+            let key = self.selected_key_for(id.clone());
+            self.collapsed_issues.insert(id);
             self.rebuild_rows();
-            self.reselect(Some(id));
+            self.reselect(Some(key));
         } else if depth > 0 {
             self.select_parent_row(depth);
         } else {
@@ -438,23 +439,36 @@ impl App {
         }
     }
 
-    /// `→`/`Space`/`Enter` on an issue or context row: expand a collapsed
-    /// branch and report it handled; anything else enters the detail pane.
+    /// `→`/`Space` on an issue or context row: expand a collapsed branch and
+    /// report it handled; anything else enters the detail pane. A dim row
+    /// from another repo is no exception: only `Enter` follows its link
+    /// ([`App::follow_link`], #260).
     pub(super) fn tree_right_node(&mut self) -> TreeRight {
         match self.selected_node() {
             Some((_, true, id)) if self.collapsed_issues.contains(&id) => {
+                let key = self.selected_key_for(id.clone());
                 self.collapsed_issues.remove(&id);
                 self.rebuild_rows();
-                self.reselect(Some(id));
+                self.reselect(Some(key));
                 TreeRight::Handled
             }
-            // A context row from another repo is a link: go to its home row
-            // (#260, ADR 0012). The detail pane opens from there.
-            Some(_) => match self.link_home() {
-                Some((repo, number)) if self.jump_to_ref(Some(&repo), number) => TreeRight::Handled,
-                _ => TreeRight::EnterDetail,
-            },
+            Some(_) => TreeRight::EnterDetail,
             None => TreeRight::Handled,
+        }
+    }
+
+    /// Whether the selected row is a link: a dim row for an issue that lives
+    /// in another repo (#260, ADR 0012).
+    pub fn selected_is_link(&self) -> bool {
+        self.link_home().is_some()
+    }
+
+    /// `Enter` on a link: jump to the issue's home row, clearing any filter
+    /// that hides it. Returns whether it moved.
+    pub fn follow_link(&mut self) -> bool {
+        match self.link_home() {
+            Some((repo, number)) => self.jump_to_ref(Some(&repo), number),
+            None => false,
         }
     }
 
@@ -811,24 +825,68 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_a_dim_child_jumps_to_its_home_row() {
+    fn following_a_dim_child_jumps_to_its_home_row() {
         let mut a = cross();
         select_ctx(&mut a, "api", 20);
-        assert_eq!(a.tree_right(), TreeRight::Handled);
+        assert!(a.follow_link());
         assert!(matches!(a.rows[a.selected], Row::Issue { .. }));
         assert_eq!(a.selected_issue().map(|i| i.number), Some(20));
         assert_eq!(a.selected_repo().map(|r| r.repo.as_str()), Some("web"));
     }
 
     #[test]
-    fn enter_on_a_dim_parent_in_another_repo_jumps_to_its_home_row() {
+    fn following_a_dim_parent_in_another_repo_jumps_to_its_home_row() {
         let mut a = cross();
         select_ctx(&mut a, "web", 10);
-        // An expanded branch: not a collapse toggle, so it is a link.
-        assert_eq!(a.tree_right(), TreeRight::Handled);
+        assert!(a.follow_link());
         assert!(matches!(a.rows[a.selected], Row::Issue { .. }));
         assert_eq!(a.selected_issue().map(|i| i.number), Some(10));
         assert_eq!(a.selected_repo().map(|r| r.repo.as_str()), Some("api"));
+    }
+
+    /// The selected row, as the group it is drawn in and its issue number.
+    fn at(a: &App) -> (String, Option<u64>, bool) {
+        let group = a.selected_repo().map(|r| r.repo.clone()).unwrap();
+        (
+            group,
+            a.selected_issue().map(|i| i.number),
+            matches!(a.rows[a.selected], Row::Context { .. }),
+        )
+    }
+
+    #[test]
+    fn expanding_and_collapsing_a_dim_row_stays_on_it() {
+        let mut a = cross();
+        select_ctx(&mut a, "web", 10);
+        let before = at(&a);
+        a.tree_left();
+        assert_eq!(at(&a), before, "← collapses it in place");
+        assert!(a.collapsed_issues.contains("I_10"));
+        assert_eq!(a.tree_right(), TreeRight::Handled);
+        assert_eq!(at(&a), before, "→ expands it in place");
+        assert!(!a.collapsed_issues.contains("I_10"));
+    }
+
+    #[test]
+    fn right_and_space_on_an_expanded_dim_row_open_detail_not_the_link() {
+        let mut a = cross();
+        select_ctx(&mut a, "web", 10);
+        let before = at(&a);
+        assert_eq!(a.tree_right(), TreeRight::EnterDetail);
+        assert_eq!(at(&a), before, "still on the dim row");
+    }
+
+    #[test]
+    fn a_refresh_leaves_the_selection_on_the_dim_row() {
+        let mut a = cross();
+        select_ctx(&mut a, "web", 10);
+        let before = at(&a);
+        let repos = a.repos.clone();
+        a.set_data(repos);
+        assert_eq!(at(&a), before, "not carried to api#10's home row");
+        let patched = a.repos[0].issues[0].clone();
+        a.patch_issue(patched);
+        assert_eq!(at(&a), before);
     }
 
     #[test]
@@ -837,7 +895,7 @@ mod tests {
         a.filters.repo = "api".into();
         a.rebuild_rows();
         select_ctx(&mut a, "api", 20);
-        assert_eq!(a.tree_right(), TreeRight::Handled);
+        assert!(a.follow_link());
         assert_eq!(a.selected_issue().map(|i| i.number), Some(20));
         assert!(a.filters.repo.is_empty());
     }
