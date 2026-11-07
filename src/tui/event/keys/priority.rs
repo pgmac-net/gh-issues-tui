@@ -44,7 +44,7 @@ fn confirm_priority(app: &mut App, client: &Provider, tx: &mpsc::UnboundedSender
         app.status = Some("selection changed \u{2014} priority not set".into());
         return;
     }
-    let (org, repo) = match app.selected_repo() {
+    let (org, repo) = match app.selected_issue_repo() {
         Some(r) => (app.org.clone(), r.repo.clone()),
         None => return,
     };

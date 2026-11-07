@@ -286,7 +286,7 @@ impl App {
 
     pub fn set_data(&mut self, repos: Vec<RepoIssues>) {
         self.data_gen += 1;
-        let prev_selected = self.selected_issue().map(|i| i.id.clone());
+        let prev_selected = self.selected_key();
         // Fresh data can carry comments added since the last fetch, so the
         // cached threads are no longer trustworthy — nor are the readiness
         // judgements derived from them (#160).

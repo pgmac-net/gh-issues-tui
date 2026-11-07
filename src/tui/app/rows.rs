@@ -1,5 +1,5 @@
 use super::prelude::*;
-use super::subtree::{group_rows, loaded_index};
+use super::subtree::{cross_repo_links, global_rank, group_rows, loaded_index};
 
 /// The visible row list and everything that moves through it: rebuilding
 /// rows from data + filters + sort + collapse, the selection, and the
@@ -12,18 +12,29 @@ impl App {
         }
         let repo_exact = self.repo_filter_exact();
         let loaded = loaded_index(&self.repos);
+        // What passes every filter but the repo filter, in every repo: the
+        // issues a group shows, and the sub-issues other repos show under
+        // them (#260, ADR 0012).
+        let passing: Vec<Vec<usize>> = self
+            .repos
+            .iter()
+            .map(|repo| {
+                repo.issues
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, i)| self.filters.matches(i, self.state_filter))
+                    .map(|(idx, _)| idx)
+                    .collect()
+            })
+            .collect();
+        let foreign = cross_repo_links(&self.repos, &passing);
+        let rank = global_rank(&self.repos, self.sort_key, self.sort_desc);
         let mut rows = Vec::new();
         for (ri, repo) in self.repos.iter().enumerate() {
             if !self.filters.repo_matches(&repo.repo, repo_exact) {
                 continue;
             }
-            let visible: Vec<usize> = repo
-                .issues
-                .iter()
-                .enumerate()
-                .filter(|(_, i)| self.filters.matches(i, self.state_filter))
-                .map(|(idx, _)| idx)
-                .collect();
+            let visible = &passing[ri];
             // An exact repo filter names the repo outright: keep its header
             // even when empty, or `n` has nothing to attach to (#198).
             if visible.is_empty() && self.filters.hide_empty && !repo_exact {
@@ -35,9 +46,11 @@ impl App {
                 rows.extend(group_rows(
                     &self.repos,
                     ri,
-                    &visible,
+                    visible,
                     &loaded,
                     &self.collapsed_issues,
+                    &foreign[ri],
+                    &rank,
                 ));
             }
         }
@@ -47,11 +60,47 @@ impl App {
         }
     }
 
-    /// Move the selection back onto the issue with `id`, when it is still in
-    /// the rows. A vanished (or absent) id leaves the index where
-    /// `rebuild_rows` clamped it.
-    pub(super) fn reselect(&mut self, id: Option<String>) {
-        let Some(id) = id else { return };
+    /// What to put the selection back on after the rows are rebuilt: the
+    /// selected issue's key. A loaded row only; `None` on a header or stub.
+    pub(super) fn selected_key(&self) -> Option<RowKey> {
+        let id = self.row_issue(self.rows.get(self.selected)?)?.id.clone();
+        Some(self.selected_key_for(id))
+    }
+
+    /// As [`Self::selected_key`] for `id`, which the selected row stands for
+    /// (a stub's id too).
+    pub(super) fn selected_key_for(&self, id: String) -> RowKey {
+        let link_in = match self.rows.get(self.selected) {
+            Some(Row::Context {
+                repo_idx,
+                of: ContextRef::Loaded { repo_idx: home, .. },
+                ..
+            }) if home != repo_idx => self.repos.get(*repo_idx).map(|r| r.repo.clone()),
+            _ => None,
+        };
+        RowKey { id, link_in }
+    }
+
+    /// Move the selection back onto the issue `key` names, when it is still
+    /// in the rows. A vanished (or absent) id leaves the index where
+    /// `rebuild_rows` clamped it. Takes an `Option<String>` id too.
+    pub(super) fn reselect(&mut self, key: Option<impl Into<RowKey>>) {
+        let Some(key) = key.map(Into::into) else {
+            return;
+        };
+        let id = key.id;
+        // A dim row for an issue from another repo stays on that dim row: its
+        // home row is a different place, reached only by `Enter` (#260).
+        if let Some(group) = &key.link_in
+            && let Some(idx) = self.rows.iter().position(|row| {
+                matches!(row, Row::Context { repo_idx, of: ContextRef::Loaded { .. }, .. }
+                    if self.repos[*repo_idx].repo == *group)
+                    && self.row_issue_id(row) == Some(id.as_str())
+            })
+        {
+            self.selected = idx;
+            return;
+        }
         // A visible row first; failing that, the same issue as a context row
         // (it was filtered out, but its descendants keep it on screen).
         let at = |want_issue: bool| {
@@ -81,12 +130,26 @@ impl App {
         }
     }
 
+    /// The repo the selected *issue* lives in. [`Self::selected_repo`] is the
+    /// group it is drawn in, which differs for a context row from another
+    /// repo (#260, ADR 0012). Issue-scoped keys (labels, priority, refs, PR
+    /// shorthand, runs) use this one; group-scoped keys keep the group.
+    pub fn selected_issue_repo(&self) -> Option<&RepoIssues> {
+        match self.rows.get(self.selected)? {
+            Row::Context {
+                of: ContextRef::Loaded { repo_idx, .. },
+                ..
+            } => self.repos.get(*repo_idx),
+            _ => self.selected_repo(),
+        }
+    }
+
     /// Short reference for the selected issue, rendered from
     /// `copy_format` (`{owner}`, `{repo}`, `{number}`). `None` when no
     /// issue is selected (e.g. a repo header row).
     pub fn selected_short_ref(&self) -> Option<String> {
         let issue = self.selected_issue()?;
-        let repo = self.selected_repo()?;
+        let repo = self.selected_issue_repo()?;
         Some(
             self.copy_format
                 .replace("{owner}", &self.org)
@@ -358,6 +421,22 @@ impl App {
             .flat_map(|r| r.issues.iter())
             .filter(|i| self.filters.matches(i, self.state_filter))
             .count()
+    }
+}
+
+/// Which row to put the selection back on after a rebuild: an issue's id, and
+/// when the selection was a dim row for an issue from another repo, the group
+/// it was drawn in. Without the group the id alone names the issue's home row,
+/// and a refresh or a collapse would carry the selection there (#260).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RowKey {
+    pub(super) id: String,
+    pub(super) link_in: Option<String>,
+}
+
+impl From<String> for RowKey {
+    fn from(id: String) -> Self {
+        RowKey { id, link_in: None }
     }
 }
 

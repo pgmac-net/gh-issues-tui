@@ -115,7 +115,7 @@ impl App {
     /// downstream of them. Shared by the background pass and the
     /// set-priority picker's own request (#162).
     pub fn merge_label_ranks(&mut self, ranks: HashMap<String, Option<u8>>) {
-        let prev = self.selected_issue().map(|i| i.id.clone());
+        let prev = self.selected_key();
         self.label_rank.ranks.extend(ranks);
         self.stamp_label_ranks();
         // A new rank can reorder the list when sorted by priority, so

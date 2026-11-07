@@ -56,14 +56,147 @@ pub(super) fn loaded_index(repos: &[RepoIssues]) -> HashMap<&str, (usize, usize)
         .collect()
 }
 
+/// A loaded sub-issue from another repo that hangs under a visible issue of a
+/// group (#260, ADR 0012): the *anchor*, `anchor_level` steps up its
+/// `ancestors`. Drawn there as a context row; its home row stays at home.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Foreign {
+    repo_idx: usize,
+    issue_idx: usize,
+    anchor_level: usize,
+}
+
+/// Where every loaded issue sorts across all repos under the active sort,
+/// indexed `[repo][issue]`. A cross-repo child is ranked on the same scale as
+/// its parent's own children, so the two interleave. Ties keep repo order, and
+/// so each repo's own order is unchanged.
+pub(super) fn global_rank(repos: &[RepoIssues], key: SortKey, descending: bool) -> Vec<Vec<usize>> {
+    let mut all: Vec<(usize, usize)> = repos
+        .iter()
+        .enumerate()
+        .flat_map(|(ri, r)| (0..r.issues.len()).map(move |ii| (ri, ii)))
+        .collect();
+    all.sort_by(|a, b| {
+        cmp_issues(
+            &repos[a.0].issues[a.1],
+            &repos[b.0].issues[b.1],
+            key,
+            descending,
+        )
+    });
+    let mut rank: Vec<Vec<usize>> = repos.iter().map(|r| vec![0; r.issues.len()]).collect();
+    for (pos, (ri, ii)) in all.into_iter().enumerate() {
+        rank[ri][ii] = pos;
+    }
+    rank
+}
+
+/// For each repo, the other repos' passing issues that hang under one of its
+/// passing issues. `passing[ri]` holds the indices of repo `ri`'s issues that
+/// pass every filter except the repo filter, which is what makes a child
+/// from a repo that is filtered out still show under its parent. Only a
+/// passing issue anchors, so a context row never pulls in descendants.
+pub(super) fn cross_repo_links(repos: &[RepoIssues], passing: &[Vec<usize>]) -> Vec<Vec<Foreign>> {
+    let mut owner: HashMap<&str, usize> = HashMap::new();
+    for (ri, idxs) in passing.iter().enumerate() {
+        for &ii in idxs {
+            owner.entry(repos[ri].issues[ii].id.as_str()).or_insert(ri);
+        }
+    }
+    let mut out: Vec<Vec<Foreign>> = vec![Vec::new(); repos.len()];
+    for (rj, idxs) in passing.iter().enumerate() {
+        for &jj in idxs {
+            let issue = &repos[rj].issues[jj];
+            // An issue anchors once per group: at its nearest ancestor there.
+            let mut anchored: Vec<usize> = Vec::new();
+            for (level, anc) in issue.ancestors.iter().enumerate() {
+                let Some(&ri) = owner.get(anc.id.as_str()) else {
+                    continue;
+                };
+                if ri != rj && !anchored.contains(&ri) {
+                    anchored.push(ri);
+                    out[ri].push(Foreign {
+                        repo_idx: rj,
+                        issue_idx: jj,
+                        anchor_level: level,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What linking a node to its ancestors reads: the repos, which loaded issue
+/// an id is, and which visible issue an id names (the first one wins).
+struct Linker<'a> {
+    repos: &'a [RepoIssues],
+    loaded: &'a HashMap<&'a str, (usize, usize)>,
+    by_id: HashMap<&'a str, Key>,
+}
+
+impl Linker<'_> {
+    /// Link `start` to its first `levels` ancestors, adding any not already
+    /// present as a context node. `from` is the issue `start` stands for, which
+    /// an unloaded ancestor's stub is read back from. `order` is its sort
+    /// rank: an ancestor sorts where its first descendant would.
+    fn link(
+        &self,
+        nodes: &mut HashMap<Key, Node>,
+        start: Key,
+        from: (usize, usize),
+        levels: usize,
+        order: usize,
+    ) {
+        let ancestors = &self.repos[from.0].issues[from.1].ancestors;
+        let mut child = start;
+        for (level, stub) in ancestors.iter().enumerate().take(levels) {
+            let parent_key = self
+                .by_id
+                .get(stub.id.as_str())
+                .cloned()
+                .unwrap_or_else(|| Key::Ancestor(stub.id.clone()));
+            if let Some(node) = nodes.get_mut(&child) {
+                node.parent.get_or_insert_with(|| parent_key.clone());
+            }
+            let parent = nodes.entry(parent_key.clone()).or_insert_with(|| Node {
+                kind: NodeKind::Context(match self.loaded.get(stub.id.as_str()) {
+                    Some(&(repo_idx, issue_idx)) => ContextRef::Loaded {
+                        repo_idx,
+                        issue_idx,
+                    },
+                    None => ContextRef::Stub {
+                        repo_idx: from.0,
+                        issue_idx: from.1,
+                        level,
+                    },
+                }),
+                id: stub.id.clone(),
+                parent: None,
+                children: Vec::new(),
+                order,
+            });
+            parent.order = parent.order.min(order);
+            if !parent.children.contains(&child) {
+                parent.children.push(child.clone());
+            }
+            child = parent_key;
+        }
+    }
+}
+
 /// The rows below repo group `ri`'s header: its `visible` issues (in sort
-/// order) as a forest, with collapsed nodes' descendants left out.
+/// order) as a forest, with collapsed nodes' descendants left out. `foreign`
+/// are the other repos' sub-issues that hang under them (#260) and `rank`
+/// puts both on one sort scale.
 pub(super) fn group_rows(
     repos: &[RepoIssues],
     ri: usize,
     visible: &[usize],
     loaded: &HashMap<&str, (usize, usize)>,
     collapsed: &HashSet<String>,
+    foreign: &[Foreign],
+    rank: &[Vec<usize>],
 ) -> Vec<Row> {
     let issues = &repos[ri].issues;
     let mut nodes: HashMap<Key, Node> = HashMap::new();
@@ -80,48 +213,54 @@ pub(super) fn group_rows(
                 id: issues[ii].id.clone(),
                 parent: None,
                 children: Vec::new(),
-                order: pos,
+                order: rank[ri][ii],
             },
         );
     }
-    let key_of = |id: &str| {
-        by_id
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| Key::Ancestor(id.to_string()))
+    let linker = Linker {
+        repos,
+        loaded,
+        by_id,
     };
     // Walk each visible issue's ancestry, linking child to parent and adding
     // any ancestor not already present as a context node.
     for (pos, &ii) in visible.iter().enumerate() {
-        let mut child = Key::Visible(pos);
-        for (level, stub) in issues[ii].ancestors.iter().enumerate() {
-            let parent_key = key_of(&stub.id);
-            if let Some(node) = nodes.get_mut(&child) {
-                node.parent.get_or_insert_with(|| parent_key.clone());
-            }
-            let parent = nodes.entry(parent_key.clone()).or_insert_with(|| Node {
-                kind: NodeKind::Context(match loaded.get(stub.id.as_str()) {
-                    Some(&(repo_idx, issue_idx)) => ContextRef::Loaded {
-                        repo_idx,
-                        issue_idx,
-                    },
-                    None => ContextRef::Stub {
-                        repo_idx: ri,
-                        issue_idx: ii,
-                        level,
-                    },
-                }),
-                id: stub.id.clone(),
-                parent: None,
-                children: Vec::new(),
-                order: pos,
-            });
-            parent.order = parent.order.min(pos);
-            if !parent.children.contains(&child) {
-                parent.children.push(child.clone());
-            }
-            child = parent_key;
+        let levels = issues[ii].ancestors.len();
+        linker.link(
+            &mut nodes,
+            Key::Visible(pos),
+            (ri, ii),
+            levels,
+            rank[ri][ii],
+        );
+    }
+    // Then each other-repo sub-issue, up to and including its anchor (#260).
+    for f in foreign {
+        let issue = &repos[f.repo_idx].issues[f.issue_idx];
+        // An id that repeats a visible issue's would merge into it: skip.
+        if linker.by_id.contains_key(issue.id.as_str()) {
+            continue;
         }
+        let start = Key::Ancestor(issue.id.clone());
+        let order = rank[f.repo_idx][f.issue_idx];
+        let node = nodes.entry(start.clone()).or_insert_with(|| Node {
+            kind: NodeKind::Context(ContextRef::Loaded {
+                repo_idx: f.repo_idx,
+                issue_idx: f.issue_idx,
+            }),
+            id: issue.id.clone(),
+            parent: None,
+            children: Vec::new(),
+            order,
+        });
+        node.order = node.order.min(order);
+        linker.link(
+            &mut nodes,
+            start,
+            (f.repo_idx, f.issue_idx),
+            f.anchor_level + 1,
+            order,
+        );
     }
 
     let mut roots: Vec<&Key> = nodes
@@ -289,9 +428,10 @@ impl App {
             return;
         };
         if branch && !self.collapsed_issues.contains(&id) {
-            self.collapsed_issues.insert(id.clone());
+            let key = self.selected_key_for(id.clone());
+            self.collapsed_issues.insert(id);
             self.rebuild_rows();
-            self.reselect(Some(id));
+            self.reselect(Some(key));
         } else if depth > 0 {
             self.select_parent_row(depth);
         } else {
@@ -299,19 +439,60 @@ impl App {
         }
     }
 
-    /// `→`/`Space`/`Enter` on an issue or context row: expand a collapsed
-    /// branch and report it handled; anything else enters the detail pane.
+    /// `→`/`Space` on an issue or context row: expand a collapsed branch and
+    /// report it handled; anything else enters the detail pane. A dim row
+    /// from another repo is no exception: only `Enter` follows its link
+    /// ([`App::follow_link`], #260).
     pub(super) fn tree_right_node(&mut self) -> TreeRight {
         match self.selected_node() {
             Some((_, true, id)) if self.collapsed_issues.contains(&id) => {
+                let key = self.selected_key_for(id.clone());
                 self.collapsed_issues.remove(&id);
                 self.rebuild_rows();
-                self.reselect(Some(id));
+                self.reselect(Some(key));
                 TreeRight::Handled
             }
             Some(_) => TreeRight::EnterDetail,
             None => TreeRight::Handled,
         }
+    }
+
+    /// Whether the selected row is a link: a dim row for an issue that lives
+    /// in another repo (#260, ADR 0012).
+    pub fn selected_is_link(&self) -> bool {
+        self.link_home().is_some()
+    }
+
+    /// `Enter` on a link: jump to the issue's home row, clearing any filter
+    /// that hides it. Returns whether it moved.
+    pub fn follow_link(&mut self) -> bool {
+        match self.link_home() {
+            Some((repo, number)) => self.jump_to_ref(Some(&repo), number),
+            None => false,
+        }
+    }
+
+    /// The repo and number of the home row the selected row links to: a
+    /// loaded context row whose issue lives in another repo than the group it
+    /// is drawn in. `None` for anything else, which keeps its own behaviour.
+    fn link_home(&self) -> Option<(String, u64)> {
+        let Row::Context {
+            repo_idx,
+            of:
+                ContextRef::Loaded {
+                    repo_idx: home,
+                    issue_idx,
+                },
+            ..
+        } = self.rows.get(self.selected)?
+        else {
+            return None;
+        };
+        if home == repo_idx {
+            return None;
+        }
+        let repo = self.repos.get(*home)?;
+        Some((repo.repo.clone(), repo.issues.get(*issue_idx)?.number))
     }
 
     /// Move up to the nearest row one level shallower: the parent.
@@ -482,16 +663,270 @@ mod tests {
         assert!(!a.selected_is_header());
     }
 
-    #[test]
-    fn a_parent_in_another_repo_is_context_here_and_a_normal_row_at_home() {
-        let a = app(vec![
+    /// `api#10` with its sub-issue `web#20` in another repo.
+    fn cross() -> App {
+        app(vec![
             repo("api", vec![issue(10, vec![])]),
             repo("web", vec![issue(20, vec![stub("I_10", 10, "api")])]),
+        ])
+    }
+
+    /// Select the context row for `number` in repo group `group`.
+    fn select_ctx(app: &mut App, group: &str, number: u64) {
+        app.selected = app
+            .rows
+            .iter()
+            .position(|r| {
+                matches!(r, Row::Context { repo_idx, .. } if app.repos[*repo_idx].repo == group)
+                    && app.row_issue(r).is_some_and(|i| i.number == number)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_sub_issue_in_another_repo_shows_under_its_parent_and_at_home() {
+        let a = cross();
+        assert_eq!(
+            shape(&a),
+            vec!["H api", "I0 #10+", "C1 #20", "H web", "C0 #10+", "I1 #20"],
+            "web#20 is dim under api#10 and a normal row in web"
+        );
+        assert_eq!(a.repo_visible_count(0), 1, "the dim child is not counted");
+        assert_eq!(a.filtered_issue_count(), 2);
+    }
+
+    #[test]
+    fn the_repo_filter_does_not_hide_the_dim_child() {
+        let mut a = cross();
+        a.filters.repo = "api".into();
+        a.rebuild_rows();
+        assert_eq!(shape(&a), vec!["H api", "I0 #10+", "C1 #20"]);
+    }
+
+    #[test]
+    fn the_other_filters_hide_the_dim_child() {
+        let mut a = cross();
+        a.repos[0].issues[0].title = "keep".into();
+        a.repos[1].issues[0].title = "drop".into();
+        a.filters.text = "keep".into();
+        a.rebuild_rows();
+        assert_eq!(shape(&a), vec!["H api", "I0 #10"]);
+    }
+
+    #[test]
+    fn a_context_row_does_not_anchor_children() {
+        // An epic in api with a child in web and another in ops.
+        let epic = stub("I_10", 10, "api");
+        let a = app(vec![
+            repo("api", vec![issue(10, vec![])]),
+            repo("web", vec![issue(20, vec![epic.clone()])]),
+            repo("ops", vec![issue(30, vec![epic])]),
         ]);
         assert_eq!(
             shape(&a),
-            vec!["H api", "I0 #10", "H web", "C0 #10+", "I1 #20"],
-            "the child stays in its own group and is not repeated under api"
+            vec![
+                "H api", "I0 #10+", "C1 #30", "C1 #20", "H web", "C0 #10+", "I1 #20", "H ops",
+                "C0 #10+", "I1 #30"
+            ],
+            "ops#30 is not pulled into web through the epic's context row"
+        );
+    }
+
+    #[test]
+    fn a_filtered_out_parent_shows_no_other_repo_children() {
+        let mut a = cross();
+        a.repos[0].issues[0].title = "drop".into();
+        a.repos[1].issues[0].title = "keep".into();
+        a.filters.text = "keep".into();
+        a.rebuild_rows();
+        assert_eq!(
+            shape(&a),
+            vec!["H web", "C0 #10+", "I1 #20"],
+            "api has nothing visible, so its group is not brought back"
+        );
+    }
+
+    /// api#1 > web#2 > web#3 > ops#4, one repo per level change.
+    fn chain() -> App {
+        let s1 = stub("I_1", 1, "api");
+        let s2 = stub("I_2", 2, "web");
+        let s3 = stub("I_3", 3, "web");
+        app(vec![
+            repo("api", vec![issue(1, vec![])]),
+            repo(
+                "web",
+                vec![
+                    issue(2, vec![s1.clone()]),
+                    issue(3, vec![s2.clone(), s1.clone()]),
+                ],
+            ),
+            repo("ops", vec![issue(4, vec![s3, s2, s1])]),
+        ])
+    }
+
+    #[test]
+    fn the_whole_subtree_shows_at_its_real_depth() {
+        assert_eq!(
+            shape(&chain()),
+            vec![
+                "H api", "I0 #1+", "C1 #2+", "C2 #3+", "C3 #4", "H web", "C0 #1+", "I1 #2+",
+                "I2 #3+", "C3 #4", "H ops", "C0 #1+", "C1 #2+", "C2 #3+", "I3 #4"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hidden_middle_level_stays_as_context() {
+        let mut a = chain();
+        for i in a.repos.iter_mut().flat_map(|r| r.issues.iter_mut()) {
+            i.title = if i.number == 3 { "drop" } else { "keep" }.into();
+        }
+        a.filters.text = "keep".into();
+        a.rebuild_rows();
+        let rows = shape(&a);
+        assert_eq!(
+            rows[..5],
+            ["H api", "I0 #1+", "C1 #2+", "C2 #3+", "C3 #4"],
+            "web#3 is filtered out but keeps ops#4 attached"
+        );
+    }
+
+    #[test]
+    fn other_repo_children_sort_with_the_parents_own() {
+        let p = stub("I_100", 100, "api");
+        let a = app(vec![
+            repo(
+                "api",
+                vec![
+                    issue(100, vec![]),
+                    issue(30, vec![p.clone()]),
+                    issue(5, vec![p.clone()]),
+                ],
+            ),
+            repo("web", vec![issue(20, vec![p])]),
+        ]);
+        assert_eq!(
+            shape(&a)[..5],
+            ["H api", "I0 #100+", "I1 #30", "C1 #20", "I1 #5"],
+            "newest first, whichever repo a child is in"
+        );
+    }
+
+    #[test]
+    fn collapsing_the_parent_collapses_it_in_every_group() {
+        let mut a = cross();
+        a.collapsed_issues.insert("I_10".into());
+        a.rebuild_rows();
+        assert_eq!(
+            shape(&a),
+            vec!["H api", "I0 #10+", "H web", "C0 #10+"],
+            "api#10 is collapsed in api and as web's context row"
+        );
+    }
+
+    #[test]
+    fn following_a_dim_child_jumps_to_its_home_row() {
+        let mut a = cross();
+        select_ctx(&mut a, "api", 20);
+        assert!(a.follow_link());
+        assert!(matches!(a.rows[a.selected], Row::Issue { .. }));
+        assert_eq!(a.selected_issue().map(|i| i.number), Some(20));
+        assert_eq!(a.selected_repo().map(|r| r.repo.as_str()), Some("web"));
+    }
+
+    #[test]
+    fn following_a_dim_parent_in_another_repo_jumps_to_its_home_row() {
+        let mut a = cross();
+        select_ctx(&mut a, "web", 10);
+        assert!(a.follow_link());
+        assert!(matches!(a.rows[a.selected], Row::Issue { .. }));
+        assert_eq!(a.selected_issue().map(|i| i.number), Some(10));
+        assert_eq!(a.selected_repo().map(|r| r.repo.as_str()), Some("api"));
+    }
+
+    /// The selected row, as the group it is drawn in and its issue number.
+    fn at(a: &App) -> (String, Option<u64>, bool) {
+        let group = a.selected_repo().map(|r| r.repo.clone()).unwrap();
+        (
+            group,
+            a.selected_issue().map(|i| i.number),
+            matches!(a.rows[a.selected], Row::Context { .. }),
+        )
+    }
+
+    #[test]
+    fn expanding_and_collapsing_a_dim_row_stays_on_it() {
+        let mut a = cross();
+        select_ctx(&mut a, "web", 10);
+        let before = at(&a);
+        a.tree_left();
+        assert_eq!(at(&a), before, "← collapses it in place");
+        assert!(a.collapsed_issues.contains("I_10"));
+        assert_eq!(a.tree_right(), TreeRight::Handled);
+        assert_eq!(at(&a), before, "→ expands it in place");
+        assert!(!a.collapsed_issues.contains("I_10"));
+    }
+
+    #[test]
+    fn right_and_space_on_an_expanded_dim_row_open_detail_not_the_link() {
+        let mut a = cross();
+        select_ctx(&mut a, "web", 10);
+        let before = at(&a);
+        assert_eq!(a.tree_right(), TreeRight::EnterDetail);
+        assert_eq!(at(&a), before, "still on the dim row");
+    }
+
+    #[test]
+    fn a_refresh_leaves_the_selection_on_the_dim_row() {
+        let mut a = cross();
+        select_ctx(&mut a, "web", 10);
+        let before = at(&a);
+        let repos = a.repos.clone();
+        a.set_data(repos);
+        assert_eq!(at(&a), before, "not carried to api#10's home row");
+        let patched = a.repos[0].issues[0].clone();
+        a.patch_issue(patched);
+        assert_eq!(at(&a), before);
+    }
+
+    #[test]
+    fn a_link_to_a_repo_the_filter_hides_clears_the_filter() {
+        let mut a = cross();
+        a.filters.repo = "api".into();
+        a.rebuild_rows();
+        select_ctx(&mut a, "api", 20);
+        assert!(a.follow_link());
+        assert_eq!(a.selected_issue().map(|i| i.number), Some(20));
+        assert!(a.filters.repo.is_empty());
+    }
+
+    #[test]
+    fn enter_on_a_context_row_in_its_own_repo_still_opens_detail() {
+        let mut a = family();
+        for i in &mut a.repos[0].issues {
+            i.title = if i.number == 227 { "parent" } else { "match" }.into();
+        }
+        a.filters.text = "match".into();
+        a.rebuild_rows();
+        select_ctx(&mut a, "r", 227);
+        assert_eq!(a.tree_right(), TreeRight::EnterDetail);
+    }
+
+    #[test]
+    fn issue_scoped_keys_use_the_issues_own_repo_on_a_dim_row() {
+        let mut a = cross();
+        a.copy_format = "{repo}#{number}".into();
+        select_ctx(&mut a, "api", 20);
+        assert_eq!(a.selected_repo().map(|r| r.repo.as_str()), Some("api"));
+        assert_eq!(
+            a.selected_issue_repo().map(|r| r.repo.as_str()),
+            Some("web"),
+            "the group is api, the issue is web's"
+        );
+        assert_eq!(a.selected_short_ref().as_deref(), Some("web#20"));
+        assert!(
+            a.move_targets().iter().all(|r| r != "web"),
+            "web is its current repo, not a move target"
         );
     }
 

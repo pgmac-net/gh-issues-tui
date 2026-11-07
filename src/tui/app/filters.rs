@@ -429,23 +429,28 @@ impl SortKey {
     }
 }
 
+/// How two issues order under `key`. Shared by [`sort_issues`] and the
+/// cross-repo rank (#260), so a sub-issue from another repo sorts among its
+/// parent's own children exactly where it would at home.
+pub fn cmp_issues(a: &Issue, b: &Issue, key: SortKey, descending: bool) -> std::cmp::Ordering {
+    let ord = match key {
+        SortKey::Updated => a.updated_at.cmp(&b.updated_at),
+        SortKey::Created => a.created_at.cmp(&b.created_at),
+        SortKey::Closed => a.closed_at.cmp(&b.closed_at),
+        SortKey::State => format!("{}", a.state).cmp(&format!("{}", b.state)),
+        SortKey::Assignee => a.assignees.join(",").cmp(&b.assignees.join(",")),
+        SortKey::Author => a.author.cmp(&b.author),
+        SortKey::Priority => a.priority_rank().cmp(&b.priority_rank()),
+    };
+    let ord = if descending { ord.reverse() } else { ord };
+    // Priority ties fall back to most-recently-updated first, in both directions.
+    if ord == std::cmp::Ordering::Equal && key == SortKey::Priority {
+        b.updated_at.cmp(&a.updated_at)
+    } else {
+        ord
+    }
+}
+
 pub fn sort_issues(issues: &mut [Issue], key: SortKey, descending: bool) {
-    issues.sort_by(|a, b| {
-        let ord = match key {
-            SortKey::Updated => a.updated_at.cmp(&b.updated_at),
-            SortKey::Created => a.created_at.cmp(&b.created_at),
-            SortKey::Closed => a.closed_at.cmp(&b.closed_at),
-            SortKey::State => format!("{}", a.state).cmp(&format!("{}", b.state)),
-            SortKey::Assignee => a.assignees.join(",").cmp(&b.assignees.join(",")),
-            SortKey::Author => a.author.cmp(&b.author),
-            SortKey::Priority => a.priority_rank().cmp(&b.priority_rank()),
-        };
-        let ord = if descending { ord.reverse() } else { ord };
-        // Priority ties fall back to most-recently-updated first, in both directions.
-        if ord == std::cmp::Ordering::Equal && key == SortKey::Priority {
-            b.updated_at.cmp(&a.updated_at)
-        } else {
-            ord
-        }
-    });
+    issues.sort_by(|a, b| cmp_issues(a, b, key, descending));
 }

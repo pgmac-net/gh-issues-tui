@@ -130,7 +130,7 @@ impl App {
     /// only the fallback when the URL is not the usual
     /// `https://github.com/{owner}/{repo}` shape.
     pub fn current_repo(&self) -> Option<(String, String)> {
-        let repo = self.selected_repo()?;
+        let repo = self.selected_issue_repo()?;
         let owner = repo
             .repo_url
             .trim_end_matches('/')

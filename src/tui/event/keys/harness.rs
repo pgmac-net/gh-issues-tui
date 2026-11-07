@@ -163,7 +163,7 @@ fn parse_owner_repo(issue_ref: &str) -> Option<(&str, &str)> {
 /// Build the placeholder context from the selected issue.
 fn launch_context(app: &App) -> Option<LaunchContext> {
     let issue = app.selected_issue()?;
-    let repo = app.selected_repo()?;
+    let repo = app.selected_issue_repo()?;
     Some(LaunchContext {
         owner: app.org.clone(),
         repo: repo.repo.clone(),

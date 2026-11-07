@@ -166,8 +166,19 @@ pub(crate) fn handle_normal_key(
         KeyCode::Char(' ') | KeyCode::Enter => match app.focus {
             Focus::Detail => detail_key_toggle(app),
             // On an issue (or a context row, #234) the toggle is `→`; on a
-            // header it opens or closes the group.
-            Focus::List if !app.selected_is_header() => tree_right(app, client, tx),
+            // header it opens or closes the group. `Enter` alone follows a
+            // link: a dim row for an issue in another repo jumps to its home
+            // row, where `→`/`Space` only expand, collapse or open detail
+            // (#260).
+            Focus::List if !app.selected_is_header() => {
+                if key.code == KeyCode::Enter && app.selected_is_link() {
+                    nav(app, client, tx, |a| {
+                        a.follow_link();
+                    });
+                } else {
+                    tree_right(app, client, tx);
+                }
+            }
             Focus::List => nav(app, client, tx, App::toggle_collapse),
         },
         // `[`/`]`: fold or unfold everything in the focused pane.
@@ -246,7 +257,7 @@ pub(crate) fn handle_normal_key(
             }
         }
         KeyCode::Char('O') => {
-            if let Some(url) = app.selected_repo().map(|r| r.repo_url.clone()) {
+            if let Some(url) = app.selected_issue_repo().map(|r| r.repo_url.clone()) {
                 match open::that(&url) {
                     Ok(()) => app.status = Some(format!("opened {url}")),
                     Err(e) => app.status = Some(format!("open failed: {e}")),
@@ -286,7 +297,7 @@ pub(crate) fn handle_normal_key(
             let target = app
                 .selected_issue()
                 .map(|i| i.id.clone())
-                .zip(app.selected_repo().map(|r| r.repo.clone()));
+                .zip(app.selected_issue_repo().map(|r| r.repo.clone()));
             if let Some((issue_id, repo)) = target {
                 app.picker.label_issue = Some(issue_id.clone());
                 app.status = Some("loading labels…".into());
@@ -304,7 +315,7 @@ pub(crate) fn handle_normal_key(
             let target = app
                 .selected_issue()
                 .map(|i| i.id.clone())
-                .zip(app.selected_repo().map(|r| r.repo.clone()));
+                .zip(app.selected_issue_repo().map(|r| r.repo.clone()));
             if let Some((issue_id, repo)) = target {
                 app.picker.priority_issue = Some(issue_id.clone());
                 app.status = Some("loading priorities…".into());
@@ -384,6 +395,7 @@ mod tests {
     use super::super::testutil::{app_with_issue, key, test_client};
     use super::*;
     use crate::config::builtin_harnesses;
+    use crate::tui::app::Row;
 
     /// Press `key` in Normal mode. Spawned fetches go nowhere: the receiver
     /// is dropped and the runtime ends with the test.
@@ -449,6 +461,65 @@ mod tests {
                 "{c}"
             );
         }
+    }
+
+    /// `api#10` with its sub-issue `web#20`; the dim `api#10` row in `web` is
+    /// selected (#260).
+    fn link_app() -> App {
+        use crate::provider::types::{IssueStub, RepoIssues};
+        let parent = IssueStub {
+            id: "I_10".into(),
+            number: 10,
+            title: "parent".into(),
+            state: IssueState::Open,
+            url: "https://github.com/org/api/issues/10".into(),
+            repo: "api".into(),
+            owner: "org".into(),
+        };
+        let repo = |name: &str, issues: Vec<Issue>| RepoIssues {
+            repo: name.into(),
+            repo_url: format!("https://github.com/org/{name}"),
+            issues,
+        };
+        let mut app = App::new("org".into(), None, false, false, String::new());
+        app.set_data(vec![
+            repo("api", vec![Issue::fixture("I_10", 10)]),
+            repo(
+                "web",
+                vec![Issue {
+                    ancestors: vec![parent],
+                    ..Issue::fixture("I_20", 20)
+                }],
+            ),
+        ]);
+        app.selected = app
+            .rows
+            .iter()
+            .position(|r| {
+                matches!(r, Row::Context { repo_idx, .. } if app.repos[*repo_idx].repo == "web")
+            })
+            .unwrap();
+        assert!(app.selected_is_link());
+        app
+    }
+
+    /// #260: only Enter follows a link; ←/→/Space expand, collapse or open
+    /// detail on the dim row itself.
+    #[tokio::test]
+    async fn only_enter_follows_a_dim_row_to_its_home() {
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Char(' ')] {
+            let mut app = link_app();
+            press(&mut app, key(code));
+            assert!(
+                matches!(app.rows[app.selected], Row::Context { .. }),
+                "{code:?} left the dim row"
+            );
+        }
+        let mut app = link_app();
+        press(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.rows[app.selected], Row::Issue { .. }));
+        assert_eq!(app.selected_issue().map(|i| i.number), Some(10));
+        assert_eq!(app.selected_repo().map(|r| r.repo.as_str()), Some("api"));
     }
 
     /// #234: Space on a stub acts on the tree node, never the repo group.
