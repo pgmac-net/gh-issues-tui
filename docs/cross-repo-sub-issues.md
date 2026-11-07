@@ -11,7 +11,7 @@ Since #234 a sub-issue in another repo showed its parent as a dim row above it, 
 | Question | Decision |
 |---|---|
 | Which children | Loaded ones only. No new request: the tree is built from each issue's ancestry, and the bulk query cannot carry a `subIssues` connection. Unloaded ones: #261. |
-| Selecting a dim row from another repo | Jump to its home row (children and ancestors alike). A collapsed branch expands first. |
+| Following a dim row from another repo | `Enter` alone jumps to its home row (children and ancestors alike). `←`/`→`/`Space` act on the dim row itself. |
 | Filters | Every filter but the repo filter applies. |
 | Depth | The full subtree, hidden middle levels as context. |
 | Anchoring | Only visible issues of a group anchor children; a context row never does. |
@@ -25,6 +25,19 @@ Since #234 a sub-issue in another repo showed its parent as a dim row above it, 
 - `global_rank` ranks all issues on one sort scale (`cmp_issues`, shared with `sort_issues`), so cross-repo and same-repo children interleave.
 - `group_rows` adds each as a context node keyed by id and links it up to its anchor; ancestors in between merge with the existing nodes.
 - `tree_right_node` jumps on a loaded context row from another repo, via `jump_to_ref`, which also clears any filter hiding the target.
+
+## Review follow-up: Enter only, and the selection stays put
+
+The first version also jumped on `→` and `Space` (on an expanded parent), and `←`/`→` re-selected the issue by id after a collapse or expand. An id names the issue's home row, so folding the tree on a dim row carried the selection to another repo. Now:
+
+- `Enter` is the only key that follows a link. `←`, `→` and `Space` collapse, expand, or open the detail pane on the dim row itself.
+- The selection is restored by a `RowKey` (issue id plus the group the row was drawn in), at every re-select: collapse, expand, refresh, patch, rank merge, created issue. A refresh no longer moves you off a dim row either.
+
+Other keys: `o` opens the issue itself; write keys on a loaded dim row act on that issue (in its own repo); `#N` jumps to a home row; `n` creates in the group you are looking at; `O` opens the group's repo URL.
+
+## Known limitation
+
+Only loaded sub-issues show. An exact repo filter narrows the fetch to that one repo (ADR 0008), so with `--org` started inside the parent's repo and no whole-org data cached, the other repos' sub-issues are not loaded and don't show. A whole-org session, or a cached whole-org snapshot, shows them. Tracked with the unloaded case in #261.
 
 ## A bug this fixed
 
