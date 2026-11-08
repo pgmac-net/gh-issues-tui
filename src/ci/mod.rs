@@ -16,7 +16,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::error::Result;
-use crate::provider::types::RateLimitData;
+use crate::provider::types::{PrRef, RateLimitData};
 
 /// Where a run, job or step stands. One value replaces GitHub's
 /// `status`/`conclusion` pair: everything not finished is one of the first
@@ -166,8 +166,37 @@ impl CiRun {
         self.status.is_active()
     }
 
+    pub fn is_done(&self) -> bool {
+        self.status.is_done()
+    }
+
     pub fn is_failed(&self) -> bool {
         self.status.is_failure()
+    }
+}
+
+/// Which ETA history a run is compared with: same workflow, same trigger
+/// event, because different events often run different jobs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HistoryKey {
+    pub owner: String,
+    pub repo: String,
+    pub workflow_id: i64,
+    pub event: String,
+}
+
+impl HistoryKey {
+    pub fn of(pr: &PrRef, run: &CiRun) -> Self {
+        Self::new(&pr.owner, &pr.repo, run)
+    }
+
+    pub fn new(owner: &str, repo: &str, run: &CiRun) -> Self {
+        Self {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            workflow_id: run.workflow_id,
+            event: run.event.clone(),
+        }
     }
 }
 

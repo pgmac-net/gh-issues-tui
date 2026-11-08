@@ -33,26 +33,7 @@ impl LinkedPr {
     }
 }
 
-/// Which ETA history a run is compared with: same workflow, same trigger
-/// event, because different events often run different jobs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct HistoryKey {
-    pub owner: String,
-    pub repo: String,
-    pub workflow_id: i64,
-    pub event: String,
-}
-
-impl HistoryKey {
-    pub fn of(pr: &PrRef, run: &CiRun) -> Self {
-        Self {
-            owner: pr.owner.clone(),
-            repo: pr.repo.clone(),
-            workflow_id: run.workflow_id,
-            event: run.event.clone(),
-        }
-    }
-}
+pub use crate::ci::HistoryKey;
 
 /// Open and merged PRs only, open first, then merged newest first, capped at
 /// [`MAX_PRS`]. Returns the kept PRs and how many open or merged PRs the cap

@@ -439,6 +439,64 @@ pub(crate) fn spawn_runs(
     });
 }
 
+/// Run a fetch the repo workflows view asked for (#266). Page and jobs reads
+/// carry the generation they were sent under, so one overtaken by leaving the
+/// repo, a filter change or `r` is dropped when it lands.
+pub(crate) fn spawn_repo_runs(
+    client: &Provider,
+    fetch: RepoFetch,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let Some(ci) = client.ci() else {
+            return;
+        };
+        let event = match fetch {
+            RepoFetch::Pages { generation, req } => {
+                let result = crate::ci::repo::read_pages(ci, &req)
+                    .await
+                    .map_err(|e| e.to_string());
+                AppEvent::RepoPages {
+                    repo: req.repo,
+                    generation,
+                    first: req.first,
+                    last: req.last,
+                    result: Box::new(result),
+                }
+            }
+            RepoFetch::Jobs {
+                generation,
+                owner,
+                repo,
+                run_id,
+                attempt,
+            } => {
+                let result = ci
+                    .run_jobs(&owner, &repo, run_id)
+                    .await
+                    .map_err(|e| e.to_string());
+                AppEvent::RepoJobs {
+                    repo,
+                    generation,
+                    run_id,
+                    attempt,
+                    result,
+                }
+            }
+            RepoFetch::Workflows { owner, repo } => {
+                let result = ci
+                    .list_workflows(&owner, &repo)
+                    .await
+                    .map_err(|e| e.to_string());
+                AppEvent::RepoWorkflows { repo, result }
+            }
+        };
+        let _ = tx.send(event);
+    });
+}
+
 /// What has to follow a mutation that does not report the changed issue
 /// back. Issue-level mutations do report it and go through
 /// [`with_issue_patch`] instead, which patches the list in place (#196).

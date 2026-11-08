@@ -23,6 +23,8 @@ mod pr;
 mod ranks;
 pub mod readiness;
 mod refresh;
+pub mod repo_run_tree;
+pub mod repo_runs;
 mod resume;
 mod rows;
 mod run_tree;
@@ -46,6 +48,8 @@ pub use picker::PickerState;
 pub use pr::PrState;
 pub use ranks::RankState;
 pub use refresh::{FetchTarget, RefreshTarget};
+pub use repo_run_tree::{GroupKey, RepoNode, RepoRow, RepoRowKind, RepoView, StatusBucket};
+pub use repo_runs::{Grouping, RepoFetch, RepoFilter, RepoRunsData, RepoRunsState};
 pub use rows::TreeRight;
 pub use run_tree::{RunRow, RunRowKind, RunsData};
 pub use runs::{DetailTab, RunsFetch, RunsState, RunsWork};
@@ -164,6 +168,8 @@ pub struct App {
     pub pr: PrState,
     /// The workflow-runs tab of the detail pane (#222).
     pub runs: RunsState,
+    /// The repo workflows view, while a repo header is selected (#266).
+    pub repo_runs: RepoRunsState,
     /// Inferred priority ranks for labels outside the `priority:` convention
     /// (#156). Read-only: it affects sort and title colour, never what is
     /// written back to a backend.
@@ -268,6 +274,7 @@ impl App {
             help: HelpState::default(),
             pr: PrState::default(),
             runs: RunsState::default(),
+            repo_runs: RepoRunsState::default(),
             label_rank: RankState::default(),
             harness: HarnessState::default(),
             should_quit: false,
@@ -393,6 +400,7 @@ impl App {
         self.detail.reset_scroll();
         self.pr = PrState::default();
         self.runs.reset();
+        self.repo_runs.reset();
         self.label_rank = RankState::default();
         self.loaded = None;
         self.fetched_at = None;

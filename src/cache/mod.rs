@@ -8,6 +8,7 @@
 //!     snapshot.json   the last loaded issues and the scope they were fetched at
 //!     readiness.json  Jev readiness answers, keyed by what was sent
 //!     search.json     Jev search answers for the last few queries
+//!     run_jobs.json   jobs of finished workflow runs (#266)
 //! ```
 //!
 //! The cache is **read-only**: writes go to the backend and the cache follows.
@@ -18,6 +19,7 @@
 
 pub mod answers;
 pub mod fsio;
+pub mod run_jobs;
 pub mod snapshot;
 
 use std::path::{Path, PathBuf};
