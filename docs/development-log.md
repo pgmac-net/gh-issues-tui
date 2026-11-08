@@ -1440,3 +1440,44 @@ Work driven by [pgmac-net/gh-issues-tui#226](https://github.com/pgmac-net/gh-iss
 - `cargo test`: 1185 pass. clippy `-D warnings` and fmt clean.
 - Driven live against `pgmac-net` (202 issues, 62 repos) on a pty with an isolated `XDG_CACHE_HOME`: cold start drew the list at 7.65 s; warm at 0.26 s with `cached just now · refreshing…`, then `refreshed org: 202 issues across 62 repos`; `--no-cache` 7.79 s and the label-rank cache kept; a bad token after a warm start kept the cached list and showed `refresh failed`. The snapshot was 438 KB, mode `0600`, in `0700` directories.
 - **Not driven live:** a move (it would change real repos) and the Jev answer caches (need the TypeSafe consent and key). Both are covered by unit tests.
+
+# Development log — repo workflows view (2026-11-08)
+
+Work driven by [pgmac-net/gh-issues-tui#266](https://github.com/pgmac-net/gh-issues-tui/issues/266), branch `266-repo-workflows-view`, PR [#267](https://github.com/pgmac-net/gh-issues-tui/pull/267). Decisions: [ADR 0014](adr/0014-ci-is-its-own-provider-and-only-completed-jobs-are-cached.md). Detail: [repo-workflows.md](repo-workflows.md).
+
+## What shipped
+
+With the detail pane open on a repo header, the whole pane shows the repo's recent workflow runs: grouped by status, workflow or branch (`v`), filtered by status, workflow, event, branch or actor (`f`) and text (`/`), 100 at a time (`L`). It reuses the issue runs tab's rows, jobs, steps and ETA, and its polling rules. Under it, CI became its own provider (`ci::CiProvider`) with backend-neutral types, so another CI system can be plugged in later.
+
+## Process
+
+Picked up with the `pickup-ticket` skill: read the ticket and the runs code (ADR 0007, `src/runs/`, the tab's state and tree), grilled ten questions to a shared understanding, posted the plan to the ticket, implemented after approval on Opus (rated COMPLEX). Five commits: the CI seam first with no behaviour change (1282 tests green), then state and wiring, then UI and keys, a caption fix found live, and docs.
+
+## Decisions (from grilling)
+
+1. **Placement.** A repo header with the pane open is the view; the whole pane, not a tab. `R` on a header opens it. `Enter`/`Space` on a header still collapse the group.
+2. **Which runs.** Newest 100, every run (no newest-per-workflow), `L` for the next 100, `N of M` in the border.
+3. **Cache.** The run list is re-read on every entry and poll. Jobs: eager for active runs, lazy on unfold for finished ones. Finished runs' jobs on disk, keyed by run and attempt, capped at 2000.
+4. **Polling.** ADR 0007's rules; a poll re-reads every loaded page.
+5. **Grouping.** One level, `status` default, saved in the layout.
+6. **Filters.** One value per field, pushed down; text client-side; per repo, session-only.
+7. **CI seam.** Split now, not later: `CiProvider` trait, neutral `RunStatus`, no second backend.
+8. **Run row.** `CI #412 · main · push`, without the grouped-by field; title and actor on the bottom line.
+9. **Keys.** `v` group, `L` load more, `f`/`/` with the pane focused.
+10. **Resume.** The existing layout resume brings the view back; only the grouping is new state. Cursor, folds, pages and filters are not saved.
+
+## Deviations from the plan
+
+- `F` opens the workflows filter menu too, not only `f`, so both filter keys mean "filter what this pane shows".
+- `o` on a group header needed a backend-specific URL, so `CiProvider` gained an optional `runs_page_url` (GitHub: the Actions tab with its own search syntax).
+- A run seen active and now finished has its jobs re-read once (`jobs_for`), so its final jobs are what reach the disk cache.
+- The disk cache is gated by `cache` only, not the Jev consent: it holds no issue text.
+- `HistoryKey` moved to `ci` with the estimator; `runs::HistoryKey` re-exports it.
+- The caption goes ahead of the status line rather than only when it is empty: status messages linger, so it would never have shown. Found driving it live.
+- The issue runs tab does not use the disk cache; it keeps its session-only finished-jobs map.
+
+## Verification
+
+- `cargo test`: 1337 pass (55 new). clippy `-D warnings` and fmt clean.
+- Driven live in tmux against `pgmac-net/gh-issues-tui` with isolated state and cache dirs: `R` on the header → `100 of 719`; unfolding a run read its jobs; `v` regrouped; `L` → `200 of 719`; status `failure` pushed down → `5 of 5` across the whole history; clear all; `/renovate` → 2 runs; caption `Update Rust crate unicode-width to v0.2.3 — renovate[bot]`; quit and restart came back into the view with `workflow` grouping; `run_jobs.json` written; moving to an issue row gave the issue detail back.
+- **Not driven live:** a poll on an active run (none was running) and `o` on a group (it opens a browser). Both are covered by unit tests.
