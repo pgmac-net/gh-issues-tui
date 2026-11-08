@@ -160,6 +160,7 @@ impl RunJobsCache {
             .collect();
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.file.runs.len()
     }

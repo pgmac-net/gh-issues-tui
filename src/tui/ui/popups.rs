@@ -407,6 +407,22 @@ impl PickerSpec {
     }
 
     /// Choosing a repo to move the selected issue to (`Mode::MovePicker`).
+    /// The repo workflows view's filter menu (`Mode::RunFilterMenu`, #266).
+    pub(super) fn run_filter_menu() -> Self {
+        Self::new(" filter runs (Enter edits a field · Esc closes) ", false)
+    }
+
+    /// A run filter field's values (`Mode::RunFilterPick`, #266).
+    pub(super) fn run_filter_field(field: crate::tui::app::RunFilterField) -> Self {
+        Self::new(
+            format!(
+                " runs \u{00b7} {} (type to filter · Enter picks · Esc back) ",
+                field.label()
+            ),
+            false,
+        )
+    }
+
     pub(super) fn move_target() -> Self {
         Self::new(
             " move to repo (type to filter · Enter picks · Esc cancels) ",
@@ -662,9 +678,9 @@ pub(super) const LIST_HELP: &[(&str, &str)] = &[
     ("Esc / q", "close detail pane"),
     ("o / O", "open issue / repo in browser"),
     ("y", "copy issue ref to clipboard"),
-    ("/", "text search"),
+    ("/", "text search (workflows view: search runs)"),
     ("#", "jump to issue number"),
-    ("f", "cycle state filter (open/closed/all)"),
+    ("f", "cycle state filter (workflows view: filter runs)"),
     ("F", "filter editor (pickers + calendar)"),
     ("? / F1", "help for where you are (F1 works while typing)"),
     ("s / S", "cycle sort key / toggle direction"),
@@ -677,12 +693,23 @@ pub(super) const LIST_HELP: &[(&str, &str)] = &[
     ("t", "edit title"),
     ("p", "set priority"),
     ("P", "summarise linked PR (in detail pane)"),
-    ("R", "flip detail pane between comments and workflow runs"),
+    (
+        "R",
+        "flip comments / workflow runs; repo header: workflows view",
+    ),
+    (
+        "v",
+        "workflows view: group by status / workflow / branch / flat",
+    ),
+    ("L", "workflows view: load the next 100 runs"),
     ("m", "move issue to another repo"),
     ("n", "new issue"),
     ("A", "start a coding harness (F12 ? for its keys)"),
     ("Z", "switch between harness sessions"),
-    ("r", "refresh selected issue / repo (runs tab: runs)"),
+    (
+        "r",
+        "refresh selected issue / repo (runs tab and view: runs)",
+    ),
     ("Ctrl+R", "refresh filtered repo, else whole org"),
     ("q", "back / quit"),
 ];

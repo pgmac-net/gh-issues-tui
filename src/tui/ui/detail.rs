@@ -25,6 +25,11 @@ pub(super) fn draw_detail(f: &mut Frame, app: &App, t: &Theme, area: Rect) {
         draw_stub(f, app, t, area, stub);
         return;
     }
+    // A repo header with CI behind it is the repo workflows view (#266).
+    if let Some(repo) = app.repo_view_repo() {
+        super::repo_runs::draw_repo_runs(f, app, t, area, repo);
+        return;
+    }
     let Some(issue) = app.selected_issue() else {
         // Live follow landed on a repo header (or an empty list).
         let block = Block::default()

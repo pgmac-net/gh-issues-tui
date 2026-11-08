@@ -670,8 +670,7 @@ pub(crate) fn handle_app_event(
         } => app.apply_repo_pages(
             &repo,
             generation,
-            first,
-            last,
+            (first, last),
             *result,
             chrono::Utc::now(),
             std::time::Instant::now(),

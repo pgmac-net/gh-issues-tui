@@ -105,7 +105,7 @@ impl RunVocab {
 pub enum RepoFetch {
     Pages {
         generation: u64,
-        req: PagesRequest,
+        req: Box<PagesRequest>,
     },
     Jobs {
         generation: u64,
@@ -291,6 +291,10 @@ impl App {
         self.repo_view_repo().is_some()
     }
 
+    pub fn selected_is_repo_header(&self) -> bool {
+        matches!(self.rows.get(self.selected), Some(Row::RepoHeader { .. }))
+    }
+
     /// Called once per event-loop pass: entering the view, or another repo's
     /// header, reads it afresh after the debounce; leaving drops it.
     pub fn repo_runs_follow(&mut self, now: Instant) {
@@ -455,7 +459,7 @@ impl App {
                 .collect();
             out.push(RepoFetch::Pages {
                 generation: s.generation,
-                req: PagesRequest {
+                req: Box::new(PagesRequest {
                     owner,
                     repo,
                     filter: s.filter().run,
@@ -463,7 +467,7 @@ impl App {
                     last,
                     jobs_for,
                     known_history: self.runs.history.keys().cloned().collect(),
-                },
+                }),
             });
             s.in_flight = true;
             s.not_before = None;
@@ -479,8 +483,7 @@ impl App {
         &mut self,
         repo: &str,
         generation: u64,
-        first: u32,
-        last: u32,
+        (first, last): (u32, u32),
         result: std::result::Result<PagesUpdate, String>,
         at: DateTime<Utc>,
         now: Instant,
@@ -661,7 +664,7 @@ mod tests {
 
     fn pages(fetches: &[RepoFetch]) -> Option<(u64, PagesRequest)> {
         fetches.iter().find_map(|f| match f {
-            RepoFetch::Pages { generation, req } => Some((*generation, req.clone())),
+            RepoFetch::Pages { generation, req } => Some((*generation, (**req).clone())),
             _ => None,
         })
     }
@@ -675,7 +678,7 @@ mod tests {
     }
 
     fn land(app: &mut App, g: u64, runs: Vec<CiRun>, total: usize, t: Instant) {
-        app.apply_repo_pages("r", g, 1, 1, Ok(update(runs, total)), now(), t);
+        app.apply_repo_pages("r", g, (1, 1), Ok(update(runs, total)), now(), t);
     }
 
     fn failed_job(id: i64) -> CiJob {
@@ -762,7 +765,7 @@ mod tests {
             "load more reads only the next page"
         );
         let more = update(vec![run(4, RunStatus::Success)], 250);
-        app.apply_repo_pages("r", g, 2, 2, Ok(more), now(), t);
+        app.apply_repo_pages("r", g, (2, 2), Ok(more), now(), t);
         let data = app.repo_runs.data.as_ref().unwrap().as_ref().unwrap();
         assert_eq!(data.pages, 2);
         assert_eq!(data.runs.len(), 2);
@@ -994,7 +997,7 @@ mod tests {
         let (g, _) = entered(&mut app, t);
         land(&mut app, g, vec![run(5, RunStatus::Running)], 1, t);
         let (g, _) = pages(&app.repo_runs_tick(t + POLL)).unwrap();
-        app.apply_repo_pages("r", g, 1, 1, Err("boom".into()), now(), t);
+        app.apply_repo_pages("r", g, (1, 1), Err("boom".into()), now(), t);
         assert_eq!(app.repo_runs.stale.as_deref(), Some("boom"));
         assert_eq!(app.repo_runs.runs().len(), 1);
     }

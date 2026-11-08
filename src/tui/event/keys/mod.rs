@@ -14,6 +14,7 @@ pub(crate) mod move_issue;
 pub(crate) mod normal;
 pub(crate) mod pr;
 pub(crate) mod priority;
+pub(crate) mod run_filter;
 pub(super) mod shared;
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -36,6 +37,7 @@ use move_issue::{handle_confirm_move_key, handle_move_picker_key};
 use normal::handle_normal_key;
 use pr::{handle_pr_picker_key, handle_pr_summary_key};
 use priority::handle_confirm_priority_key;
+use run_filter::{handle_run_filter_menu_key, handle_run_filter_pick_key};
 
 pub(super) fn handle_key(
     app: &mut App,
@@ -75,5 +77,7 @@ pub(super) fn handle_key(
         Mode::ConfirmMove => handle_confirm_move_key(app, key, client, tx),
         Mode::ConfirmPriority => handle_confirm_priority_key(app, key, client, tx),
         Mode::Help(_) => handle_help_key(app, key),
+        Mode::RunFilterMenu => handle_run_filter_menu_key(app, key),
+        Mode::RunFilterPick(field) => handle_run_filter_pick_key(app, key, field),
     }
 }

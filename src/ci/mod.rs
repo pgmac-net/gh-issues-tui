@@ -105,6 +105,7 @@ impl RunStatus {
         }
     }
 
+    #[cfg(test)]
     pub fn from_word(word: &str) -> Option<RunStatus> {
         RunStatus::ALL.into_iter().find(|s| s.word() == word)
     }
@@ -220,6 +221,7 @@ pub struct RunFilter {
 }
 
 impl RunFilter {
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         *self == RunFilter::default()
     }
@@ -243,9 +245,6 @@ pub struct CiCapabilities {
     pub branch: bool,
     pub actor: bool,
 }
-
-/// How many runs one page holds.
-pub const PAGE_SIZE: usize = 100;
 
 /// The CI half of a backend (ADR 0014).
 #[async_trait]
@@ -284,6 +283,12 @@ pub trait CiProvider: Send + Sync {
     /// Most recently observed rate limit for these calls, when they draw on a
     /// different budget from the issue provider's.
     fn rate_limit(&self) -> Option<RateLimitData>;
+
+    /// The backend's own web page of a repo's runs, narrowed to `filter`, for
+    /// `o` on a group header. `None` when it has no such page.
+    fn runs_page_url(&self, _owner: &str, _repo: &str, _filter: &RunFilter) -> Option<String> {
+        None
+    }
 }
 
 /// A duration the way people read CI times: `45s`, `7m36s`, `1h02m`.

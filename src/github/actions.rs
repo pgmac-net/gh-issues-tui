@@ -558,6 +558,36 @@ impl CiProvider for Client {
     fn rate_limit(&self) -> Option<RateLimitData> {
         self.rest_rate_limit.get()
     }
+
+    fn runs_page_url(&self, owner: &str, repo: &str, filter: &RunFilter) -> Option<String> {
+        Some(actions_page_url(owner, repo, filter))
+    }
+}
+
+/// The Actions tab, narrowed with its own search syntax.
+fn actions_page_url(owner: &str, repo: &str, filter: &RunFilter) -> String {
+    let base = format!("https://github.com/{owner}/{repo}/actions");
+    let mut terms = Vec::new();
+    if let Some(w) = &filter.workflow {
+        terms.push(format!("workflow:\"{}\"", w.name));
+    }
+    if let Some(s) = filter.status {
+        terms.push(format!("is:{}", gh_status_param(s)));
+    }
+    for (key, value) in [
+        ("event", &filter.event),
+        ("branch", &filter.branch),
+        ("actor", &filter.actor),
+    ] {
+        if let Some(v) = value {
+            terms.push(format!("{key}:{v}"));
+        }
+    }
+    if terms.is_empty() {
+        return base;
+    }
+    reqwest::Url::parse_with_params(&base, &[("query", terms.join(" "))])
+        .map_or(base, |u| u.to_string())
 }
 
 #[cfg(test)]
@@ -695,6 +725,23 @@ mod tests {
         assert_eq!(run.branch.as_deref(), Some("main"));
         assert_eq!(run.title.as_deref(), Some("fix: something"));
         assert_eq!(run.actor.as_deref(), Some("pgmac"));
+    }
+
+    #[test]
+    fn a_group_header_opens_the_actions_tab_narrowed_to_it() {
+        assert_eq!(
+            actions_page_url("o", "r", &RunFilter::default()),
+            "https://github.com/o/r/actions"
+        );
+        let f = RunFilter {
+            status: Some(RunStatus::Failure),
+            branch: Some("main".into()),
+            ..RunFilter::default()
+        };
+        assert_eq!(
+            actions_page_url("o", "r", &f),
+            "https://github.com/o/r/actions?query=is%3Afailure+branch%3Amain"
+        );
     }
 
     #[test]

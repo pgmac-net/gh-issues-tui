@@ -248,7 +248,9 @@ pub(crate) fn detail_geometry(app: &App) -> Option<DetailGeometry> {
 /// This and the handlers below are the one place the detail pane's keys split
 /// between its tabs (#222), so `keys/normal.rs` keeps one arm per key.
 pub(crate) fn detail_step(app: &mut App, dir: isize) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_move(dir);
+    } else if app.runs_showing() {
         app.runs_move(dir);
     } else if let Some(g) = detail_geometry(app) {
         app.detail.step(dir, &g);
@@ -257,7 +259,9 @@ pub(crate) fn detail_step(app: &mut App, dir: isize) {
 
 /// `PgDn`/`PgUp` in the detail pane: one viewport of steps.
 pub(crate) fn detail_page(app: &mut App, dir: isize) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_move(dir * isize::from(repo_view_height().max(1) as i16));
+    } else if app.runs_showing() {
         let (_, _, view) = detail_metrics();
         app.runs_move(dir * isize::from(view.max(1) as i16));
     } else if let Some(g) = detail_geometry(app) {
@@ -267,7 +271,9 @@ pub(crate) fn detail_page(app: &mut App, dir: isize) {
 
 /// `g`/`Home` in the detail pane.
 pub(crate) fn detail_jump_top(app: &mut App) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_jump_top();
+    } else if app.runs_showing() {
         app.runs_jump_top();
     } else {
         app.detail.jump_top();
@@ -276,7 +282,9 @@ pub(crate) fn detail_jump_top(app: &mut App) {
 
 /// `G`/`End` in the detail pane: last comment, thread scrolled to its end.
 pub(crate) fn detail_jump_end(app: &mut App) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_jump_end();
+    } else if app.runs_showing() {
         app.runs_jump_end();
     } else if let Some(g) = detail_geometry(app) {
         app.detail.jump_end(&g);
@@ -285,7 +293,9 @@ pub(crate) fn detail_jump_end(app: &mut App) {
 
 /// `→` in the detail pane.
 pub(crate) fn detail_key_right(app: &mut App) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_right(std::time::Instant::now());
+    } else if app.runs_showing() {
         app.runs_right();
     } else {
         with_fold(app, App::detail_right);
@@ -294,7 +304,9 @@ pub(crate) fn detail_key_right(app: &mut App) {
 
 /// `←` in the detail pane.
 pub(crate) fn detail_key_left(app: &mut App) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_left(std::time::Instant::now());
+    } else if app.runs_showing() {
         app.runs_left();
     } else {
         with_fold(app, App::detail_left);
@@ -303,7 +315,9 @@ pub(crate) fn detail_key_left(app: &mut App) {
 
 /// `Space`/`Enter` in the detail pane.
 pub(crate) fn detail_key_toggle(app: &mut App) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_toggle(std::time::Instant::now());
+    } else if app.runs_showing() {
         app.runs_toggle();
     } else {
         with_fold(app, App::toggle_selected_comment_fold);
@@ -312,7 +326,9 @@ pub(crate) fn detail_key_toggle(app: &mut App) {
 
 /// `[`/`]` in the detail pane.
 pub(crate) fn detail_key_fold_all(app: &mut App, folded: bool) {
-    if app.runs_showing() {
+    if app.repo_view_showing() {
+        app.repo_runs_set_all_folded(folded);
+    } else if app.runs_showing() {
         app.runs_set_all_folded(folded);
     } else {
         with_fold(app, |a| {
@@ -325,6 +341,10 @@ pub(crate) fn detail_key_fold_all(app: &mut App, folded: bool) {
 /// `Tab`/`Shift+Tab` in the detail pane: move the selection header to header
 /// (wrapping), then edge-scroll it into view.
 pub(crate) fn detail_select(app: &mut App, delta: isize) {
+    if app.repo_view_showing() {
+        app.repo_runs_next_header(delta);
+        return;
+    }
     if app.runs_showing() {
         app.runs_next_header(delta);
         return;
@@ -333,6 +353,15 @@ pub(crate) fn detail_select(app: &mut App, delta: isize) {
     if let Some(g) = detail_geometry(app) {
         app.detail.reveal_selected(&g);
     }
+}
+
+/// Rows the repo workflows view shows at once (#266): the whole detail pane
+/// less its border, measured the way the renderer lays it out.
+fn repo_view_height() -> u16 {
+    let frame = layout::frame(layout::from_terminal_size());
+    layout::panes(frame.main, true)
+        .detail
+        .map_or(1, |d| d.height.saturating_sub(2))
 }
 
 /// Run a fold change (`fold` returns whether anything folded or unfolded)

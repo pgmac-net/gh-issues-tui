@@ -520,6 +520,9 @@ impl App {
     /// The run filter a group header stands for, on top of the view's own:
     /// what `o` on a header asks the backend's runs page to show.
     pub fn repo_runs_selected_group_filter(&self) -> Option<RunFilter> {
+        if !self.repo_view_showing() || self.focus != Focus::Detail {
+            return None;
+        }
         let view = self.repo_runs.view();
         let RepoRowKind::Group { group } = view.rows.get(self.repo_runs.sel)?.kind else {
             return None;

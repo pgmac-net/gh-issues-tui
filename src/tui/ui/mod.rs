@@ -11,6 +11,7 @@ mod help;
 mod list;
 mod popups;
 mod pr;
+mod repo_runs;
 mod runs;
 mod widgets;
 
@@ -114,6 +115,12 @@ fn draw_popup(f: &mut Frame, app: &App, t: &Theme) {
         Mode::ConfirmMove => popups::draw_confirm_move_popup(f, app, t),
         Mode::ConfirmPriority => popups::draw_confirm_priority_popup(f, app, t),
         Mode::Help(topic) => help::draw_help(f, app, t, topic),
+        Mode::RunFilterMenu => {
+            popups::draw_picker(f, app, t, popups::PickerSpec::run_filter_menu())
+        }
+        Mode::RunFilterPick(field) => {
+            popups::draw_picker(f, app, t, popups::PickerSpec::run_filter_field(field))
+        }
         _ => {}
     }
 }

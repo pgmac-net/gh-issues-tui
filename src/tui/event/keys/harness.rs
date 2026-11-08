@@ -971,14 +971,40 @@ mod tests {
     }
 
     #[test]
-    fn capital_r_on_a_repo_header_asks_for_an_issue() {
+    fn capital_r_on_a_repo_header_opens_the_repo_workflows_view() {
+        // #266 replaced "select an issue to see its runs" with the repo view.
         let mut app = runs_app();
         app.selected = 0;
         press(&mut app, 'R');
-        assert!(!app.detail.open);
+        assert!(app.detail.open);
+        assert!(app.repo_view_showing());
+        press(&mut app, 'R');
         assert_eq!(
             app.status.as_deref(),
-            Some("select an issue to see its runs")
+            Some("the workflows view follows the repo header")
+        );
+    }
+
+    #[test]
+    fn view_keys_act_only_with_the_pane_focused() {
+        let mut app = runs_app();
+        app.selected = 0;
+        press(&mut app, 'R');
+        let before = app.repo_runs.group;
+        press(&mut app, 'v');
+        assert_ne!(app.repo_runs.group, before, "v cycles the grouping");
+        press(&mut app, 'f');
+        assert_eq!(app.mode, Mode::RunFilterMenu);
+        app.mode = Mode::Normal;
+        press(&mut app, '/');
+        assert_eq!(app.mode, Mode::Input(InputKind::RunSearch));
+        app.mode = Mode::Normal;
+        app.focus = Focus::List;
+        let state = app.state_filter;
+        press(&mut app, 'f');
+        assert_ne!(
+            app.state_filter, state,
+            "in the list, f is still the state filter"
         );
     }
 

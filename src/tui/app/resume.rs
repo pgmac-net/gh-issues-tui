@@ -10,6 +10,7 @@
 use std::time::Instant;
 
 use super::prelude::*;
+use super::repo_runs::Grouping;
 use crate::tui::layout_state::{Layout, SavedFilters, Selected, VERSION};
 
 /// The part of a saved layout that needs the data to have loaded.
@@ -80,6 +81,7 @@ impl App {
             detail_open,
             detail_focused,
             runs_tab,
+            runs_group: self.repo_runs.group.label().to_string(),
         }
     }
 
@@ -124,6 +126,8 @@ impl App {
         self.seen_repos = l.seen_repos.iter().cloned().collect();
         self.collapsed_issues = l.collapsed_issues.iter().cloned().collect();
         self.folded_comments = l.folded_comments.iter().cloned().collect();
+        // Needs no data, so it applies at once (#266).
+        self.repo_runs.group = Grouping::from_label(&l.runs_group).unwrap_or_default();
         self.resume = Some(Resume {
             selected: l.selected.clone(),
             list_top: l.list_top,
@@ -152,8 +156,11 @@ impl App {
             None => {}
         }
         self.list_top.set(r.list_top);
-        // The pane only makes sense with an issue under the cursor.
-        if r.detail_open && self.selected_issue().is_some() {
+        // The pane only makes sense with an issue under the cursor, or a repo
+        // header with CI behind it: the repo workflows view (#266).
+        let pane = self.selected_issue().is_some()
+            || (self.selected_is_repo_header() && self.runs.supported);
+        if r.detail_open && pane {
             self.open_detail();
             if !r.detail_focused {
                 self.focus = Focus::List;
@@ -378,5 +385,40 @@ mod tests {
         assert!(b.layout("github").runs_tab, "and is still reported");
         b.resume_runs_tab(Instant::now());
         assert!(b.runs_showing());
+    }
+
+    #[test]
+    fn the_repo_workflows_view_resumes_with_its_grouping() {
+        let mut a = app();
+        a.runs.supported = true;
+        a.set_data(data());
+        a.selected = a
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::RepoHeader { .. }))
+            .unwrap();
+        a.open_detail();
+        a.cycle_repo_grouping();
+        assert!(a.repo_view_showing());
+        let saved = a.layout("github");
+        assert_eq!(saved.runs_group, "workflow");
+
+        let mut b = app();
+        b.runs.supported = true;
+        b.apply_layout(&saved, false);
+        assert_eq!(b.repo_runs.group, Grouping::Workflow, "applies before data");
+        b.set_data(data());
+        assert!(b.repo_view_showing(), "the header and the pane come back");
+        assert_eq!(b.focus, Focus::Detail);
+    }
+
+    #[test]
+    fn a_layout_without_a_grouping_takes_the_default() {
+        let mut saved = app().layout("github");
+        saved.runs_group = String::new();
+        let mut b = app();
+        b.repo_runs.group = Grouping::Branch;
+        b.apply_layout(&saved, false);
+        assert_eq!(b.repo_runs.group, Grouping::Status);
     }
 }

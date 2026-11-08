@@ -118,6 +118,10 @@ pub enum Mode {
     ConfirmHarness(HarnessConfirm),
     /// The help viewer (#184). Where it returns to is `App::help.return_to`.
     Help(HelpTopic),
+    /// The repo workflows view's filter menu (#266).
+    RunFilterMenu,
+    /// Picking a value for one run filter field (#266).
+    RunFilterPick(super::run_filter::RunFilterField),
 }
 
 /// What a `Mode::ConfirmHarness` popup will do if confirmed. Each carries
@@ -143,6 +147,8 @@ pub enum InputKind {
     Org,
     /// Jump the selection to a loaded issue by its number (does not filter).
     GotoNumber,
+    /// The repo workflows view's text search (#266).
+    RunSearch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

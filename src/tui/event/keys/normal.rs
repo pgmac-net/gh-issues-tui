@@ -99,6 +99,9 @@ pub(crate) fn handle_normal_key(
         }
         // r: whatever is selected — the issue, or the repo group (#229).
         KeyCode::Char('r') => match app.focus {
+            Focus::Detail if app.repo_view_showing() => {
+                app.repo_runs_refresh(std::time::Instant::now())
+            }
             Focus::Detail if app.runs_showing() => app.runs_refresh(std::time::Instant::now()),
             _ => {
                 if refresh_busy(app) {
@@ -125,6 +128,16 @@ pub(crate) fn handle_normal_key(
         KeyCode::Char('R') => {
             if !app.runs.supported {
                 app.status = Some("workflow runs not supported by this provider".into());
+                return;
+            }
+            // On a repo header the pane is the repo workflows view (#266):
+            // `R` opens it, and once open there is no tab to flip.
+            if app.selected_is_repo_header() {
+                if app.detail.open {
+                    app.status = Some("the workflows view follows the repo header".into());
+                } else {
+                    app.open_detail();
+                }
                 return;
             }
             if !app.detail.open {
@@ -215,25 +228,48 @@ pub(crate) fn handle_normal_key(
         }
 
         // filters & sort
-        KeyCode::Char('/') => {
-            app.input.start(&app.filters.text.clone());
-            app.mode = Mode::Input(InputKind::Search);
-        }
+        KeyCode::Char('/') => match app.focus {
+            Focus::Detail if app.repo_view_showing() => app.open_run_search(),
+            _ => {
+                app.input.start(&app.filters.text.clone());
+                app.mode = Mode::Input(InputKind::Search);
+            }
+        },
         // jump the selection to an issue by number (does not filter the list)
         KeyCode::Char('#') => {
             app.input.start("");
             app.mode = Mode::Input(InputKind::GotoNumber);
         }
-        KeyCode::Char('f') => {
-            // Showing closed issues widens the wanted scope; the auto-widen
-            // after this key fetches them when they were never loaded (#230).
-            app.state_filter = app.state_filter.next();
-            app.rebuild_rows();
-            app.expand_single_visible();
-        }
-        KeyCode::Char('F') => {
-            app.filter_menu_idx = 0;
-            app.mode = Mode::FilterMenu;
+        // In the repo workflows view (#266) both open its run filter menu.
+        KeyCode::Char('f') => match app.focus {
+            Focus::Detail if app.repo_view_showing() => app.open_run_filter_menu(),
+            _ => {
+                // Showing closed issues widens the wanted scope; the auto-widen
+                // after this key fetches them when they were never loaded (#230).
+                app.state_filter = app.state_filter.next();
+                app.rebuild_rows();
+                app.expand_single_visible();
+            }
+        },
+        KeyCode::Char('F') => match app.focus {
+            Focus::Detail if app.repo_view_showing() => app.open_run_filter_menu(),
+            _ => {
+                app.filter_menu_idx = 0;
+                app.mode = Mode::FilterMenu;
+            }
+        },
+        // The repo workflows view's grouping and next page (#266).
+        KeyCode::Char('v') => match app.focus {
+            Focus::Detail if app.repo_view_showing() => app.cycle_repo_grouping(),
+            _ => {}
+        },
+        KeyCode::Char('L') => {
+            if app.focus == Focus::Detail
+                && app.repo_view_showing()
+                && !app.repo_runs_load_more(std::time::Instant::now())
+            {
+                app.status = Some("no more runs to load".into());
+            }
         }
         KeyCode::Char('s') => {
             app.sort_key = app.sort_key.next();
@@ -253,8 +289,15 @@ pub(crate) fn handle_normal_key(
 
         // open in browser
         KeyCode::Char('o') => {
+            let group_page = || {
+                let filter = app.repo_runs_selected_group_filter()?;
+                let repo = app.repo_view_repo()?;
+                client.ci()?.runs_page_url(&app.org, repo, &filter)
+            };
             let url = app
-                .runs_selected_url()
+                .repo_runs_selected_url()
+                .or_else(group_page)
+                .or_else(|| app.runs_selected_url())
                 .or_else(|| app.selected_issue().map(|i| i.url.clone()))
                 // A stub's own url (#234); empty for Jira, which falls through.
                 .or_else(|| {
