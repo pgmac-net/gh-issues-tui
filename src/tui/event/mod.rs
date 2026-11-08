@@ -262,7 +262,7 @@ async fn event_loop(
     app.spinner = spinner;
     app.config_warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     app.typesafe = typesafe.status;
-    app.runs.supported = client.supports_runs();
+    app.runs.supported = client.ci().is_some();
     // Resume where the last session left off (#236), before the first fetch so
     // a restored filter also scopes it.
     saver.resume(&mut app, fresh);
@@ -609,7 +609,7 @@ pub(crate) fn handle_app_event(
 
     // Pull rate limit state from client after any API interaction.
     app.rate_limit = client.rate_limit();
-    app.runs.budget = client.runs_rate_limit();
+    app.runs.budget = client.ci().and_then(|ci| ci.rate_limit());
 
     match msg {
         AppEvent::Runs {

@@ -12,12 +12,13 @@ use std::sync::Arc;
 use futures::StreamExt;
 use futures::stream;
 
+use crate::ci::estimate::{History, build_history};
+use crate::ci::{CiJob, CiProvider, CiRun};
 use crate::provider::IssueProvider;
 use crate::provider::error::Result;
 use crate::provider::types::PrRef;
 
-use super::estimate::{History, build_history};
-use super::{ActionsJob, ActionsRun, HistoryKey, LinkedPr, latest_runs, select_prs};
+use super::{HistoryKey, LinkedPr, latest_runs, select_prs};
 
 /// Concurrent provider calls per stage of a fetch, gh-eta's `fetchWorkers`.
 const WORKERS: usize = 8;
@@ -26,7 +27,7 @@ const WORKERS: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrRuns {
     pub pr: LinkedPr,
-    pub runs: std::result::Result<Vec<ActionsRun>, String>,
+    pub runs: std::result::Result<Vec<CiRun>, String>,
 }
 
 /// What a finished fetch hands back. `history` holds only what was new.
@@ -42,18 +43,19 @@ pub struct RunsUpdate {
 /// held.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Known {
-    pub finished_jobs: HashMap<i64, Vec<ActionsJob>>,
+    pub finished_jobs: HashMap<i64, Vec<CiJob>>,
     pub history: HashSet<HistoryKey>,
 }
 
 /// Find the issue's PRs and everything about their runs.
 pub async fn load(
-    client: &dyn IssueProvider,
+    issues: &dyn IssueProvider,
+    client: &dyn CiProvider,
     issue_id: &str,
     text_refs: &[PrRef],
     known: &Known,
 ) -> Result<RunsUpdate> {
-    let linked = client.linked_prs(issue_id, text_refs).await?;
+    let linked = issues.linked_prs(issue_id, text_refs).await?;
     let (prs, hidden) = select_prs(linked);
     let prs = read_runs(client, prs).await;
     Ok(complete(client, prs, hidden, known).await)
@@ -62,7 +64,7 @@ pub async fn load(
 /// Re-read the runs of open PRs. Merged PRs keep what they have: nothing polls
 /// them.
 pub async fn poll(
-    client: &dyn IssueProvider,
+    client: &dyn CiProvider,
     previous: Vec<PrRuns>,
     hidden: usize,
     known: &Known,
@@ -91,7 +93,7 @@ pub async fn poll(
     complete(client, prs, hidden, known).await
 }
 
-async fn read_runs(client: &dyn IssueProvider, prs: Vec<LinkedPr>) -> Vec<PrRuns> {
+async fn read_runs(client: &dyn CiProvider, prs: Vec<LinkedPr>) -> Vec<PrRuns> {
     stream::iter(prs)
         .map(|pr| async move {
             let runs = head_runs(client, &pr).await.map_err(|e| e.to_string());
@@ -102,7 +104,7 @@ async fn read_runs(client: &dyn IssueProvider, prs: Vec<LinkedPr>) -> Vec<PrRuns
         .await
 }
 
-async fn head_runs(client: &dyn IssueProvider, pr: &LinkedPr) -> Result<Vec<ActionsRun>> {
+async fn head_runs(client: &dyn CiProvider, pr: &LinkedPr) -> Result<Vec<CiRun>> {
     client
         .head_runs(&pr.pr.owner, &pr.pr.repo, &pr.head_sha)
         .await
@@ -111,7 +113,7 @@ async fn head_runs(client: &dyn IssueProvider, pr: &LinkedPr) -> Result<Vec<Acti
 
 /// Add jobs to every run, then fetch history for active runs that lack it.
 async fn complete(
-    client: &dyn IssueProvider,
+    client: &dyn CiProvider,
     mut prs: Vec<PrRuns>,
     hidden: usize,
     known: &Known,
@@ -185,6 +187,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
+    use crate::ci::{CiCapabilities, RunFilter, RunPage, RunStatus, Workflow};
     use crate::provider::error::ProviderError;
     use crate::provider::scope::FetchScope;
     use crate::provider::types::{
@@ -197,7 +200,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         prs: Vec<LinkedPr>,
-        runs: HashMap<String, Vec<ActionsRun>>,
+        runs: HashMap<String, Vec<CiRun>>,
         no_access: Option<String>,
         calls: Mutex<Vec<String>>,
     }
@@ -219,28 +222,6 @@ mod tests {
             self.log("linked".into());
             Ok(self.prs.clone())
         }
-        async fn head_runs(&self, _: &str, _: &str, sha: &str) -> Result<Vec<ActionsRun>> {
-            self.log(format!("head {sha}"));
-            if self.no_access.as_deref() == Some(sha) {
-                return Err(ProviderError::Api("no access".into()));
-            }
-            Ok(self.runs.get(sha).cloned().unwrap_or_default())
-        }
-        async fn run_jobs(&self, _: &str, _: &str, run_id: i64) -> Result<Vec<ActionsJob>> {
-            self.log(format!("jobs {run_id}"));
-            Ok(vec![])
-        }
-        async fn history_runs(
-            &self,
-            _: &str,
-            _: &str,
-            id: i64,
-            _: &str,
-        ) -> Result<Vec<ActionsRun>> {
-            self.log(format!("history {id}"));
-            Err(ProviderError::Api("no history".into()))
-        }
-
         async fn org_issues(&self, _: &str, _: &FetchScope) -> Result<Vec<RepoIssues>> {
             unimplemented!()
         }
@@ -296,6 +277,37 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl CiProvider for Fake {
+        fn capabilities(&self) -> CiCapabilities {
+            CiCapabilities::default()
+        }
+        async fn list_runs(&self, _: &str, _: &str, _: &RunFilter, _: u32) -> Result<RunPage> {
+            unimplemented!()
+        }
+        async fn list_workflows(&self, _: &str, _: &str) -> Result<Vec<Workflow>> {
+            unimplemented!()
+        }
+        fn rate_limit(&self) -> Option<RateLimitData> {
+            None
+        }
+        async fn head_runs(&self, _: &str, _: &str, sha: &str) -> Result<Vec<CiRun>> {
+            self.log(format!("head {sha}"));
+            if self.no_access.as_deref() == Some(sha) {
+                return Err(ProviderError::Api("no access".into()));
+            }
+            Ok(self.runs.get(sha).cloned().unwrap_or_default())
+        }
+        async fn run_jobs(&self, _: &str, _: &str, run_id: i64) -> Result<Vec<CiJob>> {
+            self.log(format!("jobs {run_id}"));
+            Ok(vec![])
+        }
+        async fn history_runs(&self, _: &str, _: &str, id: i64, _: &str) -> Result<Vec<CiRun>> {
+            self.log(format!("history {id}"));
+            Err(ProviderError::Api("no history".into()))
+        }
+    }
+
     fn linked(number: u64, sha: &str, open: bool) -> LinkedPr {
         LinkedPr {
             pr: PrRef {
@@ -311,19 +323,18 @@ mod tests {
         }
     }
 
-    fn run(id: i64, status: &str) -> ActionsRun {
-        ActionsRun {
+    fn run(id: i64, status: &str) -> CiRun {
+        CiRun {
             id,
             workflow_id: 1,
             name: Some("CI".into()),
             event: "push".into(),
-            status: status.into(),
-            conclusion: (status == "completed").then(|| "success".to_string()),
+            status: match status {
+                "completed" => RunStatus::Success,
+                _ => RunStatus::Running,
+            },
             run_number: id as u64,
-            run_started_at: None,
-            updated_at: None,
-            html_url: String::new(),
-            jobs: vec![],
+            ..CiRun::default()
         }
     }
 
@@ -335,7 +346,9 @@ mod tests {
             no_access: Some("bad".into()),
             ..Fake::default()
         };
-        let update = load(&fake, "I_1", &[], &Known::default()).await.unwrap();
+        let update = load(&fake, &fake, "I_1", &[], &Known::default())
+            .await
+            .unwrap();
         let by_number = |n: u64| update.prs.iter().find(|p| p.pr.pr.number == n).unwrap();
         assert!(by_number(1).runs.is_ok());
         assert_eq!(by_number(2).runs, Err("API errors: no access".to_string()));
@@ -349,7 +362,9 @@ mod tests {
             prs: vec![closed, linked(2, "y", true)],
             ..Fake::default()
         };
-        let update = load(&fake, "I_1", &[], &Known::default()).await.unwrap();
+        let update = load(&fake, &fake, "I_1", &[], &Known::default())
+            .await
+            .unwrap();
         assert_eq!(update.prs.len(), 1);
         assert_eq!(update.prs[0].pr.pr.number, 2);
     }
@@ -372,7 +387,7 @@ mod tests {
             finished_jobs: HashMap::from([(10, vec![])]),
             ..Known::default()
         };
-        load(&fake, "I_1", &[], &known).await.unwrap();
+        load(&fake, &fake, "I_1", &[], &known).await.unwrap();
         assert_eq!(fake.count("jobs 10"), 0);
         assert_eq!(fake.count("jobs 11"), 1);
     }
@@ -391,7 +406,9 @@ mod tests {
             )]),
             ..Fake::default()
         };
-        let update = load(&fake, "I_1", &[], &Known::default()).await.unwrap();
+        let update = load(&fake, &fake, "I_1", &[], &Known::default())
+            .await
+            .unwrap();
         assert_eq!(fake.count("history 1"), 1);
         assert_eq!(fake.count("history 2"), 0, "finished: no ETA needed");
         assert_eq!(update.history.len(), 1, "no history is still an answer");
@@ -400,7 +417,7 @@ mod tests {
             history: update.history.iter().map(|(k, _)| k.clone()).collect(),
             ..Known::default()
         };
-        load(&fake, "I_1", &[], &known).await.unwrap();
+        load(&fake, &fake, "I_1", &[], &known).await.unwrap();
         assert_eq!(fake.count("history 1"), 1, "not asked again");
     }
 

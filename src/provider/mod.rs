@@ -15,7 +15,8 @@ use types::{
     RateLimitData, RepoIssues, RepoLabel, SubIssues,
 };
 
-use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
+use crate::ci::CiProvider;
+use crate::runs::LinkedPr;
 
 /// The backend-neutral surface the TUI talks to. One provider is selected at
 /// startup (`--provider` flag / `provider` config key); everything the event
@@ -148,45 +149,19 @@ pub trait IssueProvider: Send + Sync {
         Err(ProviderError::Unsupported("moving issues between repos"))
     }
 
-    /// Capability probe for the workflow-runs tab (#222) and every method
-    /// below it. The UI checks this before offering the tab.
-    fn supports_runs(&self) -> bool {
-        false
+    /// The CI half of this backend, when it has one (#266, ADR 0014). The
+    /// workflow-runs tab and the repo workflows view check this before
+    /// offering themselves.
+    fn ci(&self) -> Option<&dyn CiProvider> {
+        None
     }
 
     /// The pull requests linked to an issue, in any state: those the backend
     /// knows reference it, plus `text_refs` found in its text. A reference
-    /// that turns out to name an issue, or nothing, is dropped.
+    /// that turns out to name an issue, or nothing, is dropped. A tracker
+    /// question, so it stays here rather than on [`CiProvider`].
     async fn linked_prs(&self, _issue_id: &str, _text_refs: &[PrRef]) -> Result<Vec<LinkedPr>> {
         Err(ProviderError::Unsupported("workflow runs"))
-    }
-
-    /// The workflow runs of a commit, without their jobs.
-    async fn head_runs(&self, _owner: &str, _repo: &str, _sha: &str) -> Result<Vec<ActionsRun>> {
-        Err(ProviderError::Unsupported("workflow runs"))
-    }
-
-    /// The jobs of a run's latest attempt, with their steps.
-    async fn run_jobs(&self, _owner: &str, _repo: &str, _run_id: i64) -> Result<Vec<ActionsJob>> {
-        Err(ProviderError::Unsupported("workflow runs"))
-    }
-
-    /// Recent successful runs of a workflow for one trigger event, with jobs:
-    /// what an ETA is learned from.
-    async fn history_runs(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        _workflow_id: i64,
-        _event: &str,
-    ) -> Result<Vec<ActionsRun>> {
-        Err(ProviderError::Unsupported("workflow runs"))
-    }
-
-    /// Most recently observed rate limit for the workflow-runs calls, when
-    /// they draw on a different budget from [`IssueProvider::rate_limit`].
-    fn runs_rate_limit(&self) -> Option<RateLimitData> {
-        None
     }
 }
 

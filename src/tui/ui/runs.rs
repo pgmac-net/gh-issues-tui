@@ -11,9 +11,9 @@ use super::detail::Highlight;
 use super::list::pane_border;
 use super::prelude::*;
 use super::widgets::render_region_scrollbar;
-use crate::runs::estimate::{JobEstimate, JobState, RunEstimate};
+use crate::ci::estimate::{JobEstimate, JobState, RunEstimate};
+use crate::ci::{CiJob, CiRun, CiStep, RunStatus, fmt_dur};
 use crate::runs::fetch::PrRuns;
-use crate::runs::{ActionsJob, ActionsRun, ActionsStep, fmt_dur, is_failure};
 use crate::tui::app::{DetailTab, Focus, RunRow, RunRowKind, RunsData};
 
 /// The lower region's title: which tab is showing, and the key that flips it.
@@ -249,15 +249,16 @@ fn row_text(data: &RunsData, row: &RunRow, current_repo: Option<&str>, t: &Theme
     }
 }
 
-/// The glyph and colour for an Actions status and conclusion.
-fn status_mark(status: &str, conclusion: Option<&str>, t: &Theme) -> (&'static str, Color) {
+/// The glyph and colour for a run, job or step status. Shared with the repo
+/// workflows view (#266), so both draw a status the same way.
+pub(super) fn status_mark(status: RunStatus, t: &Theme) -> (&'static str, Color) {
     match status {
-        "completed" if is_failure(conclusion) => ("✗", t.error),
-        "completed" if conclusion == Some("success") => ("✓", t.open),
-        "completed" => ("-", t.dim),
-        "in_progress" => ("●", t.accent),
-        "waiting" => ("!", t.warning),
-        _ => ("·", t.dim),
+        s if s.is_failure() => ("✗", t.error),
+        RunStatus::Success => ("✓", t.open),
+        RunStatus::Running => ("●", t.accent),
+        RunStatus::Waiting => ("!", t.warning),
+        RunStatus::Queued => ("·", t.dim),
+        _ => ("-", t.dim),
     }
 }
 
@@ -321,12 +322,12 @@ fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-fn run_text(run: &ActionsRun, estimate: Option<&RunEstimate>, t: &Theme) -> RowText {
-    let (glyph, colour) = status_mark(&run.status, run.conclusion.as_deref(), t);
+fn run_text(run: &CiRun, estimate: Option<&RunEstimate>, t: &Theme) -> RowText {
+    let (glyph, colour) = status_mark(run.status, t);
     let name = format!("{} · {}", run.workflow(), run.event);
     let right = match estimate {
         Some(e) => {
-            let done = run.jobs.iter().filter(|j| j.status == "completed").count();
+            let done = run.jobs.iter().filter(|j| j.status.is_done()).count();
             let mut right = vec![
                 seg(Fig::Progress, format!("{done}/{}", run.jobs.len())),
                 seg(Fig::Elapsed, fmt_dur(e.elapsed)),
@@ -340,7 +341,7 @@ fn run_text(run: &ActionsRun, estimate: Option<&RunEstimate>, t: &Theme) -> RowT
                 .zip(run.updated_at)
                 .map(|(start, end)| fmt_dur(end - start))
                 .unwrap_or_default();
-            finished(run.conclusion.as_deref(), &took)
+            finished(run.status, &took)
         }
     };
     RowText {
@@ -377,29 +378,26 @@ fn eta_figures(e: &RunEstimate) -> Vec<Seg> {
     ]
 }
 
-/// A finished item's figures: its conclusion unless the glyph already says all
-/// there is, then how long it took.
-fn finished(conclusion: Option<&str>, took: &str) -> Vec<Seg> {
+/// A finished item's figures: how it finished unless the glyph already says
+/// all there is, then how long it took.
+fn finished(status: RunStatus, took: &str) -> Vec<Seg> {
     let took = (!took.is_empty()).then(|| seg(Fig::Elapsed, took));
-    match conclusion {
-        Some("success") | None => took.into_iter().collect(),
-        Some(c) => std::iter::once(seg(Fig::Dim, c)).chain(took).collect(),
+    if status.is_active() || status == RunStatus::Success {
+        return took.into_iter().collect();
     }
+    std::iter::once(seg(Fig::Dim, status.word()))
+        .chain(took)
+        .collect()
 }
 
-fn job_text(
-    job: &ActionsJob,
-    estimate: Option<&JobEstimate>,
-    data: &RunsData,
-    t: &Theme,
-) -> RowText {
-    let (glyph, colour) = status_mark(&job.status, job.conclusion.as_deref(), t);
+fn job_text(job: &CiJob, estimate: Option<&JobEstimate>, data: &RunsData, t: &Theme) -> RowText {
+    let (glyph, colour) = status_mark(job.status, t);
     let elapsed = |e: &JobEstimate| seg(Fig::Elapsed, fmt_dur(e.elapsed));
     let right = match estimate.map(|e| (e, e.state)) {
         Some((e, JobState::Running)) => {
             let mut right = Vec::new();
             if !job.steps.is_empty() {
-                let done = job.steps.iter().filter(|s| s.status == "completed").count();
+                let done = job.steps.iter().filter(|s| s.status.is_done()).count();
                 right.push(seg(Fig::Progress, format!("{done}/{}", job.steps.len())));
             }
             right.push(elapsed(e));
@@ -407,7 +405,7 @@ fn job_text(
             right
         }
         Some((e, JobState::Overdue)) => vec![elapsed(e), seg(Fig::Warning, "overdue")],
-        Some((e, JobState::Unknown)) if job.status == "in_progress" => {
+        Some((e, JobState::Unknown)) if job.status == RunStatus::Running => {
             vec![elapsed(e), seg(Fig::Dim, "?")]
         }
         Some((_, JobState::Unknown)) => vec![seg(Fig::Dim, "?")],
@@ -420,12 +418,9 @@ fn job_text(
         Some((e, JobState::Pending)) => {
             vec![seg(Fig::Eta, format!("~{}", fmt_dur(e.remaining)))]
         }
-        Some((_, JobState::Done)) | None => times(
-            job.started_at,
-            job.completed_at,
-            job.conclusion.as_deref(),
-            data,
-        ),
+        Some((_, JobState::Done)) | None => {
+            times(job.started_at, job.completed_at, job.status, data.as_of)
+        }
     };
     RowText {
         glyph,
@@ -435,18 +430,13 @@ fn job_text(
     }
 }
 
-fn step_text(step: &ActionsStep, data: &RunsData, t: &Theme) -> RowText {
-    let (glyph, colour) = status_mark(&step.status, step.conclusion.as_deref(), t);
+fn step_text(step: &CiStep, data: &RunsData, t: &Theme) -> RowText {
+    let (glyph, colour) = status_mark(step.status, t);
     RowText {
         glyph,
         colour,
         name: step.name.clone(),
-        right: times(
-            step.started_at,
-            step.completed_at,
-            step.conclusion.as_deref(),
-            data,
-        ),
+        right: times(step.started_at, step.completed_at, step.status, data.as_of),
     }
 }
 
@@ -455,13 +445,13 @@ fn step_text(step: &ActionsStep, data: &RunsData, t: &Theme) -> RowText {
 fn times(
     started: Option<chrono::DateTime<chrono::Utc>>,
     completed: Option<chrono::DateTime<chrono::Utc>>,
-    conclusion: Option<&str>,
-    data: &RunsData,
+    status: RunStatus,
+    as_of: chrono::DateTime<chrono::Utc>,
 ) -> Vec<Seg> {
     let took = started
-        .map(|start| fmt_dur(completed.unwrap_or(data.as_of) - start))
+        .map(|start| fmt_dur(completed.unwrap_or(as_of) - start))
         .unwrap_or_default();
-    finished(conclusion, &took)
+    finished(status, &took)
 }
 
 /// Cut `s` to `width` terminal columns, ending in `…` if anything went.
@@ -488,6 +478,7 @@ fn fit(s: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::github::gh_status;
     use std::time::Instant;
 
     use chrono::{DateTime, TimeZone, Utc};
@@ -495,9 +486,9 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::ci::estimate::{Basis, estimate as forecast};
     use crate::provider::types::{PrRef, RepoIssues};
     use crate::runs::LinkedPr;
-    use crate::runs::estimate::{Basis, estimate as forecast};
     use crate::runs::fetch::RunsUpdate;
     use crate::tui::harness::HarnessRegistry;
     use crate::tui::ui;
@@ -544,12 +535,11 @@ mod tests {
         }
     }
 
-    fn job(id: i64, name: &str, status: &str, conclusion: Option<&str>) -> ActionsJob {
-        ActionsJob {
+    fn job(id: i64, name: &str, status: &str, conclusion: Option<&str>) -> CiJob {
+        CiJob {
             id,
             name: name.into(),
-            status: status.into(),
-            conclusion: conclusion.map(str::to_string),
+            status: gh_status(status, conclusion),
             started_at: Some(at()),
             completed_at: conclusion.map(|_| at() + TimeDelta::seconds(12)),
             html_url: None,
@@ -557,19 +547,19 @@ mod tests {
         }
     }
 
-    fn run(id: i64, status: &str, conclusion: Option<&str>, jobs: Vec<ActionsJob>) -> ActionsRun {
-        ActionsRun {
+    fn run(id: i64, status: &str, conclusion: Option<&str>, jobs: Vec<CiJob>) -> CiRun {
+        CiRun {
             id,
             workflow_id: 1,
             name: Some("CI".into()),
             event: "pull_request".into(),
-            status: status.into(),
-            conclusion: conclusion.map(str::to_string),
+            status: gh_status(status, conclusion),
             run_number: 1,
             run_started_at: Some(at()),
             updated_at: Some(at() + TimeDelta::seconds(150)),
             html_url: "u".into(),
             jobs,
+            ..CiRun::default()
         }
     }
 
@@ -695,9 +685,12 @@ mod tests {
 
     #[test]
     fn a_failed_job_says_how_and_a_good_one_only_how_long() {
-        assert_eq!(flat(&finished(Some("success"), "12s")), "12s");
-        assert_eq!(flat(&finished(Some("timed_out"), "12s")), "timed_out · 12s");
-        assert_eq!(flat(&finished(Some("skipped"), "")), "skipped");
+        assert_eq!(flat(&finished(RunStatus::Success, "12s")), "12s");
+        assert_eq!(
+            flat(&finished(RunStatus::TimedOut, "12s")),
+            "timed_out · 12s"
+        );
+        assert_eq!(flat(&finished(RunStatus::Skipped, "")), "skipped");
     }
 
     #[test]
@@ -716,10 +709,9 @@ mod tests {
             "1m58s · ~1m30s",
             "no steps reported yet"
         );
-        let step = |status: &str, conclusion: Option<&str>| ActionsStep {
+        let step = |status: &str, conclusion: Option<&str>| CiStep {
             name: "s".into(),
-            status: status.into(),
-            conclusion: conclusion.map(str::to_string),
+            status: gh_status(status, conclusion),
             started_at: None,
             completed_at: None,
         };
@@ -785,7 +777,7 @@ mod tests {
     }
 
     /// A running run with one of two jobs done, 1m58s in, 1m30s to go.
-    fn forecast_run() -> (ActionsRun, RunEstimate) {
+    fn forecast_run() -> (CiRun, RunEstimate) {
         let r = run(
             10,
             "in_progress",
@@ -895,17 +887,15 @@ mod tests {
         let data = RunsData::default();
         let mut running = job(1, "test", "in_progress", None);
         running.steps = vec![
-            ActionsStep {
+            CiStep {
                 name: "a".into(),
-                status: "completed".into(),
-                conclusion: Some("success".into()),
+                status: RunStatus::Success,
                 started_at: None,
                 completed_at: None,
             },
-            ActionsStep {
+            CiStep {
                 name: "b".into(),
-                status: "in_progress".into(),
-                conclusion: None,
+                status: RunStatus::Running,
                 started_at: None,
                 completed_at: None,
             },
@@ -923,7 +913,7 @@ mod tests {
             fg(t.runs_eta).add_modifier(Modifier::BOLD)
         );
 
-        let sp = spans(&finished(Some("timed_out"), "12s"), &t);
+        let sp = spans(&finished(RunStatus::TimedOut, "12s"), &t);
         assert_eq!(
             span_style(&sp, "timed_out"),
             fg(t.dim),

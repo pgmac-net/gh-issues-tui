@@ -418,14 +418,17 @@ pub(crate) fn spawn_runs(
             work,
             known,
         } = fetch;
+        let Some(ci) = client.ci() else {
+            return;
+        };
         let result = match work {
             RunsWork::Load { text_refs } => {
-                crate::runs::fetch::load(client.as_ref(), &issue_id, &text_refs, &known)
+                crate::runs::fetch::load(client.as_ref(), ci, &issue_id, &text_refs, &known)
                     .await
                     .map_err(|e| e.to_string())
             }
             RunsWork::Poll { prs, hidden } => {
-                Ok(crate::runs::fetch::poll(client.as_ref(), prs, hidden, &known).await)
+                Ok(crate::runs::fetch::poll(ci, prs, hidden, &known).await)
             }
         };
         let _ = tx.send(AppEvent::Runs {
