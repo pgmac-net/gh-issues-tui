@@ -28,6 +28,7 @@ Writes go to the backend first, exactly as before (ADR 0005), and the list and s
     <provider>@<host>/<org>/
         snapshot.json                    the last loaded issues and the scope they were fetched at
         readiness.json                   readiness answers, one per issue
+        run_jobs.json                    jobs of finished workflow runs, by run and attempt (#266)
         search.json                      search answers for the last 20 queries
 ```
 
