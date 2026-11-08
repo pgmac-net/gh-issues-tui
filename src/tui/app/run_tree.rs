@@ -2,9 +2,9 @@
 //! and the cursor that walks them. See `runs.rs` for when answers land.
 
 use super::prelude::*;
-use crate::runs::estimate::RunEstimate;
+use crate::ci::estimate::RunEstimate;
+use crate::ci::{CiRun, RunStatus};
 use crate::runs::fetch::PrRuns;
-use crate::runs::{ActionsRun, is_failure};
 
 /// A foldable node of the tree. Keyed by identity, not position, so folds
 /// survive a poll.
@@ -78,7 +78,7 @@ impl RunsData {
             .filter(|p| p.pr.open)
             .filter_map(|p| p.runs.as_ref().ok())
             .flatten()
-            .any(ActionsRun::is_active)
+            .any(CiRun::is_active)
     }
 
     /// Build the tree for the current folds.
@@ -128,8 +128,7 @@ impl RunsData {
                 for (j, job) in run.jobs.iter().enumerate() {
                     let node = RunNode::Job(job.id);
                     let expandable = !job.steps.is_empty();
-                    let attention =
-                        job.status == "in_progress" || is_failure(job.conclusion.as_deref());
+                    let attention = job.status == RunStatus::Running || job.status.is_failure();
                     let expanded = expandable && is_open(&node, attention);
                     rows.push(RunRow {
                         kind: RunRowKind::Job {

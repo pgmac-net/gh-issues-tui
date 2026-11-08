@@ -42,6 +42,20 @@ Terms used across this repo's code and docs.
 
 **Load** and **poll**: a load finds the PRs from scratch; a poll re-reads the PRs already known. *Avoid*: "refresh" for either. `r` is a refresh, and it does a load.
 
+**Repo workflows view** (#266): what the detail pane shows while a repo header is selected: every recent run of that repo, grouped and filtered. *Avoid*: "runs tab", which is the issue-scoped region of #222.
+
+**Page** (of runs): one list call's worth, 100 runs, newest first. The view starts with one; `L` adds the next. A poll re-reads every loaded page.
+
+**Run filter**: status, workflow, event, branch and actor, one value each, sent to the CI backend with the list call; plus a text search that never leaves the client. Per repo, session-only. *Avoid*: "filter" alone, which means the issue list's `Filters`.
+
+**Grouping** (of runs): one level, `flat`, `status`, `workflow` or `branch`, cycled with `v`. Saved in the layout.
+
+**CI provider** (`ci::CiProvider`): the backend that runs workflows. Separate from the issue provider, though GitHub is both. *Avoid*: "Actions" for the abstraction; it is one backend.
+
+**Run status** (`RunStatus`): a run's, job's or step's state in backend-neutral words: queued, waiting, running, success, failure, cancelled, skipped, neutral. *Avoid*: reading GitHub's `status`/`conclusion` strings outside the GitHub mapping.
+
+**Completed-run cache**: jobs of finished runs on disk, keyed by run and attempt (ADR 0014). The run list itself is never cached.
+
 ## Detail pane
 
 **Fold** is comments and tree nodes in the detail pane. **Collapse** is repo groups and sub-issue parents in the list.

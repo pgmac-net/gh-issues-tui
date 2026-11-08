@@ -2,7 +2,7 @@
 
 Tracks [gh-issues-tui#222](https://github.com/pgmac-net/gh-issues-tui/issues/222).
 Decision record: [ADR 0007](adr/0007-the-runs-tab-is-read-only-and-polls-only-while-visible.md).
-Terms: [CONTEXT.md](../CONTEXT.md).
+Terms: [CONTEXT.md](../CONTEXT.md). Every run of a repo, from its header: [repo-workflows.md](repo-workflows.md) (#266).
 
 ## What it does
 
@@ -53,7 +53,7 @@ Checks from outside Actions do not appear.
 
 ## ETA
 
-`src/runs/estimate.rs` is a port of gh-eta's estimator, with its tests; [gh-eta's how-it-works](https://github.com/pgmac/gh-eta/blob/main/docs/how-it-works.md) has the model and measured accuracy. History is the last 10 successful runs of the same workflow and event.
+`src/ci/estimate.rs` is a port of gh-eta's estimator, with its tests; [gh-eta's how-it-works](https://github.com/pgmac/gh-eta/blob/main/docs/how-it-works.md) has the model and measured accuracy. History is the last 10 successful runs of the same workflow and event.
 
 | Shown | Meaning |
 |---|---|
@@ -101,8 +101,9 @@ A fine-grained token needs Actions read on the repo. Without it the PR row shows
 
 | Where | What |
 |---|---|
-| `src/runs/mod.rs` | domain types, PR filter, newest-run rule |
-| `src/runs/estimate.rs` | estimator (pure) |
+| `src/ci/mod.rs` | backend-neutral run, job and step types, `RunStatus`, `CiProvider` (#266, ADR 0014) |
+| `src/ci/estimate.rs` | estimator (pure) |
+| `src/runs/mod.rs` | linked PRs, PR filter, newest-run rule |
 | `src/runs/fetch.rs` | `load` and `poll`: provider calls, per-PR failure |
 | `src/github/actions.rs` | timeline query and REST reads |
 | `src/tui/app/runs.rs` | `RunsState`, scheduling |

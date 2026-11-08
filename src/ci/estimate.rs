@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use super::{ActionsJob, ActionsRun};
+use super::{CiJob, CiRun, RunStatus};
 
 /// How many past successful runs a workflow's history learns from.
 pub const HISTORY_RUNS: usize = 10;
@@ -94,8 +94,8 @@ pub struct RunEstimate {
 
 /// Whether a job or step ran to a successful end, the only kind of sample
 /// worth timing.
-fn succeeded(status: &str, conclusion: Option<&str>) -> bool {
-    status == "completed" && conclusion == Some("success")
+fn succeeded(status: RunStatus) -> bool {
+    status == RunStatus::Success
 }
 
 fn new_stats(ds: &[TimeDelta]) -> Stats {
@@ -139,7 +139,7 @@ fn non_negative(d: TimeDelta) -> TimeDelta {
 }
 
 /// Summarise past runs. Only successful jobs and steps count.
-pub fn build_history(runs: &[ActionsRun]) -> History {
+pub fn build_history(runs: &[CiRun]) -> History {
     type Obs = (DateTime<Utc>, DateTime<Utc>);
     let mut per_run: Vec<HashMap<&str, Obs>> = Vec::with_capacity(runs.len());
     let mut durations: HashMap<&str, Vec<TimeDelta>> = HashMap::new();
@@ -148,11 +148,9 @@ pub fn build_history(runs: &[ActionsRun]) -> History {
     for r in runs {
         let mut seen = HashMap::new();
         for j in &r.jobs {
-            let (true, Some(start), Some(end)) = (
-                succeeded(&j.status, j.conclusion.as_deref()),
-                j.started_at,
-                j.completed_at,
-            ) else {
+            let (true, Some(start), Some(end)) =
+                (succeeded(j.status), j.started_at, j.completed_at)
+            else {
                 continue;
             };
             seen.insert(j.name.as_str(), (start, end));
@@ -161,11 +159,9 @@ pub fn build_history(runs: &[ActionsRun]) -> History {
                 .or_default()
                 .push(non_negative(end - start));
             for s in &j.steps {
-                let (true, Some(start), Some(end)) = (
-                    succeeded(&s.status, s.conclusion.as_deref()),
-                    s.started_at,
-                    s.completed_at,
-                ) else {
+                let (true, Some(start), Some(end)) =
+                    (succeeded(s.status), s.started_at, s.completed_at)
+                else {
                     continue;
                 };
                 steps
@@ -252,14 +248,14 @@ pub fn build_history(runs: &[ActionsRun]) -> History {
 
 /// What is left of a running job from its steps' history. `None` when some
 /// unfinished step has never been seen before, or the job reports no steps yet.
-fn remaining_by_steps(j: &ActionsJob, jh: &JobHistory, now: DateTime<Utc>) -> Option<TimeDelta> {
+fn remaining_by_steps(j: &CiJob, jh: &JobHistory, now: DateTime<Utc>) -> Option<TimeDelta> {
     let mut rest = TimeDelta::zero();
     for s in &j.steps {
-        if s.status == "completed" {
+        if s.status.is_done() {
             continue;
         }
         let st = *jh.steps.get(&s.name)?;
-        rest += if s.status == "in_progress" {
+        rest += if s.status == RunStatus::Running {
             left(st, now - s.started_at.unwrap_or(now))
         } else {
             st.p50
@@ -271,10 +267,10 @@ fn remaining_by_steps(j: &ActionsJob, jh: &JobHistory, now: DateTime<Utc>) -> Op
 /// Forecast when `run` will finish, given the history of its workflow. Jobs are
 /// scheduled after their learned predecessors, so parallel jobs overlap rather
 /// than add up.
-pub fn estimate(run: &ActionsRun, h: &History, now: DateTime<Utc>) -> RunEstimate {
+pub fn estimate(run: &CiRun, h: &History, now: DateTime<Utc>) -> RunEstimate {
     let elapsed = run.run_started_at.map_or(TimeDelta::zero(), |start| {
         let end = match run.updated_at {
-            Some(updated) if run.status == "completed" => updated,
+            Some(updated) if run.status.is_done() => updated,
             _ => now,
         };
         non_negative(end - start)
@@ -295,8 +291,8 @@ pub fn estimate(run: &ActionsRun, h: &History, now: DateTime<Utc>) -> RunEstimat
             remaining: TimeDelta::zero(),
             basis: None,
         };
-        match j.status.as_str() {
-            "completed" => {
+        match j.status {
+            s if s.is_done() => {
                 je.state = JobState::Done;
                 if let (Some(start), Some(end)) = (j.started_at, j.completed_at) {
                     je.elapsed = non_negative(end - start);
@@ -304,7 +300,7 @@ pub fn estimate(run: &ActionsRun, h: &History, now: DateTime<Utc>) -> RunEstimat
                 ends.insert(&j.name, j.completed_at);
                 resolved[i] = true;
             }
-            "in_progress" => {
+            RunStatus::Running => {
                 je.elapsed = non_negative(now - j.started_at.unwrap_or(now));
                 if let Some(jh) = jh {
                     je.state = JobState::Running;
@@ -355,7 +351,7 @@ pub fn estimate(run: &ActionsRun, h: &History, now: DateTime<Utc>) -> RunEstimat
             };
             let mut start = run.run_started_at;
             let mut ready = true;
-            let mut blocked = j.status == "waiting";
+            let mut blocked = j.status == RunStatus::Waiting;
             for p in &jh.preds {
                 if !present.contains(p.as_str()) {
                     continue;
@@ -383,7 +379,7 @@ pub fn estimate(run: &ActionsRun, h: &History, now: DateTime<Utc>) -> RunEstimat
         if !resolved[i]
             && let Some(jh) = h.jobs.get(&j.name)
         {
-            let blocked = j.status == "waiting";
+            let blocked = j.status == RunStatus::Waiting;
             schedule_job(&mut jobs[i], jh, j, run.run_started_at, now, blocked);
             ends.insert(&j.name, Some(now + jobs[i].remaining));
         }
@@ -418,7 +414,7 @@ pub fn estimate(run: &ActionsRun, h: &History, now: DateTime<Utc>) -> RunEstimat
 fn schedule_job(
     je: &mut JobEstimate,
     jh: &JobHistory,
-    j: &ActionsJob,
+    j: &CiJob,
     predecessors_end: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
     blocked: bool,
@@ -430,7 +426,7 @@ fn schedule_job(
         JobState::Pending
     };
     let mut start = predecessors_end.map_or(now, |end| end.max(now));
-    if !blocked && j.status != "waiting" {
+    if !blocked && j.status != RunStatus::Waiting {
         let gap_end = predecessors_end.map_or(now, |end| end + jh.gap.p50);
         start = start.max(gap_end);
     }
@@ -441,7 +437,7 @@ fn schedule_job(
 mod tests {
     use chrono::TimeZone;
 
-    use super::super::ActionsStep;
+    use super::super::CiStep;
     use super::*;
 
     fn t0() -> DateTime<Utc> {
@@ -457,12 +453,11 @@ mod tests {
     }
 
     /// A successful job that ran from `start` to `end` minutes after `t0`.
-    fn job(name: &str, start: f64, end: f64, steps: Vec<ActionsStep>) -> ActionsJob {
-        ActionsJob {
+    fn job(name: &str, start: f64, end: f64, steps: Vec<CiStep>) -> CiJob {
+        CiJob {
             id: 0,
             name: name.into(),
-            status: "completed".into(),
-            conclusion: Some("success".into()),
+            status: RunStatus::Success,
             started_at: Some(at(start)),
             completed_at: Some(at(end)),
             html_url: None,
@@ -470,84 +465,65 @@ mod tests {
         }
     }
 
-    fn step(name: &str, start: f64, end: f64) -> ActionsStep {
-        ActionsStep {
+    fn step(name: &str, start: f64, end: f64) -> CiStep {
+        CiStep {
             name: name.into(),
-            status: "completed".into(),
-            conclusion: Some("success".into()),
+            status: RunStatus::Success,
             started_at: Some(at(start)),
             completed_at: Some(at(end)),
         }
     }
 
-    fn live_step(name: &str, status: &str) -> ActionsStep {
-        ActionsStep {
+    fn live_step(name: &str, status: RunStatus) -> CiStep {
+        CiStep {
             name: name.into(),
-            status: status.into(),
-            conclusion: None,
-            started_at: (status == "in_progress").then(t0),
+            status,
+            started_at: (status == RunStatus::Running).then(t0),
             completed_at: None,
         }
     }
 
-    fn live_job(name: &str, status: &str, steps: Vec<ActionsStep>) -> ActionsJob {
-        ActionsJob {
+    fn live_job(name: &str, status: RunStatus, steps: Vec<CiStep>) -> CiJob {
+        CiJob {
             id: 0,
             name: name.into(),
-            status: status.into(),
-            conclusion: None,
-            started_at: (status == "in_progress").then(t0),
+            status,
+            started_at: (status == RunStatus::Running).then(t0),
             completed_at: None,
             html_url: None,
             steps,
         }
     }
 
-    fn past_run(id: i64, jobs: Vec<ActionsJob>) -> ActionsRun {
-        ActionsRun {
+    fn past_run(id: i64, jobs: Vec<CiJob>) -> CiRun {
+        CiRun {
             id,
             workflow_id: 1,
             name: Some("CI".into()),
             event: "push".into(),
-            status: "completed".into(),
-            conclusion: Some("success".into()),
+            status: RunStatus::Success,
             run_number: id as u64,
             run_started_at: Some(t0()),
-            updated_at: None,
-            html_url: String::new(),
             jobs,
+            ..CiRun::default()
         }
     }
 
     /// Rewind a finished run to how the API showed it at time `t`.
-    fn snapshot_at(r: &ActionsRun, t: DateTime<Utc>) -> ActionsRun {
+    fn snapshot_at(r: &CiRun, t: DateTime<Utc>) -> CiRun {
         let mut r = r.clone();
-        r.status = "in_progress".into();
-        r.conclusion = None;
+        r.status = RunStatus::Running;
         for j in &mut r.jobs {
-            rewind(
-                &mut j.status,
-                &mut j.conclusion,
-                &mut j.started_at,
-                &mut j.completed_at,
-                t,
-            );
+            rewind(&mut j.status, &mut j.started_at, &mut j.completed_at, t);
             for s in &mut j.steps {
-                rewind(
-                    &mut s.status,
-                    &mut s.conclusion,
-                    &mut s.started_at,
-                    &mut s.completed_at,
-                    t,
-                );
+                rewind(&mut s.status, &mut s.started_at, &mut s.completed_at, t);
             }
         }
         r
     }
 
     fn rewind(
-        status: &mut String,
-        conclusion: &mut Option<String>,
+        status: &mut RunStatus,
         started: &mut Option<DateTime<Utc>>,
         completed: &mut Option<DateTime<Utc>>,
         t: DateTime<Utc>,
@@ -555,12 +531,11 @@ mod tests {
         if completed.is_some_and(|c| c <= t) {
             return;
         }
-        *conclusion = None;
         *completed = None;
         if started.is_some_and(|s| s <= t) {
-            *status = "in_progress".into();
+            *status = RunStatus::Running;
         } else {
-            *status = "queued".into();
+            *status = RunStatus::Queued;
             *started = None;
         }
     }
@@ -613,7 +588,7 @@ mod tests {
     #[test]
     fn history_ignores_failed_and_skipped() {
         let mut skipped = job("sign", 0.0, 0.0, vec![]);
-        skipped.conclusion = Some("skipped".into());
+        skipped.status = RunStatus::Skipped;
         let h = build_history(&[past_run(1, vec![job("build", 0.0, 10.0, vec![]), skipped])]);
         assert!(!h.jobs.contains_key("sign"));
     }
@@ -675,8 +650,8 @@ mod tests {
             ),
         ]);
         let mut cur = past_run(3, vec![job("build", 0.0, 8.0, vec![])]);
-        cur.status = "waiting".into();
-        let mut sign = live_job("sign", "waiting", vec![]);
+        cur.status = RunStatus::Waiting;
+        let mut sign = live_job("sign", RunStatus::Waiting, vec![]);
         sign.started_at = Some(at(8.0));
         cur.jobs.push(sign);
         let e = estimate(&cur, &h, at(12.0));
@@ -709,11 +684,11 @@ mod tests {
             3,
             vec![live_job(
                 "build",
-                "in_progress",
+                RunStatus::Running,
                 vec![
-                    live_step("checkout", "in_progress"),
-                    live_step("compile", "queued"),
-                    live_step("upload", "queued"),
+                    live_step("checkout", RunStatus::Running),
+                    live_step("compile", RunStatus::Queued),
+                    live_step("upload", RunStatus::Queued),
                 ],
             )],
         );
@@ -733,8 +708,8 @@ mod tests {
             2,
             vec![live_job(
                 "build",
-                "in_progress",
-                vec![live_step("brand new step", "in_progress")],
+                RunStatus::Running,
+                vec![live_step("brand new step", RunStatus::Running)],
             )],
         );
         let e = estimate(&cur, &h, at(4.0));
@@ -748,8 +723,8 @@ mod tests {
         let cur = past_run(
             2,
             vec![
-                live_job("build", "in_progress", vec![]),
-                live_job("new-job", "queued", vec![]),
+                live_job("build", RunStatus::Running, vec![]),
+                live_job("new-job", RunStatus::Queued, vec![]),
             ],
         );
         let e = estimate(&cur, &h, at(2.0));
@@ -764,7 +739,7 @@ mod tests {
             past_run(1, vec![job("build", 0.0, 10.0, vec![])]),
             past_run(2, vec![job("build", 0.0, 12.0, vec![])]),
         ]);
-        let cur = past_run(3, vec![live_job("build", "in_progress", vec![])]);
+        let cur = past_run(3, vec![live_job("build", RunStatus::Running, vec![])]);
         let e = estimate(&cur, &h, at(20.0));
         assert_eq!(e.jobs[0].state, JobState::Overdue);
         assert_eq!(e.remaining, TimeDelta::zero());

@@ -69,6 +69,7 @@ pub(crate) fn submit_input(
             app.switch_org(org);
             spawn_fetch(client, app, tx);
         }
+        InputKind::RunSearch => app.set_repo_run_text(value.trim().to_string()),
         InputKind::GotoNumber => {
             let trimmed = value.trim().trim_start_matches('#').trim();
             match trimmed.parse::<u64>() {

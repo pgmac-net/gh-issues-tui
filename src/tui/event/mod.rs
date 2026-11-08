@@ -32,8 +32,8 @@ use crate::tui::app::outside::SubIssueScope;
 use keys::{HarnessCtx, handle_key};
 use spawn::{
     AfterMutation, refetch_if_widened, spawn_comments, spawn_fetch, spawn_filtered_fetch,
-    spawn_label_ranks, spawn_org_refresh, spawn_priority_ranks, spawn_readiness, spawn_runs,
-    spawn_semantic_search, spawn_sub_issue_batch, spawn_sub_issues,
+    spawn_label_ranks, spawn_org_refresh, spawn_priority_ranks, spawn_readiness, spawn_repo_runs,
+    spawn_runs, spawn_semantic_search, spawn_sub_issue_batch, spawn_sub_issues,
 };
 
 pub enum AppEvent {
@@ -161,6 +161,28 @@ pub enum AppEvent {
         generation: u64,
         result: Box<Result<crate::runs::fetch::RunsUpdate, String>>,
     },
+    /// A page read for the repo workflows view finished (#266), tagged with
+    /// the generation it was sent under and the pages it covered.
+    RepoPages {
+        repo: String,
+        generation: u64,
+        first: u32,
+        last: u32,
+        result: Box<Result<crate::ci::repo::PagesUpdate, String>>,
+    },
+    /// A completed run's jobs, read because it was unfolded (#266).
+    RepoJobs {
+        repo: String,
+        generation: u64,
+        run_id: i64,
+        attempt: u32,
+        result: Result<Vec<crate::ci::CiJob>, String>,
+    },
+    /// The workflows a repo defines, for the filter menu (#266).
+    RepoWorkflows {
+        repo: String,
+        result: Result<Vec<crate::ci::Workflow>, String>,
+    },
     /// A harness session produced output. Payload-free by design: the bytes
     /// went straight into that session's parser on its reader thread, so a
     /// noisy agent cannot flood or stall this channel.
@@ -262,7 +284,10 @@ async fn event_loop(
     app.spinner = spinner;
     app.config_warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     app.typesafe = typesafe.status;
-    app.runs.supported = client.supports_runs();
+    app.runs.supported = client.ci().is_some();
+    if let Some(ci) = client.ci() {
+        app.repo_runs.capabilities = ci.capabilities();
+    }
     // Resume where the last session left off (#236), before the first fetch so
     // a restored filter also scopes it.
     saver.resume(&mut app, fresh);
@@ -313,6 +338,9 @@ async fn event_loop(
 
         app.sync_loading(std::time::Instant::now());
         app.prune_pins(std::time::Instant::now());
+        // Entering, leaving or moving between repo headers (#266): once per
+        // pass, so every way the selection or the pane changes is covered.
+        app.repo_runs_follow(std::time::Instant::now());
         if redraw {
             terminal.draw(|f| ui::draw(f, &app, &theme, &registry))?;
         }
@@ -323,6 +351,11 @@ async fn event_loop(
         let runs_due = app.runs.due;
         let runs_timer = tokio::time::sleep_until(
             runs_due.map_or_else(tokio::time::Instant::now, tokio::time::Instant::from_std),
+        );
+        // The repo workflows view's timer (#266), the same shape.
+        let repo_due = app.repo_runs.due;
+        let repo_timer = tokio::time::sleep_until(
+            repo_due.map_or_else(tokio::time::Instant::now, tokio::time::Instant::from_std),
         );
         // The layout's debounced write (#236), gated off when nothing changed.
         let save_due = saver.due();
@@ -407,6 +440,11 @@ async fn event_loop(
             _ = runs_timer, if runs_due.is_some() => {
                 if let Some(fetch) = app.runs_tick(std::time::Instant::now()) {
                     spawn_runs(&client, fetch, &tx);
+                }
+            }
+            _ = repo_timer, if repo_due.is_some() => {
+                for fetch in app.repo_runs_tick(std::time::Instant::now()) {
+                    spawn_repo_runs(&client, fetch, &tx);
                 }
             }
             _ = save_timer, if save_due.is_some() => {
@@ -609,7 +647,7 @@ pub(crate) fn handle_app_event(
 
     // Pull rate limit state from client after any API interaction.
     app.rate_limit = client.rate_limit();
-    app.runs.budget = client.runs_rate_limit();
+    app.runs.budget = client.ci().and_then(|ci| ci.rate_limit());
 
     match msg {
         AppEvent::Runs {
@@ -623,6 +661,28 @@ pub(crate) fn handle_app_event(
             chrono::Utc::now(),
             std::time::Instant::now(),
         ),
+        AppEvent::RepoPages {
+            repo,
+            generation,
+            first,
+            last,
+            result,
+        } => app.apply_repo_pages(
+            &repo,
+            generation,
+            (first, last),
+            *result,
+            chrono::Utc::now(),
+            std::time::Instant::now(),
+        ),
+        AppEvent::RepoJobs {
+            repo,
+            generation,
+            run_id,
+            attempt,
+            result,
+        } => app.apply_repo_jobs(&repo, generation, run_id, attempt, result),
+        AppEvent::RepoWorkflows { repo, result } => app.apply_repo_workflows(&repo, result),
         AppEvent::Data(Ok(repos)) => {
             app.rate_limit_error = None;
             // First load of an org says "loaded"; every later one names its
@@ -1037,8 +1097,8 @@ pub(crate) mod prelude {
         App, BodyEditor, CommentFocus, ConfirmChoice, DetailGeometry, EditorState, EditorTarget,
         FetchTarget, Focus, HarnessConfirm, ISSUE_FORM_CANCEL_ROW, ISSUE_FORM_CREATE_ROW,
         ISSUE_FORM_LABEL_WIDTH, InputKind, InputState, IssueForm, LaunchAction, Loaded, Mode,
-        PendingMove, PendingPriority, RefreshTarget, RunsFetch, RunsWork, SessionId, TreeRight,
-        issue_form_width, options_are_convention, priority_label_set, ranked_label_set,
+        PendingMove, PendingPriority, RefreshTarget, RepoFetch, RunsFetch, RunsWork, SessionId,
+        TreeRight, issue_form_width, options_are_convention, priority_label_set, ranked_label_set,
     };
     pub use crate::tui::harness::{HarnessRegistry, HarnessSettings};
     pub use crate::tui::{layout, ui};

@@ -11,6 +11,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::cache::answers::{self, ReadinessCache, SearchCache};
+use crate::cache::run_jobs::{self, RunJobsCache};
 use crate::cache::{self, snapshot};
 use crate::tui::app::App;
 
@@ -78,6 +79,13 @@ impl CacheIo {
             app.readiness.set_disk(ReadinessCache::disabled());
             app.search_disk = SearchCache::disabled();
         }
+        // The completed-run cache (#266) holds no issue text, so only `cache`
+        // gates it, not the Jev consent.
+        app.repo_runs.disk = if self.enabled {
+            RunJobsCache::load(run_jobs::path(&dir))
+        } else {
+            RunJobsCache::disabled()
+        };
         if !self.enabled {
             return false;
         }

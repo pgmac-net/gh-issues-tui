@@ -76,6 +76,10 @@ pub struct Layout {
     pub detail_open: bool,
     pub detail_focused: bool,
     pub runs_tab: bool,
+    /// The repo workflows view's grouping label (#266). Empty in a layout
+    /// written before it existed, which reads as the default.
+    #[serde(default)]
+    pub runs_group: String,
 }
 
 /// `<state dir>/gh-issues/layout`. XDG state on Linux (`~/.local/state`,
@@ -169,6 +173,7 @@ mod tests {
             detail_open: true,
             detail_focused: true,
             runs_tab: false,
+            runs_group: "workflow".into(),
         }
     }
 

@@ -197,7 +197,7 @@ A harness runs in the current directory's repo when that is the issue's repo; ot
 
 ### Resuming where you left off
 
-The next start picks up where the last one ended: filters, state filter, sort, collapsed repo groups and sub-issue parents, the selected issue and list position, and the detail pane (open or closed, focus, the comments or runs tab, folded comments). Not saved: the org (startup still decides it), popups and half-typed input, harness sessions (they reattach on their own) and the fetched data.
+The next start picks up where the last one ended: filters, state filter, sort, collapsed repo groups and sub-issue parents, the selected issue and list position, and the detail pane (open or closed, focus, the comments or runs tab, folded comments), and the repo workflows view's grouping. Not saved: the org (startup still decides it), popups and half-typed input, harness sessions (they reattach on their own) and the fetched data.
 
 Each view has its own layout: one per org, and one per clone you start the app in (`pgmac-net.json`, `pgmac-net@gh-issues-tui.json`). Copies on different views never interfere. If you run two on the same view, the last to exit wins. What you pass at startup beats what was saved: `--org`, the repo filter detected from the clone, and `--all`. Switching org with `w` saves the old org's layout and resumes the new one's.
 
@@ -297,9 +297,9 @@ code_number  = "#dcdcdc"
 | `Esc` / `q` | close the detail pane (from either pane) |
 | `o` / `O` | open issue / repo in the browser (on a dim row, the issue and repo it belongs to) |
 | `y` | copy the selected issue's short reference (`owner/repo#number`) to the clipboard, via OSC 52 |
-| `/` | free-text search (title, body, `#number`) |
+| `/` | free-text search (title, body, `#number`); in the repo workflows view, search runs |
 | `#` | jump the selection to a loaded issue by number (moves the selector bar; does not filter — reveals a hidden match by clearing filters and relaxing the state filter, searches the current repo group first) |
-| `f` | cycle state filter: open → closed → all |
+| `f` | cycle state filter: open → closed → all (in the repo workflows view: filter runs) |
 | `F` | filter editor (repo, assignee, author, priority, status, created/updated/closed date bounds) |
 | `s` / `S` | cycle sort key / toggle direction |
 | `w` | switch org/owner (free-text; resets filters and view state) |
@@ -311,12 +311,14 @@ code_number  = "#dcdcdc"
 | `t` | edit the title |
 | `p` | set the priority (picker of the repo's `priority:*` labels, `—` clears) |
 | `P` | summarise a linked PR (detail pane only; picker if several links are found) |
-| `R` | flip the detail pane between comments and workflow runs (GitHub only) |
+| `R` | flip the detail pane between comments and workflow runs; on a repo header, open the repo workflows view (GitHub only) |
+| `v` | repo workflows view: group runs by status, workflow, branch or not at all |
+| `L` | repo workflows view: load the next 100 runs |
 | `m` | move the issue to another repo (picker of the org's other repos, then a confirmation popup) |
 | `A` | send the issue to a coding harness — starts it in that repo's clone in an embedded terminal pane; attaches if the issue already has a session |
 | `Z` | switch between harness sessions |
 | `n` | create a new issue in the selected repo (opens the form) |
-| `r` | refresh what is selected: the issue on an issue row, the repo's issues on a repo header (in the runs tab: refresh runs) |
+| `r` | refresh what is selected: the issue on an issue row, the repo's issues on a repo header (in the runs tab or the repo workflows view: refresh runs) |
 | `Ctrl+R` | refresh the filtered scope: the one repo an exact repo filter names, otherwise the whole org |
 | `?` / `F1` | contextual help for where you are — `?` in the list, `F1` from anywhere else, even mid-typed input (see [In-app help](#in-app-help)) |
 | `q` | quit |
@@ -380,6 +382,10 @@ The shorthands cannot say whether a number is a PR or an issue — GitHub draws 
 `R` shows the Actions runs of the PRs linked to the selected issue, as a tab in the lower detail region. Linked PRs come from the issue's timeline and from links in its text; open and merged ones show, up to 5. Each PR unfolds to its current head commit's runs, then jobs, then steps, with progress and an ETA worked out the way [gh-eta](https://github.com/pgmac/gh-eta) does it.
 
 The tab refreshes every 15 seconds while it is showing an active run, and stops when they finish. `r` refreshes on demand, `o` opens the selected row on GitHub, and the arrow keys fold and move as they do everywhere else. Viewing is all it does: there is no re-run or cancel. A fine-grained token needs Actions read. Full detail: [docs/workflow-runs.md](docs/workflow-runs.md).
+
+### Repo workflows view
+
+With the detail pane open on a **repo header**, the whole pane shows the repo's recent runs, every workflow, 100 at a time (`L` loads the next 100). `v` groups them by status (the default), workflow or branch, or not at all, and the choice is saved. `f` filters by status, workflow, event, branch or actor, one value each, sent to GitHub so a filter reaches past the loaded runs; `/` searches the loaded runs' workflow, title, branch, actor and number. Runs, jobs, steps and the ETA look and behave as in the runs tab, and polling follows the same rules. Jobs of finished runs are read when you unfold them and kept on disk (`run_jobs.json`, up to 2000 runs), so unfolding an old run again costs nothing. The selected run's title and actor show on the bottom line. Full detail: [docs/repo-workflows.md](docs/repo-workflows.md).
 
 ### In-app help
 

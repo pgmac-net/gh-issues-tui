@@ -33,7 +33,8 @@ src/
 │   ├── auth.rs      env creds: JIRA_BASE_URL + JIRA_EMAIL + JIRA_API_TOKEN (Basic auth)
 │   ├── client.rs    Jira Cloud REST client; impl IssueProvider
 │   └── mod.rs       priority name ↔ priority:* mapping, ADF flatten/wrap, Jira datetime parse
-├── runs/            workflow runs for an issue's linked PRs, and their ETAs (#222; estimate.rs ports gh-eta)
+├── ci/              CiProvider trait, backend-neutral runs/jobs/steps, the estimator (gh-eta port) and repo run reads (#266, ADR 0014)
+├── runs/            workflow runs for an issue's linked PRs (#222)
 ├── typesafe/        optional model features: label-rank inference (#156), semantic search (#158), readiness (#160)
 └── tui/
     ├── app/         all state + pure logic, one file per concern (no I/O, no screen geometry)

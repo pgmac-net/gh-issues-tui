@@ -418,14 +418,17 @@ pub(crate) fn spawn_runs(
             work,
             known,
         } = fetch;
+        let Some(ci) = client.ci() else {
+            return;
+        };
         let result = match work {
             RunsWork::Load { text_refs } => {
-                crate::runs::fetch::load(client.as_ref(), &issue_id, &text_refs, &known)
+                crate::runs::fetch::load(client.as_ref(), ci, &issue_id, &text_refs, &known)
                     .await
                     .map_err(|e| e.to_string())
             }
             RunsWork::Poll { prs, hidden } => {
-                Ok(crate::runs::fetch::poll(client.as_ref(), prs, hidden, &known).await)
+                Ok(crate::runs::fetch::poll(ci, prs, hidden, &known).await)
             }
         };
         let _ = tx.send(AppEvent::Runs {
@@ -433,6 +436,64 @@ pub(crate) fn spawn_runs(
             generation,
             result: Box::new(result),
         });
+    });
+}
+
+/// Run a fetch the repo workflows view asked for (#266). Page and jobs reads
+/// carry the generation they were sent under, so one overtaken by leaving the
+/// repo, a filter change or `r` is dropped when it lands.
+pub(crate) fn spawn_repo_runs(
+    client: &Provider,
+    fetch: RepoFetch,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let Some(ci) = client.ci() else {
+            return;
+        };
+        let event = match fetch {
+            RepoFetch::Pages { generation, req } => {
+                let result = crate::ci::repo::read_pages(ci, &req)
+                    .await
+                    .map_err(|e| e.to_string());
+                AppEvent::RepoPages {
+                    repo: req.repo,
+                    generation,
+                    first: req.first,
+                    last: req.last,
+                    result: Box::new(result),
+                }
+            }
+            RepoFetch::Jobs {
+                generation,
+                owner,
+                repo,
+                run_id,
+                attempt,
+            } => {
+                let result = ci
+                    .run_jobs(&owner, &repo, run_id)
+                    .await
+                    .map_err(|e| e.to_string());
+                AppEvent::RepoJobs {
+                    repo,
+                    generation,
+                    run_id,
+                    attempt,
+                    result,
+                }
+            }
+            RepoFetch::Workflows { owner, repo } => {
+                let result = ci
+                    .list_workflows(&owner, &repo)
+                    .await
+                    .map_err(|e| e.to_string());
+                AppEvent::RepoWorkflows { repo, result }
+            }
+        };
+        let _ = tx.send(event);
     });
 }
 

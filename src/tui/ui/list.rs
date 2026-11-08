@@ -308,6 +308,7 @@ pub(super) fn input_prompt(kind: InputKind) -> &'static str {
         InputKind::Title => "title",
         InputKind::Org => "org/owner (Enter switches)",
         InputKind::GotoNumber => "issue # (Enter jumps)",
+        InputKind::RunSearch => "search runs (workflow, title, branch, actor, #)",
     }
 }
 
@@ -319,7 +320,14 @@ pub(super) fn draw_bottom_line(f: &mut Frame, app: &App, t: &Theme, area: Rect) 
             Style::default().fg(t.warning),
         )]
     } else {
-        let msg = app.status.clone().unwrap_or_default();
+        // The repo workflows view puts its selected run's title and actor
+        // first (#266): the row has no room for them, and a status line
+        // lingers, so it would otherwise never show.
+        let msg = match (super::repo_runs::caption(app), &app.status) {
+            (Some(c), Some(s)) => format!("{c}  ·  {s}"),
+            (Some(c), None) => c,
+            (None, s) => s.clone().unwrap_or_default(),
+        };
         vec![Span::styled(format!(" {msg}"), Style::default().fg(t.dim))]
     };
     // Detached harness sessions (#23) are otherwise invisible — without this

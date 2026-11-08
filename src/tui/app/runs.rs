@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use super::prelude::*;
 use super::run_tree::{RunNode, RunRow, RunsData};
+use crate::ci::estimate::{History, RunEstimate, estimate};
 use crate::runs::HistoryKey;
-use crate::runs::estimate::{History, RunEstimate, estimate};
 use crate::runs::fetch::{Known, PrRuns, RunsUpdate};
 
 /// How often a tab showing an active run re-reads it. gh-eta's default.
@@ -318,13 +318,15 @@ fn forecast(
 
 #[cfg(test)]
 mod tests {
+    use crate::github::gh_status;
     use chrono::TimeZone;
 
     use super::super::run_tree::RunRowKind;
     use super::*;
+    use crate::ci::estimate::build_history;
+    use crate::ci::{CiJob, CiRun, CiStep};
     use crate::provider::types::RepoIssues;
-    use crate::runs::estimate::build_history;
-    use crate::runs::{ActionsJob, ActionsRun, ActionsStep, LinkedPr};
+    use crate::runs::LinkedPr;
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 17, 4, 0, 0).unwrap()
@@ -369,38 +371,36 @@ mod tests {
         }
     }
 
-    fn job(id: i64, status: &str, conclusion: Option<&str>) -> ActionsJob {
-        ActionsJob {
+    fn job(id: i64, status: &str, conclusion: Option<&str>) -> CiJob {
+        CiJob {
             id,
             name: format!("job{id}"),
-            status: status.into(),
-            conclusion: conclusion.map(str::to_string),
+            status: gh_status(status, conclusion),
             started_at: Some(now()),
             completed_at: conclusion.map(|_| now()),
             html_url: Some(format!("https://github.com/job/{id}")),
-            steps: vec![ActionsStep {
+            steps: vec![CiStep {
                 name: "step".into(),
-                status: status.into(),
-                conclusion: conclusion.map(str::to_string),
+                status: gh_status(status, conclusion),
                 started_at: Some(now()),
                 completed_at: conclusion.map(|_| now()),
             }],
         }
     }
 
-    fn run(id: i64, status: &str, conclusion: Option<&str>, jobs: Vec<ActionsJob>) -> ActionsRun {
-        ActionsRun {
+    fn run(id: i64, status: &str, conclusion: Option<&str>, jobs: Vec<CiJob>) -> CiRun {
+        CiRun {
             id,
             workflow_id: 1,
             name: Some("CI".into()),
             event: "push".into(),
-            status: status.into(),
-            conclusion: conclusion.map(str::to_string),
+            status: gh_status(status, conclusion),
             run_number: 1,
             run_started_at: Some(now()),
             updated_at: Some(now()),
             html_url: format!("https://github.com/run/{id}"),
             jobs,
+            ..CiRun::default()
         }
     }
 

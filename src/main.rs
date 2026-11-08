@@ -1,4 +1,5 @@
 mod cache;
+mod ci;
 mod codespan;
 mod config;
 mod cwd_repo;

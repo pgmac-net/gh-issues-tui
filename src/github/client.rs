@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::ci::CiProvider;
 use crate::provider::error::{ProviderError, Result, found};
 use crate::provider::http::{
     RateLimitStore, build_http_client, graphql_body, graphql_data, header_i64, join_error_messages,
@@ -15,7 +16,7 @@ use crate::provider::types::{
     PrSummary, RateLimitData, Relations, RepoIssues, RepoLabel, ReviewDecision, ReviewSummary,
     SubIssueProgress, SubIssues, WorkflowRunInfo,
 };
-use crate::runs::{ActionsJob, ActionsRun, LinkedPr};
+use crate::runs::LinkedPr;
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 /// GitHub's maximum page size. Cost does not scale with this once the bulk
@@ -1938,34 +1939,12 @@ impl crate::provider::IssueProvider for Client {
         self.pull_request(pr).await
     }
 
-    fn supports_runs(&self) -> bool {
-        true
+    fn ci(&self) -> Option<&dyn CiProvider> {
+        Some(self)
     }
 
     async fn linked_prs(&self, issue_id: &str, text_refs: &[PrRef]) -> Result<Vec<LinkedPr>> {
         self.linked_prs(issue_id, text_refs).await
-    }
-
-    async fn head_runs(&self, owner: &str, repo: &str, sha: &str) -> Result<Vec<ActionsRun>> {
-        self.head_runs(owner, repo, sha).await
-    }
-
-    async fn run_jobs(&self, owner: &str, repo: &str, run_id: i64) -> Result<Vec<ActionsJob>> {
-        self.run_jobs(owner, repo, run_id).await
-    }
-
-    async fn history_runs(
-        &self,
-        owner: &str,
-        repo: &str,
-        workflow_id: i64,
-        event: &str,
-    ) -> Result<Vec<ActionsRun>> {
-        self.history_runs(owner, repo, workflow_id, event).await
-    }
-
-    fn runs_rate_limit(&self) -> Option<RateLimitData> {
-        self.rest_rate_limit.get()
     }
 
     fn supports_move(&self) -> bool {

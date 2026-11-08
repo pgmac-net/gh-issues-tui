@@ -1,90 +1,19 @@
 //! GitHub Actions workflow runs for the pull requests linked to an issue
 //! (#222).
 //!
-//! The domain model, which PRs are worth showing, and the estimator. Nothing
+//! The domain model, which PRs are worth showing, and the newest-run rule. Nothing
 //! here imports `tui`, and only [`fetch`] touches the provider: everything else
 //! is pure, so the rules can be tested without a network or a terminal.
 
-pub mod estimate;
 pub mod fetch;
 
-use chrono::{DateTime, TimeDelta, Utc};
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
 
+use crate::ci::CiRun;
 use crate::provider::types::PrRef;
 
 /// How many PRs the tab lists before the rest become a `+N more` line.
 pub const MAX_PRS: usize = 5;
-
-/// One step of a job, as the jobs API returns it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ActionsStep {
-    pub name: String,
-    pub status: String,
-    pub conclusion: Option<String>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-}
-
-/// One job of a workflow run.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ActionsJob {
-    pub id: i64,
-    pub name: String,
-    pub status: String,
-    pub conclusion: Option<String>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub html_url: Option<String>,
-    #[serde(default)]
-    pub steps: Vec<ActionsStep>,
-}
-
-/// A workflow run plus its jobs. The list endpoints return each run once, at
-/// its latest attempt, and the jobs endpoint defaults to that attempt too.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ActionsRun {
-    pub id: i64,
-    pub workflow_id: i64,
-    /// The workflow's name.
-    #[serde(default)]
-    pub name: Option<String>,
-    pub event: String,
-    pub status: String,
-    pub conclusion: Option<String>,
-    pub run_number: u64,
-    pub run_started_at: Option<DateTime<Utc>>,
-    pub updated_at: Option<DateTime<Utc>>,
-    pub html_url: String,
-    /// Filled in separately: the list endpoints do not carry jobs.
-    #[serde(skip)]
-    pub jobs: Vec<ActionsJob>,
-}
-
-impl ActionsRun {
-    pub fn workflow(&self) -> &str {
-        self.name.as_deref().unwrap_or("(unnamed workflow)")
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.status != "completed"
-    }
-
-    /// Whether this run finished without doing its work.
-    pub fn is_failed(&self) -> bool {
-        self.status == "completed" && is_failure(self.conclusion.as_deref())
-    }
-}
-
-/// The conclusions that mean a run, job or step did not do its work. Skipped
-/// and neutral are deliberately absent: both are a normal way to finish.
-pub fn is_failure(conclusion: Option<&str>) -> bool {
-    matches!(
-        conclusion,
-        Some("failure" | "timed_out" | "cancelled" | "startup_failure" | "action_required")
-    )
-}
 
 /// A pull request linked to an issue, carrying what the tab needs to find its
 /// runs.
@@ -104,26 +33,7 @@ impl LinkedPr {
     }
 }
 
-/// Which ETA history a run is compared with: same workflow, same trigger
-/// event, because different events often run different jobs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct HistoryKey {
-    pub owner: String,
-    pub repo: String,
-    pub workflow_id: i64,
-    pub event: String,
-}
-
-impl HistoryKey {
-    pub fn of(pr: &PrRef, run: &ActionsRun) -> Self {
-        Self {
-            owner: pr.owner.clone(),
-            repo: pr.repo.clone(),
-            workflow_id: run.workflow_id,
-            event: run.event.clone(),
-        }
-    }
-}
+pub use crate::ci::HistoryKey;
 
 /// Open and merged PRs only, open first, then merged newest first, capped at
 /// [`MAX_PRS`]. Returns the kept PRs and how many open or merged PRs the cap
@@ -145,8 +55,8 @@ pub fn select_prs(prs: Vec<LinkedPr>) -> (Vec<LinkedPr>, usize) {
 /// name. A head SHA can collect several runs of one workflow, and only the
 /// latest says where that commit stands. Push and pull-request runs of the same
 /// workflow are different runs, so both stay.
-pub fn latest_runs(runs: Vec<ActionsRun>) -> Vec<ActionsRun> {
-    let mut latest: Vec<ActionsRun> = Vec::new();
+pub fn latest_runs(runs: Vec<CiRun>) -> Vec<CiRun> {
+    let mut latest: Vec<CiRun> = Vec::new();
     for run in runs {
         match latest
             .iter_mut()
@@ -165,22 +75,12 @@ pub fn latest_runs(runs: Vec<ActionsRun>) -> Vec<ActionsRun> {
     latest
 }
 
-/// A duration the way people read CI times: `45s`, `7m36s`, `1h02m`.
-pub fn fmt_dur(d: TimeDelta) -> String {
-    // Round to the nearest second rather than truncating.
-    let secs = (d.num_milliseconds().max(0) + 500) / 1000;
-    match secs {
-        0..60 => format!("{secs}s"),
-        60..3600 => format!("{}m{:02}s", secs / 60, secs % 60),
-        _ => format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
 
     use super::*;
+    use crate::ci::RunStatus;
 
     fn linked(number: u64, open: bool, merged_day: Option<u32>) -> LinkedPr {
         LinkedPr {
@@ -197,19 +97,15 @@ mod tests {
         }
     }
 
-    fn run(workflow_id: i64, name: &str, event: &str, run_number: u64) -> ActionsRun {
-        ActionsRun {
+    fn run(workflow_id: i64, name: &str, event: &str, run_number: u64) -> CiRun {
+        CiRun {
             id: run_number as i64,
             workflow_id,
             name: Some(name.into()),
             event: event.into(),
-            status: "completed".into(),
-            conclusion: Some("success".into()),
+            status: RunStatus::Success,
             run_number,
-            run_started_at: None,
-            updated_at: None,
-            html_url: String::new(),
-            jobs: vec![],
+            ..CiRun::default()
         }
     }
 
@@ -254,22 +150,5 @@ mod tests {
                 ("CI", "push", 7)
             ]
         );
-    }
-
-    #[test]
-    fn fmt_dur_matches_gh_eta() {
-        assert_eq!(fmt_dur(TimeDelta::seconds(45)), "45s");
-        assert_eq!(fmt_dur(TimeDelta::seconds(456)), "7m36s");
-        assert_eq!(fmt_dur(TimeDelta::minutes(62)), "1h02m");
-        assert_eq!(fmt_dur(TimeDelta::milliseconds(59_600)), "1m00s");
-        assert_eq!(fmt_dur(TimeDelta::seconds(-5)), "0s");
-    }
-
-    #[test]
-    fn a_cancelled_run_is_a_failure_but_a_skipped_one_is_not() {
-        assert!(is_failure(Some("cancelled")));
-        assert!(!is_failure(Some("skipped")));
-        assert!(!is_failure(Some("success")));
-        assert!(!is_failure(None));
     }
 }
