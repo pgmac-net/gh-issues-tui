@@ -127,7 +127,12 @@ impl App {
         self.collapsed_issues = l.collapsed_issues.iter().cloned().collect();
         self.folded_comments = l.folded_comments.iter().cloned().collect();
         // Needs no data, so it applies at once (#266).
-        self.repo_runs.group = Grouping::from_label(&l.runs_group).unwrap_or_default();
+        // A configured grouping beats the saved one (#271).
+        self.repo_runs.group = self
+            .repo_runs
+            .default_group
+            .or_else(|| Grouping::from_label(&l.runs_group))
+            .unwrap_or_default();
         self.resume = Some(Resume {
             selected: l.selected.clone(),
             list_top: l.list_top,
@@ -410,6 +415,16 @@ mod tests {
         b.set_data(data());
         assert!(b.repo_view_showing(), "the header and the pane come back");
         assert_eq!(b.focus, Focus::Detail);
+    }
+
+    #[test]
+    fn a_configured_grouping_beats_the_saved_one() {
+        let mut saved = app().layout("github");
+        saved.runs_group = "workflow".into();
+        let mut b = app();
+        b.repo_runs.default_group = Some(Grouping::Flat);
+        b.apply_layout(&saved, false);
+        assert_eq!(b.repo_runs.group, Grouping::Flat);
     }
 
     #[test]

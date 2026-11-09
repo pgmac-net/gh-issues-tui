@@ -21,7 +21,8 @@ use super::runs::{DEBOUNCE, POLL};
 use crate::cache::run_jobs::{RunJobsCache, RunKey};
 use crate::ci::estimate::{History, RunEstimate, estimate};
 use crate::ci::repo::{PagesRequest, PagesUpdate};
-use crate::ci::{CiCapabilities, CiJob, CiRun, HistoryKey, RunFilter, Workflow};
+use crate::ci::{CiCapabilities, CiJob, CiRun, HistoryKey, RunFilter, RunStatus, Workflow};
+use crate::config::WorkflowsConfig;
 
 /// How the view groups runs. One level only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -189,6 +190,11 @@ pub struct RepoRunsState {
     /// User fold choices; absent nodes take their default.
     pub folds: HashMap<RepoNode, bool>,
     pub group: Grouping,
+    /// Config `[workflows] group`: beats the saved layout's grouping (#271).
+    pub default_group: Option<Grouping>,
+    /// Config `[workflows]` filters: what a repo's view starts with until the
+    /// user changes it (#271).
+    pub default_filter: RepoFilter,
     /// Run filter and text search, by repo name. Session-only.
     pub filters: HashMap<String, RepoFilter>,
     /// The workflows each repo defines, read once a session.
@@ -245,13 +251,44 @@ impl RepoRunsState {
         self.vocab.clear();
     }
 
-    /// The target repo's filter.
+    /// The target repo's filter: the user's, else the config default.
     pub fn filter(&self) -> RepoFilter {
         self.target
             .as_ref()
             .and_then(|r| self.filters.get(r))
-            .cloned()
-            .unwrap_or_default()
+            .unwrap_or(&self.default_filter)
+            .clone()
+    }
+
+    /// Adopt the `[workflows]` config (#271). Returns what was ignored.
+    pub fn set_defaults(&mut self, cfg: &WorkflowsConfig) -> Vec<String> {
+        let mut warnings = Vec::new();
+        self.default_group = cfg.group.as_deref().and_then(|g| {
+            let found = Grouping::from_label(g);
+            if found.is_none() {
+                warnings.push(format!(
+                    "workflows.group \"{g}\" is not flat, status, workflow or branch"
+                ));
+            }
+            found
+        });
+        if let Some(g) = self.default_group {
+            self.group = g;
+        }
+        let mut f = RepoFilter::default();
+        if let Some(w) = cfg.status.as_deref() {
+            f.run.status = RunStatus::from_word(w);
+            if f.run.status.is_none() {
+                warnings.push(format!("workflows.status \"{w}\" is not a run status"));
+            }
+        }
+        let some = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
+        f.run.event = some(&cfg.event);
+        f.run.branch = some(&cfg.branch);
+        f.run.actor = some(&cfg.actor);
+        f.text = cfg.search.clone().unwrap_or_default();
+        self.default_filter = f;
+        warnings
     }
 
     pub fn runs(&self) -> &[CiRun] {
@@ -339,7 +376,8 @@ impl App {
         let Some(repo) = self.repo_runs.target.clone() else {
             return;
         };
-        let entry = self.repo_runs.filters.entry(repo).or_default();
+        let seed = self.repo_runs.default_filter.clone();
+        let entry = self.repo_runs.filters.entry(repo).or_insert(seed);
         if entry.run == run {
             return;
         }
@@ -357,7 +395,8 @@ impl App {
             return;
         };
         let keep_on = self.repo_runs_selected_node();
-        self.repo_runs.filters.entry(repo).or_default().text = text;
+        let seed = self.repo_runs.default_filter.clone();
+        self.repo_runs.filters.entry(repo).or_insert(seed).text = text;
         self.repo_runs_reselect(keep_on);
     }
 
@@ -1043,5 +1082,82 @@ mod tests {
         app.switch_org("other".into());
         assert!(app.repo_runs.filters.is_empty());
         assert_eq!(app.repo_runs.target, None);
+    }
+
+    fn wf_cfg() -> WorkflowsConfig {
+        WorkflowsConfig {
+            group: Some("branch".into()),
+            status: Some("failure".into()),
+            branch: Some("main".into()),
+            search: Some("ci".into()),
+            ..WorkflowsConfig::default()
+        }
+    }
+
+    #[test]
+    fn config_defaults_seed_the_first_read_and_the_grouping() {
+        let mut app = app();
+        assert!(app.repo_runs.set_defaults(&wf_cfg()).is_empty());
+        assert_eq!(app.repo_runs.group, Grouping::Branch);
+        let f = app.repo_runs.filter();
+        assert_eq!(f.run.status, Some(RunStatus::Failure));
+        assert_eq!(f.run.branch.as_deref(), Some("main"));
+        assert_eq!(f.text, "ci");
+        let (_, req) = entered(&mut app, Instant::now());
+        assert_eq!(req.filter.status, Some(RunStatus::Failure));
+        assert_eq!(req.filter.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_user_edit_beats_the_config_default_and_clear_stays_clear() {
+        let mut app = app();
+        app.repo_runs.set_defaults(&wf_cfg());
+        let t = Instant::now();
+        entered(&mut app, t);
+        app.set_repo_run_filter(RunFilter::default(), t);
+        assert!(
+            app.repo_runs.filter().run.is_empty(),
+            "cleared, not defaulted"
+        );
+        assert_eq!(app.repo_runs.filter().text, "ci", "text kept");
+        app.set_repo_run_text(String::new());
+        assert_eq!(app.repo_runs.filter().text, "");
+    }
+
+    #[test]
+    fn an_edit_to_text_alone_keeps_the_other_defaults() {
+        let mut app = app();
+        app.repo_runs.set_defaults(&wf_cfg());
+        app.repo_runs_follow(Instant::now());
+        app.set_repo_run_text("x".into());
+        let f = app.repo_runs.filter();
+        assert_eq!(f.text, "x");
+        assert_eq!(f.run.status, Some(RunStatus::Failure));
+    }
+
+    #[test]
+    fn bad_config_values_warn_and_fall_back() {
+        let mut app = app();
+        let w = app.repo_runs.set_defaults(&WorkflowsConfig {
+            group: Some("sideways".into()),
+            status: Some("exploded".into()),
+            ..WorkflowsConfig::default()
+        });
+        assert_eq!(w.len(), 2);
+        assert!(w[0].contains("sideways") && w[1].contains("exploded"));
+        assert_eq!(app.repo_runs.group, Grouping::Status);
+        assert!(app.repo_runs.filter().run.is_empty());
+    }
+
+    #[test]
+    fn the_defaults_survive_an_org_switch() {
+        let mut app = app();
+        app.repo_runs.set_defaults(&wf_cfg());
+        app.switch_org("other".into());
+        assert_eq!(
+            app.repo_runs.default_filter.run.branch.as_deref(),
+            Some("main")
+        );
+        assert_eq!(app.repo_runs.default_group, Some(Grouping::Branch));
     }
 }
