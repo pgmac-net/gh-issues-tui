@@ -137,12 +137,20 @@ send_issue_text = false                   # send issue text for the readiness ba
 default_harness = "claude"                # harness `A` launches (unset: `A` asks)
 workspace_roots = ["~/pgmac", "~/projects"]   # searched for a repo's clone
 
+[workflows]                               # where the repo workflows view starts (all optional)
+group = "branch"                          # flat | status | workflow | branch (default: status)
+status = "failure"                        # a run status word, as in the filter menu
+event = "push"
+branch = "main"
+actor = "pgmac"
+search = ""                               # text search
+
 [harnesses.claude]                        # built in; shown here to override it
 command = ["claude", "attach", "{bg_id}"]
 bg_dispatch = ["claude", "--bg", "--name", "{ref}", "/pgmac-workflows:pickup-ticket {ref}"]
 ```
 
-With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. Tokens are never stored in the config file.
+With `default_org` set, plain `gh-issues` works without `--org`. By default the issue list starts with every repo group folded; groups can still be expanded as normal (`Space` / `]`), and repos you expand stay expanded across reloads. When only one repo group is visible (for example when started inside a repo clone), that group starts expanded. Set `default_collapsed = false` to start with everything expanded. The `[workflows]` table sets the repo workflows view's starting grouping and filters — see [docs/repo-workflows.md](docs/repo-workflows.md#starting-state). Tokens are never stored in the config file.
 
 `copy_format` controls what `y` puts on the clipboard, with `{owner}`, `{repo}`, and `{number}` placeholders substituted from the selected issue. The default (`{owner}/{repo}#{number}`) is the short form GitHub tools and Claude Code understand.
 

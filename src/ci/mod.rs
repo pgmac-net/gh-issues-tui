@@ -105,7 +105,6 @@ impl RunStatus {
         }
     }
 
-    #[cfg(test)]
     pub fn from_word(word: &str) -> Option<RunStatus> {
         RunStatus::ALL.into_iter().find(|s| s.word() == word)
     }

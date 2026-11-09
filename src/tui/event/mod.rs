@@ -225,6 +225,8 @@ pub struct RunConfig {
     pub theme: Theme,
     pub harness: HarnessSettings,
     pub typesafe: crate::typesafe::Consents,
+    /// Config `[workflows]`: the repo workflows view's starting state (#271).
+    pub workflows: crate::config::WorkflowsConfig,
 }
 
 pub async fn run(client: Provider, config: RunConfig) -> Result<()> {
@@ -257,6 +259,7 @@ async fn event_loop(
         theme,
         harness: harness_settings,
         typesafe,
+        workflows,
     } = config;
     let mut cache_io = cache_io::CacheIo::new(
         cache,
@@ -282,6 +285,8 @@ async fn event_loop(
     );
     app.set_hide_empty_default(hide_empty_repos);
     app.spinner = spinner;
+    let mut warnings = warnings;
+    warnings.extend(app.repo_runs.set_defaults(&workflows));
     app.config_warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     app.typesafe = typesafe.status;
     app.runs.supported = client.ci().is_some();

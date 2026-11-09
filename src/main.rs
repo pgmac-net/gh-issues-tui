@@ -147,6 +147,7 @@ async fn main() -> Result<()> {
             theme,
             harness,
             typesafe,
+            workflows: cfg.workflows,
         },
     )
     .await
