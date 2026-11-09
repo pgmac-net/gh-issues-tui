@@ -44,9 +44,11 @@ consistency fix described here.
 | Folded comment | focus the tree | unfold it |
 | Body | focus the tree | no-op |
 
-### `Space` and `Enter` (identical)
+### `Space` and `Enter` (identical, except on a repo header)
 
-- Repo header: toggle collapse.
+- Repo header: `Space` toggles collapse. `Enter` opens the repo workflows view
+  (focusing it when already open), and never folds (#273); on a provider with
+  no CI it says so on the status line.
 - Issue: same as `→`. `Space` no longer collapses the issue's repo. `Enter`
   keeps your place in an already-open pane.
 - Comment: toggle fold.

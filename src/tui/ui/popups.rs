@@ -664,7 +664,7 @@ pub(super) const LIST_HELP: &[(&str, &str)] = &[
     ("→", "tree: expand, first issue, into pane · pane: unfold"),
     (
         "Space / Enter",
-        "toggle repo group / comment fold; issue: into pane",
+        "repo: Space folds, Enter opens workflows; issue: into pane",
     ),
     (
         "Enter on ○",

@@ -299,7 +299,7 @@ code_number  = "#dcdcdc"
 | `g`/`G`, `Home`/`End` | top / bottom of the **focused** pane (in the detail pane: the body / the last comment) |
 | `←` | "out one level". In the list: on an expanded parent issue, collapse its sub-issues; on a sub-issue, select its parent; on a top-level issue, select its repo header; on an expanded header, collapse it. In the detail pane: fold an open comment; from a folded comment or the body, return focus to the list |
 | `→` | "in one level". In the list: expand a collapsed header or parent issue; on an expanded header, select its first issue; on any other issue, move into the detail pane (opening it if closed). In the detail pane: unfold a folded comment |
-| `Space` / `Enter` | the same key: on a repo header, collapse/expand it; on an issue, the same as `→`; on a comment, fold/unfold it. Exception: `Enter` on a dim row (`○`) for an issue from another repo jumps to that issue's own row, while `Space` and `←`/`→` stay on the dim row |
+| `Space` / `Enter` | mostly the same key: on an issue, the same as `→`; on a comment, fold/unfold it. On a repo header they differ: `Space` collapses/expands the group, `Enter` always opens (or focuses) the repo workflows view. Exception: `Enter` on a dim row (`○`) for an issue from another repo jumps to that issue's own row, while `Space` and `←`/`→` stay on the dim row |
 | `[` / `]` | collapse all / expand all in the focused pane — repo groups and sub-issue parents in the list, comments in the detail pane |
 | `Tab` / `Shift+Tab` | from the list: switch into the detail pane. In the detail pane: jump to the next / previous comment header (wrapping) |
 | `Esc` / `q` | close the detail pane (from either pane) |
