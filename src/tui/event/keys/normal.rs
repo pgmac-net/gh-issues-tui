@@ -191,10 +191,24 @@ pub(crate) fn handle_normal_key(
             Focus::Detail => detail_key_left(app),
             Focus::List => nav(app, client, tx, App::tree_left),
         },
+        // `Enter` on a repo header opens the workflows pane; only `Space`
+        // folds the group (#273). With nothing selected it does nothing.
+        KeyCode::Enter if app.focus == Focus::List && app.selected_is_header() => {
+            if !app.selected_is_repo_header() {
+                return;
+            }
+            if !app.runs.supported {
+                app.status = Some("workflow runs not supported by this provider".into());
+            } else if app.detail.open {
+                app.focus = Focus::Detail;
+            } else {
+                app.open_detail();
+            }
+        }
         KeyCode::Char(' ') | KeyCode::Enter => match app.focus {
             Focus::Detail => detail_key_toggle(app),
             // On an issue (or a context row, #234) the toggle is `→`; on a
-            // header it opens or closes the group. `Enter` alone follows a
+            // header `Space` opens or closes the group. `Enter` alone follows a
             // link: a dim row for an issue in another repo jumps to its home
             // row, where `→`/`Space` only expand, collapse or open detail
             // (#260).
@@ -678,6 +692,57 @@ mod tests {
         let mut app = stub_app();
         press(&mut app, key(KeyCode::Char(' ')));
         assert!(app.collapsed.is_empty(), "the repo group stayed open");
+    }
+
+    /// #273: `Enter` on a repo header opens the workflows pane and never folds.
+    #[tokio::test]
+    async fn enter_on_a_repo_header_opens_workflows_and_space_folds() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.runs.supported = true;
+        app.selected = 0;
+        assert!(app.selected_is_repo_header());
+        press(&mut app, key(KeyCode::Enter));
+        assert!(app.detail.open, "the pane opened");
+        assert_eq!(app.focus, Focus::Detail);
+        assert!(app.collapsed.is_empty(), "Enter did not fold the group");
+        assert!(app.repo_view_showing());
+
+        // Already open, list focused: Enter focuses it, still no fold.
+        app.focus = Focus::List;
+        press(&mut app, key(KeyCode::Enter));
+        assert!(app.detail.open);
+        assert_eq!(app.focus, Focus::Detail);
+        assert!(app.collapsed.is_empty());
+
+        // Space is the fold key.
+        app.focus = Focus::List;
+        press(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(app.collapsed.len(), 1, "Space folded the group");
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_header_without_ci_says_so_and_does_not_fold() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.runs.supported = false;
+        app.selected = 0;
+        press(&mut app, key(KeyCode::Enter));
+        assert!(!app.detail.open);
+        assert!(app.collapsed.is_empty());
+        assert_eq!(
+            app.status.as_deref(),
+            Some("workflow runs not supported by this provider")
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_on_an_issue_still_opens_the_issue_pane() {
+        let (mut app, _) = app_with_issue(&[]);
+        app.runs.supported = true;
+        app.selected = 1;
+        assert!(!app.selected_is_header());
+        press(&mut app, key(KeyCode::Enter));
+        assert!(app.detail.open);
+        assert!(!app.repo_view_showing(), "the issue, not the workflows");
     }
 
     #[tokio::test]
