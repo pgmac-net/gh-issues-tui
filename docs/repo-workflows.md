@@ -50,7 +50,25 @@ The newest 100 runs of the repo, every run, not only the newest per workflow. `L
 
 **Grouping** is one level. `status` (the default) orders running, waiting, queued, failed, success, other. `workflow` and `branch` are ordered by their newest run. A group starts unfolded when it holds an active or failed run. The grouping is saved in the layout and comes back on the next start.
 
-**Filters** take one value each, because that is what GitHub can filter on, and are sent with the list call, so a filtered view reaches 100 matching runs, not whatever matched in the newest 100. They are applied on the client too: GitHub has no `startup_failure` filter, so asking for it fetches every failure and the client narrows. Status values are fixed; workflows come from the repo's workflow list, read once a session; events, branches and actors are those seen in the repo's runs this session, and a branch, event or actor never seen can be typed into the picker. The text search never leaves the client. Filters are per repo and session-only.
+**Filters** take one value each, because that is what GitHub can filter on, and are sent with the list call, so a filtered view reaches 100 matching runs, not whatever matched in the newest 100. They are applied on the client too: GitHub has no `startup_failure` filter, so asking for it fetches every failure and the client narrows. Status values are fixed; workflows come from the repo's workflow list, read once a session; events, branches and actors are those seen in the repo's runs this session, and a branch, event or actor never seen can be typed into the picker. The text search never leaves the client. Filters are per repo and session-only; the config's `[workflows]` table supplies their [starting values](#starting-state).
+
+## Starting state
+
+Tracks [gh-issues-tui#271](https://github.com/pgmac-net/gh-issues-tui/issues/271). The optional `[workflows]` table in `config.toml` sets where the view starts:
+
+```toml
+[workflows]
+group = "branch"     # flat | status | workflow | branch (default: status)
+status = "failure"   # a run status word, as in the filter menu
+event = "push"
+branch = "main"
+actor = "pgmac"
+search = ""          # text search
+```
+
+- **`group`** beats the saved layout's grouping on every start, and again after `w` switches org. `v` still changes it for the session, but that choice is not carried to the next start while `group` is set. Unset, the saved grouping comes back as before.
+- **Filters** are the default for every repo's view until you change that repo's filter in the session. Any edit, including clearing in the filter menu, wins from then on: a cleared filter stays clear rather than falling back to the config. They are sent with the first list call like any other filter.
+- An unknown `group` or `status` word is ignored with a startup warning. There is no workflow-name filter in config (the workflow list is read lazily per repo), and no per-repo overrides.
 
 ## Refresh and cost
 

@@ -115,6 +115,28 @@ pub struct Config {
     /// at all while staying fully overridable.
     #[serde(default)]
     pub harnesses: HashMap<String, HarnessConfig>,
+
+    /// Starting grouping and filters of the repo workflows view (#271).
+    #[serde(default)]
+    pub workflows: WorkflowsConfig,
+}
+
+/// The `[workflows]` table: where the repo workflows view starts. Every field
+/// is optional; values are checked at startup (see
+/// `RepoRunsState::set_defaults`), and a bad one warns and is ignored.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WorkflowsConfig {
+    /// `flat`, `status`, `workflow` or `branch`. When set it beats the saved
+    /// layout on every start; `v` still changes it for the session.
+    pub group: Option<String>,
+    /// A run status word, as in the filter menu (`failure`, `running`, ...).
+    pub status: Option<String>,
+    pub event: Option<String>,
+    pub branch: Option<String>,
+    pub actor: Option<String>,
+    /// Text search over workflow, title, branch, actor and `#number`.
+    pub search: Option<String>,
 }
 
 /// One entry in the `[harnesses.*]` table.
@@ -298,6 +320,7 @@ impl Default for Config {
             default_harness: None,
             workspace_roots: Vec::new(),
             harnesses: builtin_harnesses(),
+            workflows: WorkflowsConfig::default(),
         }
     }
 }
@@ -367,6 +390,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::load_from(&dir.path().join("nope.toml")).unwrap();
         assert!(cfg.default_org.is_none());
+    }
+
+    #[test]
+    fn parses_workflows_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[workflows]\ngroup = \"branch\"\nstatus = \"failure\"\nbranch = \"main\"\n",
+        )
+        .unwrap();
+        let w = Config::load_from(&path).unwrap().workflows;
+        assert_eq!(w.group.as_deref(), Some("branch"));
+        assert_eq!(w.status.as_deref(), Some("failure"));
+        assert_eq!(w.branch.as_deref(), Some("main"));
+        assert!(w.event.is_none() && w.actor.is_none() && w.search.is_none());
+        assert_eq!(Config::default().workflows, WorkflowsConfig::default());
     }
 
     #[test]
